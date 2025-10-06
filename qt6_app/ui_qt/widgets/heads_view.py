@@ -5,10 +5,12 @@ from PySide6.QtCore import Qt, QRectF, QPointF
 class HeadsView(QFrame):
     """
     Visualizzazione teste:
-    - Scala quotata 250..4000 mm
-    - Testa SX: fissa a min_distance (pivot alla base), inclinazione 0-45° verso sinistra
-    - Testa DX: mobile su position_current (pivot alla base), inclinazione 0-45° verso destra
-    - Il pallino (pivot) rappresenta l'interno lame => quota di posizionamento
+    - Scala quotata 250..4000 mm (linea base)
+    - Linea teste sopra la scala per evitare accavallamenti
+    - Testa SX: fissa a 0 mm (pivot separato, a sinistra della scala)
+    - Testa DX: mobile su position_current (min 250 mm) mappata sulla scala
+    - Le teste si inclinano verso l’esterno (SX ruota in senso orario, DX in senso antiorario)
+    - Il pallino alla base è il fulcro (interno lame = quota di posizionamento)
     """
     def __init__(self, machine, parent=None):
         super().__init__(parent)
@@ -29,14 +31,15 @@ class HeadsView(QFrame):
         h = self.height()
 
         # Margini e dimensioni scala
-        left_margin = 70
+        left_margin = 80
         right_margin = 24
         top_margin = 10
-        base_y = h - 60  # linea scala
+        base_y = h - 60                  # linea scala (250..4000)
+        heads_y = base_y - 24            # linea teste (sopra la scala)
         usable_w = max(50, w - left_margin - right_margin)
 
         # Dati macchina
-        min_mm = float(getattr(self.machine, "min_distance", 250.0))
+        min_mm = float(getattr(self.machine, "min_distance", 250.0))  # 250
         max_mm = float(getattr(self.machine, "max_cut_length", 4000.0))
         pos_mm = float(getattr(self.machine, "position_current", min_mm))
         pos_mm = max(min_mm, min(max_mm, pos_mm))
@@ -45,14 +48,14 @@ class HeadsView(QFrame):
         ang_sx = max(0.0, min(45.0, ang_sx))
         ang_dx = max(0.0, min(45.0, ang_dx))
 
-        # Mapper mm -> x pixel
+        # Mapper mm -> x pixel (scala 250..4000)
         def x_at(mm: float) -> float:
             if max_mm <= min_mm:
                 return left_margin
             f = (mm - min_mm) / (max_mm - min_mm)
             return left_margin + f * usable_w
 
-        # Disegno scala
+        # ----- Disegna scala base -----
         p.setPen(QPen(QColor("#3b4b5a"), 2))
         p.drawLine(int(left_margin), int(base_y), int(left_margin + usable_w), int(base_y))
 
@@ -76,40 +79,49 @@ class HeadsView(QFrame):
         p.setPen(QPen(QColor("#9fb3c7")))
         p.drawText(int(left_margin), int(top_margin + 4), rng)
 
-        # Parametri grafici teste
+        # ----- Linea teste (sopra scala) -----
+        p.setPen(QPen(QColor("#4a6076"), 1))
+        p.drawLine(int(left_margin), int(heads_y), int(left_margin + usable_w), int(heads_y))
+
+        # Parametri grafici segmenti/teste
         seg_len = 110
         seg_thick = 6
         pivot_r = 7
 
-        def draw_head_segment(x: float, angle_deg: float, tilt_left: bool, color: str):
-            # pivot base (pallino = fulcro)
+        # Posizione pivot SX: 0 mm (fuori dalla scala a sinistra)
+        zero_gap_px = 28  # distanza visiva tra 0 e inizio scala (250)
+        x_sx = left_margin - zero_gap_px
+
+        # Posizione pivot DX: quota attuale mappata su scala
+        x_dx = x_at(pos_mm)
+
+        def draw_head_segment(x: float, angle_deg: float, outward_left: bool, color: str):
+            # pivot (pallino) sulla linea teste
             p.setBrush(QBrush(QColor(color)))
             p.setPen(Qt.NoPen)
-            p.drawEllipse(QPointF(x, base_y), pivot_r, pivot_r)
+            p.drawEllipse(QPointF(x, heads_y), pivot_r, pivot_r)
 
             # segmento lama dal pivot verso l'alto
             p.save()
-            p.translate(x, base_y)
-            rot = angle_deg if tilt_left else -angle_deg  # + = CCW (sinistra)
+            p.translate(x, heads_y)
+            # Le teste si inclinano verso l'ESTERNO:
+            # - SX: ruota in senso orario (negativo)
+            # - DX: ruota in senso antiorario (positivo)
+            rot = -angle_deg if outward_left else +angle_deg
             p.rotate(rot)
-            # linea verticale che sale (direzione -Y)
             pen = QPen(QColor(color))
             pen.setWidth(seg_thick)
             p.setPen(pen)
             p.drawLine(0, 0, 0, -seg_len)
             p.restore()
 
-        # Testa SX: fissa a min_mm, inclinazione a sinistra
-        x_sx = x_at(min_mm)
-        draw_head_segment(x_sx, ang_sx, tilt_left=True, color="#2980b9")
-
-        # Testa DX: mobile sulla quota attuale (om-ing a 250)
-        x_dx = x_at(pos_mm)
-        draw_head_segment(x_dx, ang_dx, tilt_left=False, color="#9b59b6")
+        # Disegno teste
+        draw_head_segment(x_sx, ang_sx, outward_left=True,  color="#2980b9")  # SX
+        draw_head_segment(x_dx, ang_dx, outward_left=False, color="#9b59b6")  # DX
 
         # Etichette
         p.setPen(QPen(QColor("#ecf0f1")))
-        p.drawText(int(x_sx - 40), int(base_y + 20), f"SX: {ang_sx:.1f}°")
-        p.drawText(int(x_dx - 40), int(base_y + 20), f"DX: {ang_dx:.1f}° ({int(pos_mm)} mm)")
+        p.drawText(int(x_sx - 40), int(heads_y + 22), f"SX: {ang_sx:.1f}° (0)")
+        p.drawText(int(x_dx - 40), int(heads_y + 22), f"DX: {ang_dx:.1f}° ({int(pos_mm)} mm)")
 
         p.end()
