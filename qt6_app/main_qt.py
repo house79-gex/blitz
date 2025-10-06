@@ -6,13 +6,11 @@ from PySide6.QtCore import Qt
 from ui_qt.theme import THEME, apply_global_stylesheet
 from ui_qt.data.db import init_db
 
-# Assicura che il package 'ui' (repo root) sia importabile per MachineState
 THIS_DIR = os.path.dirname(__file__)
 REPO_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Pagine
 try:
     from ui_qt.pages.home_page import HomePage
 except Exception:
@@ -54,7 +52,6 @@ try:
 except Exception:
     AutomaticoPage = None
 
-# MachineState (stessa API del Tk)
 try:
     from ui.shared.machine_state import MachineState
 except Exception:
@@ -64,8 +61,39 @@ class DummyMachineState:
     def __init__(self):
         self.machine_homed = False
         self.emergency_active = False
+        self.brake_active = False
+        self.clutch_active = True
+        self.positioning_active = False
+        self.min_distance = 250.0
+        self.max_cut_length = 4000.0
+        self.left_head_angle = 0.0
+        self.right_head_angle = 0.0
+        self.count_active_on_closed = True
+        self.invert_left_switch = False
+        self.invert_right_switch = False
+        self.cut_pulse_debounce_ms = 120
+        self.cut_pulse_group_ms = 500
+        self.semi_auto_target_pieces = 0
+        self.semi_auto_count_done = 0
         self.work_queue = []
-    def rebuild_work_queue(self): pass
+        self.current_work_idx = None
+
+    def set_active_mode(self, mode: str): pass
+    def normalize_after_manual(self): self.clutch_active = True
+    def set_head_button_input_enabled(self, enabled: bool): pass
+    def move_to_length_and_angles(self, length_mm: float, ang_sx: float, ang_dx: float, done_cb=None):
+        self.brake_active = False
+        self.positioning_active = True
+        self.left_head_angle = float(ang_sx)
+        self.right_head_angle = float(ang_dx)
+        from threading import Thread
+        import time
+        def run():
+            time.sleep(0.8)
+            self.positioning_active = False
+            self.brake_active = True
+            if done_cb: done_cb(True, "OK")
+        Thread(target=run, daemon=True).start()
 
 class MainWindow(QMainWindow):
     def __init__(self, machine_state):
@@ -77,7 +105,6 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.pages = {}
 
-        # Registra le pagine disponibili
         self.pages["home"] = HomePage(self)
         if UtilityPage is not None: self.pages["utility"] = UtilityPage(self)
         if TipologiePage is not None: self.pages["tipologie"] = TipologiePage(self)
@@ -103,12 +130,21 @@ class MainWindow(QMainWindow):
         if not w:
             return
         try:
+            mode = "other"
+            if key == "manuale": mode = "manual"
+            elif key == "semi": mode = "semi"
+            elif key == "automatico": mode = "automatic"
+            if hasattr(self.machine, "set_active_mode"):
+                self.machine.set_active_mode(mode)
             if hasattr(self.machine, "set_head_button_input_enabled"):
                 self.machine.set_head_button_input_enabled(False)
             if key != "manuale" and hasattr(self.machine, "normalize_after_manual"):
                 self.machine.normalize_after_manual()
+            if key == "home" and getattr(self.machine, "brake_active", False) and not getattr(self.machine, "emergency_active", False):
+                setattr(self.machine, "brake_active", False)
         except Exception:
             pass
+
         self.stack.setCurrentWidget(w)
         if hasattr(w, "on_show"):
             w.on_show()
@@ -126,8 +162,8 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self.machine, "simulate_head_button"):
                 self.machine.simulate_head_button()
-            elif hasattr(self.machine, "set_head_button_input_enabled"):
-                self.machine.set_head_button_input_enabled(True)
+            elif hasattr(self.machine, "external_head_button_press"):
+                self.machine.external_head_button_press()
         except Exception:
             pass
 
@@ -136,7 +172,7 @@ class MainWindow(QMainWindow):
             if hasattr(self.machine, "toggle_emergency"):
                 self.machine.toggle_emergency()
             elif hasattr(self.machine, "clear_emergency"):
-                if getattr(self.machine, "emergency_active", False) and hasattr(self.machine, "clear_emergency"):
+                if getattr(self.machine, "emergency_active", False):
                     self.machine.clear_emergency()
         except Exception:
             pass
@@ -153,17 +189,12 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     apply_global_stylesheet(app)
-
-    # Inizializza schema + seed SQLite
     init_db()
-
     if MachineState is not None:
         machine_state = MachineState()
     else:
         machine_state = DummyMachineState()
-
     win = MainWindow(machine_state)
-    # Avvio massimizzato
     try:
         win.showMaximized()
     except Exception:
