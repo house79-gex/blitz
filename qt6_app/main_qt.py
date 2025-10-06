@@ -1,8 +1,16 @@
 import sys
+import os
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QStackedWidget, QVBoxLayout
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtCore import Qt
 from ui_qt.theme import THEME, apply_global_stylesheet
+from ui_qt.data.db import init_db
+
+# Assicura che il package 'ui' (repo root) sia importabile per MachineState
+THIS_DIR = os.path.dirname(__file__)
+REPO_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 # Pagine
 try:
@@ -145,6 +153,9 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     apply_global_stylesheet(app)
+
+    # Inizializza schema + seed SQLite
+    init_db()
 
     if MachineState is not None:
         machine_state = MachineState()
