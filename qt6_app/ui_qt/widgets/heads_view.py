@@ -7,16 +7,18 @@ class HeadsView(QFrame):
     Visualizzazione teste:
     - Scala quotata 250..4000 mm (linea base)
     - Linea teste sopra la scala per evitare accavallamenti
-    - Testa SX: fissa a 0 mm (pivot separato, a sinistra della scala)
+    - Testa SX: fissa a 0 mm (pivot a sinistra della scala)
     - Testa DX: mobile su position_current (min 250 mm) mappata sulla scala
-    - Le teste si inclinano verso l’esterno (SX ruota in senso orario, DX in senso antiorario)
+    - Le teste si inclinano verso l'esterno (SX oraria, DX antioraria)
     - Il pallino alla base è il fulcro (interno lame = quota di posizionamento)
+    - Carter: rettangolo con angoli smussati che ruota attorno al pivot
     """
     def __init__(self, machine, parent=None):
         super().__init__(parent)
         self.machine = machine
+        # Più compatta per evitare tagli a 45°
         self.setMinimumHeight(260)
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(520)
         self.setFrameShape(QFrame.StyledPanel)
         self.setFrameShadow(QFrame.Raised)
 
@@ -33,9 +35,9 @@ class HeadsView(QFrame):
         # Margini e dimensioni scala
         left_margin = 80
         right_margin = 24
-        top_margin = 10
-        base_y = h - 60                  # linea scala (250..4000)
-        heads_y = base_y - 24            # linea teste (sopra la scala)
+        top_margin = 6
+        base_y = h - 64                 # linea scala (250..4000)
+        heads_y = base_y - 26           # linea teste (sopra la scala)
         usable_w = max(50, w - left_margin - right_margin)
 
         # Dati macchina
@@ -83,41 +85,54 @@ class HeadsView(QFrame):
         p.setPen(QPen(QColor("#4a6076"), 1))
         p.drawLine(int(left_margin), int(heads_y), int(left_margin + usable_w), int(heads_y))
 
-        # Parametri grafici segmenti/teste
-        seg_len = 110
+        # Parametri grafici segmenti e carter
+        seg_len = 90         # lama più corta per non tagliare a 45°
         seg_thick = 6
-        pivot_r = 7
+        pivot_r = 6
+        carter_w = 44
+        carter_h = 92
+        carter_radius = 8
 
-        # Posizione pivot SX: 0 mm (fuori dalla scala a sinistra)
-        zero_gap_px = 28  # distanza visiva tra 0 e inizio scala (250)
+        # Posizione pivot SX: "0 mm" (fuori dalla scala a sinistra)
+        zero_gap_px = 28
         x_sx = left_margin - zero_gap_px
 
-        # Posizione pivot DX: quota attuale mappata su scala
+        # Posizione pivot DX: quota attuale
         x_dx = x_at(pos_mm)
 
-        def draw_head_segment(x: float, angle_deg: float, outward_left: bool, color: str):
+        def draw_head(x: float, angle_deg: float, outward_left: bool, color: str):
             # pivot (pallino) sulla linea teste
             p.setBrush(QBrush(QColor(color)))
             p.setPen(Qt.NoPen)
             p.drawEllipse(QPointF(x, heads_y), pivot_r, pivot_r)
 
-            # segmento lama dal pivot verso l'alto
+            # carter: rettangolo stondato che ruota attorno al pivot
             p.save()
             p.translate(x, heads_y)
-            # Le teste si inclinano verso l'ESTERNO:
-            # - SX: ruota in senso orario (negativo)
-            # - DX: ruota in senso antiorario (positivo)
-            rot = -angle_deg if outward_left else +angle_deg
+            rot = -angle_deg if outward_left else +angle_deg  # SX oraria (esterna), DX antioraria (esterna)
             p.rotate(rot)
+
+            # Carter: base al pivot, sale verso l'alto
+            p.setBrush(QBrush(QColor("#22313f")))
+            p.setPen(QPen(QColor("#1b2836"), 1))
+            carter_rect = QRectF(-carter_w/2, -carter_h, carter_w, carter_h)
+            p.drawRoundedRect(carter_rect, carter_radius, carter_radius)
+
+            # Lama/segmento interno al carter
             pen = QPen(QColor(color))
             pen.setWidth(seg_thick)
             p.setPen(pen)
             p.drawLine(0, 0, 0, -seg_len)
+
+            # Indicazione angolo (piccolo testo vicino alla testa)
+            p.setPen(QPen(QColor("#d0d6dc")))
+            p.drawText(int(-carter_w/2), int(-carter_h - 6), f"{angle_deg:.0f}°")
+
             p.restore()
 
         # Disegno teste
-        draw_head_segment(x_sx, ang_sx, outward_left=True,  color="#2980b9")  # SX
-        draw_head_segment(x_dx, ang_dx, outward_left=False, color="#9b59b6")  # DX
+        draw_head(x_sx, ang_sx, outward_left=True,  color="#2980b9")  # SX
+        draw_head(x_dx, ang_dx, outward_left=False, color="#9b59b6")  # DX
 
         # Etichette
         p.setPen(QPen(QColor("#ecf0f1")))
