@@ -1,17 +1,17 @@
 from PySide6.QtWidgets import QFrame
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF
 from PySide6.QtCore import Qt, QRectF, QPointF
 
 class HeadsView(QFrame):
     """
     Visualizzazione teste:
     - Scala quotata 250..4000 mm (linea base)
-    - Linea teste sopra la scala per evitare accavallamenti
+    - Linea teste sopra la scala per evitare accavallamenti (alzata di +50 px su richiesta)
     - Testa SX: fissa a 0 mm (pivot a sinistra della scala)
     - Testa DX: mobile su position_current (min 250 mm) mappata sulla scala
     - Le teste si inclinano verso l'esterno (SX oraria, DX antioraria)
     - Il pallino alla base è il fulcro (interno lame = quota di posizionamento)
-    - Carter: rettangolo stondato che ruota attorno al pivot
+    - Carter: “mezzo esagono” con lato interno coincidente col segmento lama
     """
     def __init__(self, machine, parent=None):
         super().__init__(parent)
@@ -37,7 +37,7 @@ class HeadsView(QFrame):
         right_margin = 24
         top_margin = 6
         base_y = h - 64                 # linea scala (250..4000)
-        heads_y = base_y - 26           # linea teste (sopra la scala)
+        heads_y = base_y - 26 - 50      # linea teste (sopra la scala, +50 px più in alto)
         usable_w = max(50, w - left_margin - right_margin)
 
         # Dati macchina
@@ -86,12 +86,12 @@ class HeadsView(QFrame):
         p.drawLine(int(left_margin), int(heads_y), int(left_margin + usable_w), int(heads_y))
 
         # Parametri grafici segmenti e carter
-        seg_len = 85          # lama più corta per non uscire
+        seg_len = 80          # lama più corta per non uscire
         seg_thick = 5
         pivot_r = 6
-        carter_w = 36         # più stretto per rientrare a 45°
-        carter_h = 86
-        carter_radius = 8
+        body_w = 36           # larghezza carter (da lato interno a lato smussato)
+        body_h = 86
+        bevel = 10            # smusso 45° agli angoli esterni
 
         # Posizione pivot SX: "0 mm" (fuori dalla scala a sinistra)
         zero_gap_px = 28
@@ -106,27 +106,49 @@ class HeadsView(QFrame):
             p.setPen(Qt.NoPen)
             p.drawEllipse(QPointF(x, heads_y), pivot_r, pivot_r)
 
-            # Carter: rettangolo stondato che ruota attorno al pivot
             p.save()
             p.translate(x, heads_y)
             rot = -angle_deg if outward_left else +angle_deg  # SX oraria (esterna), DX antioraria (esterna)
             p.rotate(rot)
 
-            # Carter: base al pivot, sale verso l'alto
-            p.setBrush(QBrush(QColor("#34495e")))             # più visibile sullo sfondo
-            p.setPen(QPen(QColor("#95a5a6"), 1))              # bordo chiaro
-            carter_rect = QRectF(-carter_w/2, -carter_h, carter_w, carter_h)
-            p.drawRoundedRect(carter_rect, carter_radius, carter_radius)
+            # Carter “mezzo esagono”:
+            # - Lato interno coincidente con il segmento (x=0)
+            # - Lato esterno con smussi a 45° in alto e in basso
+            # Per SX (outward_left=True) il corpo si estende a x<0; per DX a x>0.
+            if outward_left:
+                # SX: esterno a x=-body_w
+                pts = [
+                    QPointF(0, 0),                            # inner-bottom
+                    QPointF(-(body_w - bevel), 0),            # bottom edge fino allo smusso
+                    QPointF(-body_w, -bevel),                 # smusso inferiore
+                    QPointF(-body_w, -(body_h - bevel)),      # lato esterno
+                    QPointF(-(body_w - bevel), -body_h),      # smusso superiore
+                    QPointF(0, -body_h),                      # inner-top
+                ]
+            else:
+                # DX: esterno a x=+body_w
+                pts = [
+                    QPointF(0, 0),                            # inner-bottom
+                    QPointF(body_w - bevel, 0),               # bottom edge fino allo smusso
+                    QPointF(body_w, -bevel),                  # smusso inferiore
+                    QPointF(body_w, -(body_h - bevel)),       # lato esterno
+                    QPointF(body_w - bevel, -body_h),         # smusso superiore
+                    QPointF(0, -body_h),                      # inner-top
+                ]
+            poly = QPolygonF(pts)
+            p.setBrush(QBrush(QColor("#34495e")))
+            p.setPen(QPen(QColor("#95a5a6"), 1))
+            p.drawPolygon(poly)
 
-            # Lama/segmento interno al carter
+            # Lama (segmento) sul lato interno
             pen = QPen(QColor(color))
             pen.setWidth(seg_thick)
             p.setPen(pen)
             p.drawLine(0, 0, 0, -seg_len)
 
-            # Indicazione angolo (piccolo testo vicino alla testa)
+            # Indicazione angolo
             p.setPen(QPen(QColor("#d0d6dc")))
-            p.drawText(int(-carter_w/2), int(-carter_h - 6), f"{angle_deg:.0f}°")
+            p.drawText(int(-body_w if outward_left else 2), int(-body_h - 6), f"{angle_deg:.0f}°")
 
             p.restore()
 
