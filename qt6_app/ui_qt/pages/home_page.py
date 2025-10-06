@@ -1,6 +1,7 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QPushButton, QLabel, QFrame
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QPushButton, QLabel, QFrame, QHBoxLayout
 from PySide6.QtCore import Qt
 from ui_qt.theme import THEME
+from ui_qt.widgets.header import Header
 
 class HomePage(QWidget):
     def __init__(self, appwin):
@@ -13,10 +14,22 @@ class HomePage(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
 
-        title = QLabel("BLITZ 3 - Home")
-        title.setAlignment(Qt.AlignHCenter)
-        title.setStyleSheet("font-size: 22px; font-weight: 800;")
-        root.addWidget(title)
+        root.addWidget(Header(self.appwin, "BLITZ 3 - Home"))
+
+        # Barra comandi rapidi: Azzera + Reset
+        quick = QHBoxLayout()
+        btn_zero = QPushButton("AZZERA")
+        btn_zero.setMinimumHeight(36)
+        btn_zero.clicked.connect(self._zero)
+        quick.addWidget(btn_zero)
+
+        btn_reset = QPushButton("RESET")
+        btn_reset.setMinimumHeight(36)
+        btn_reset.clicked.connect(self._reset)
+        quick.addWidget(btn_reset)
+
+        quick.addStretch(1)
+        root.addLayout(quick)
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
@@ -63,10 +76,31 @@ class HomePage(QWidget):
                 c = 0
                 r += 1
 
-        # Spazio inferiore
         spacer = QFrame()
         spacer.setMinimumHeight(20)
         root.addWidget(spacer)
+
+    def _zero(self):
+        try:
+            m = self.appwin.machine
+            if hasattr(m, "set_zero"):
+                m.set_zero()
+            elif hasattr(m, "zero_position"):
+                m.zero_position()
+            if hasattr(self.appwin, "toast"):
+                self.appwin.toast.show("Quota azzerata", "ok", 2000)
+        except Exception:
+            pass
+
+    def _reset(self):
+        try:
+            m = self.appwin.machine
+            if hasattr(m, "clear_emergency"):
+                m.clear_emergency()
+            if hasattr(self.appwin, "toast"):
+                self.appwin.toast.show("Reset (EMG clear) eseguito", "ok", 2000)
+        except Exception:
+            pass
 
     def on_show(self):
         pass
