@@ -1,12 +1,17 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QSpinBox, QGridLayout
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QSpinBox, QGridLayout, QCheckBox
 from PySide6.QtCore import Qt, QTimer
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 
 class SemiAutoPage(QWidget):
     """
-    Controlli di movimento e IO in modalità Semi-Automatica.
-    Chiama i metodi di MachineState se disponibili (parità con Tk), con fallback sicuri.
+    Modalità Semi-Automatica con:
+    - Jog continuo (press-and-hold) sinistra/destra + STOP
+    - Velocità jog
+    - Attuatori base (Freno/Frizione, Pinza apri/chiudi)
+    - Homing, Clear EMG
+    - Impulso Taglio
+    - Toggle input pulsante testa
     """
     def __init__(self, appwin):
         super().__init__()
@@ -29,16 +34,28 @@ class SemiAutoPage(QWidget):
         # Jog controls
         jog_box = QFrame(); l.addWidget(jog_box)
         jog = QGridLayout(jog_box); jog.setHorizontalSpacing(8); jog.setVerticalSpacing(6)
-        jog.addWidget(QLabel("JOG TESTA"), 0, 0, 1, 3, alignment=Qt.AlignLeft)
+        jog.addWidget(QLabel("JOG TESTA"), 0, 0, 1, 4, alignment=Qt.AlignLeft)
 
         jog.addWidget(QLabel("Velocità (mm/s):"), 1, 0)
         self.spin_speed = QSpinBox(); self.spin_speed.setRange(1, 500); self.spin_speed.setValue(50)
         jog.addWidget(self.spin_speed, 1, 1)
 
-        btn_left = QPushButton("← Sinistra"); btn_left.clicked.connect(lambda: self._jog("left"))
-        btn_stop = QPushButton("STOP"); btn_stop.clicked.connect(self._jog_stop)
-        btn_right = QPushButton("Destra →"); btn_right.clicked.connect(lambda: self._jog("right"))
-        jog.addWidget(btn_left, 2, 0); jog.addWidget(btn_stop, 2, 1); jog.addWidget(btn_right, 2, 2)
+        self.btn_left = QPushButton("← Sinistra")
+        self.btn_stop = QPushButton("STOP")
+        self.btn_right = QPushButton("Destra →")
+
+        # Press-and-hold
+        self.btn_left.pressed.connect(lambda: self._jog("left"))
+        self.btn_left.released.connect(self._jog_stop)
+        self.btn_right.pressed.connect(lambda: self._jog("right"))
+        self.btn_right.released.connect(self._jog_stop)
+
+        # Fallback click
+        self.btn_stop.clicked.connect(self._jog_stop)
+
+        jog.addWidget(self.btn_left, 2, 0)
+        jog.addWidget(self.btn_stop, 2, 1)
+        jog.addWidget(self.btn_right, 2, 2)
 
         # IO basic
         io_box = QFrame(); l.addWidget(io_box)
@@ -57,12 +74,15 @@ class SemiAutoPage(QWidget):
         btn_close = QPushButton("Chiudi Pinza"); btn_close.clicked.connect(self._close_clamp)
         io.addWidget(btn_open, 3, 0); io.addWidget(btn_close, 3, 1)
 
-        # Service
+        # Service / utilities
         svc_box = QFrame(); l.addWidget(svc_box)
         svc = QHBoxLayout(svc_box)
         btn_home = QPushButton("HOMING"); btn_home.clicked.connect(self._home)
         btn_clear_emg = QPushButton("CLEAR EMG"); btn_clear_emg.clicked.connect(self._clear_emg)
-        svc.addWidget(btn_home); svc.addWidget(btn_clear_emg); svc.addStretch(1)
+        btn_pulse = QPushButton("IMPULSO TAGLIO"); btn_pulse.clicked.connect(self._cut_pulse)
+        self.chk_head_input = QCheckBox("Input testa abilitato")
+        self.chk_head_input.stateChanged.connect(lambda _: self._toggle_head_input())
+        svc.addWidget(btn_home); svc.addWidget(btn_clear_emg); svc.addWidget(btn_pulse); svc.addWidget(self.chk_head_input); svc.addStretch(1)
 
         l.addStretch(1)
 
@@ -104,7 +124,7 @@ class SemiAutoPage(QWidget):
             if hasattr(self.machine, name):
                 setattr(self.machine, name, value)
             elif hasattr(self.machine, f"set_{name}"):
-                getattr(self.machine, f"set_{name}")(value)
+                getattr(self.machine, f"set_{name}\")(value)
             else:
                 self._toast(f"API {name} non disponibile", "warn")
         except Exception as e:
@@ -147,6 +167,24 @@ class SemiAutoPage(QWidget):
                 self._toast("API clear EMG non disponibile", "warn")
         except Exception as e:
             self._toast(f"Errore clear EMG: {e}", "error")
+
+    def _cut_pulse(self):
+        try:
+            if hasattr(self.machine, "simulate_cut_pulse"):
+                self.machine.simulate_cut_pulse()
+            elif hasattr(self.machine, "decrement_current_remaining"):
+                self.machine.decrement_current_remaining()
+            else:
+                self._toast("API impulso taglio non disponibile", "warn")
+        except Exception as e:
+            self._toast(f"Errore impulso taglio: {e}", "error")
+
+    def _toggle_head_input(self):
+        try:
+            if hasattr(self.machine, "set_head_button_input_enabled"):
+                self.machine.set_head_button_input_enabled(bool(self.chk_head_input.isChecked()))
+        except Exception:
+            pass
 
     def on_show(self):
         self.status.refresh()
