@@ -6,7 +6,7 @@ from ui_qt.widgets.status_panel import StatusPanel
 class ManualePage(QWidget):
     """
     Controlli manuali: posizionamento diretto, step +/- e servizi base.
-    Tutte le chiamate rispettano i metodi MachineState se presenti.
+    Aggiunto Homing e mantenute chiamate MachineState.
     """
     def __init__(self, appwin):
         super().__init__()
@@ -43,12 +43,13 @@ class ManualePage(QWidget):
         btn_plus = QPushButton("+ STEP"); btn_plus.clicked.connect(lambda: self._step(+1))
         mv.addWidget(btn_minus, 2, 2); mv.addWidget(btn_plus, 2, 3)
 
-        # Zero / cut pulse
+        # Service
         svc_box = QFrame(); l.addWidget(svc_box)
         svc = QHBoxLayout(svc_box)
         btn_zero = QPushButton("AZZERA QUOTA"); btn_zero.clicked.connect(self._zero)
         btn_cut = QPushButton("IMPULSO TAGLIO"); btn_cut.clicked.connect(self._cut_pulse)
-        svc.addWidget(btn_zero); svc.addWidget(btn_cut); svc.addStretch(1)
+        btn_home = QPushButton("HOMING"); btn_home.clicked.connect(self._home)
+        svc.addWidget(btn_zero); svc.addWidget(btn_cut); svc.addWidget(btn_home); svc.addStretch(1)
 
         l.addStretch(1)
 
@@ -107,6 +108,17 @@ class ManualePage(QWidget):
                 self._toast("API impulso taglio non disponibile", "warn")
         except Exception as e:
             self._toast(f"Errore impulso taglio: {e}", "error")
+
+    def _home(self):
+        try:
+            if hasattr(self.machine, "home_machine"):
+                self.machine.home_machine()
+            elif hasattr(self.machine, "home"):
+                self.machine.home()
+            else:
+                self._toast("API homing non disponibile", "warn")
+        except Exception as e:
+            self._toast(f"Errore homing: {e}", "error")
 
     def on_show(self):
         self.status.refresh()
