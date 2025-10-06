@@ -1,0 +1,23 @@
+{
+  "Default": {
+    "palette": {
+      "APP_BG": "#1c2833",
+      "SURFACE_BG": "#22313f",
+      "PANEL_BG": "#2c3e50",
+      "CARD_BG": "#34495e",
+      "TILE_BG": "#2f4f6a",
+      "ACCENT": "#2980b9",
+      "ACCENT_2": "#9b59b6",
+      "OK": "#27ae60",
+      "WARN": "#e67e22",
+      "ERR": "#e74c3c",
+      "TEXT": "#ecf0f1",
+      "TEXT_MUTED": "#bdc3c7",
+      "OUTLINE": "#2c3e50",
+      "OUTLINE_SOFT": "#3b4b5a",
+      "HEADER_BG": "#2c3e50",
+      "HEADER_FG": "#ecf0f1"
+    },
+    "icons": {}
+  }
+}

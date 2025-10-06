@@ -4,7 +4,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtCore import Qt
 from ui_qt.theme import THEME, apply_global_stylesheet
 
-# Pagine: saranno aggiunte progressivamente; per ora, creiamo placeholder sicuri
+# Pagine: aggiunte progressivamente
 try:
     from ui_qt.pages.home_page import HomePage
 except Exception:
@@ -16,6 +16,11 @@ except Exception:
             lay.addWidget(QLabel("Home (placeholder)"))
         def on_show(self):
             pass
+
+try:
+    from ui_qt.pages.utility_page import UtilityPage
+except Exception:
+    UtilityPage = None
 
 # Preferisci usare il MachineState reale (stessa API della versione Tk)
 try:
@@ -41,8 +46,11 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.pages = {}
 
-        # Registra le pagine minime
+        # Registra le pagine disponibili
         self.pages["home"] = HomePage(self)
+        if UtilityPage is not None:
+            self.pages["utility"] = UtilityPage(self)
+
         for p in self.pages.values():
             self.stack.addWidget(p)
 
