@@ -11,12 +11,12 @@ class HeadsView(QFrame):
     - Testa DX: mobile su position_current (min 250 mm) mappata sulla scala
     - Le teste si inclinano verso l'esterno (SX oraria, DX antioraria)
     - Il pallino alla base è il fulcro (interno lame = quota di posizionamento)
-    - Carter: rettangolo con angoli smussati che ruota attorno al pivot
+    - Carter: rettangolo stondato che ruota attorno al pivot
     """
     def __init__(self, machine, parent=None):
         super().__init__(parent)
         self.machine = machine
-        # Più compatta per evitare tagli a 45°
+        # Compatta per non tagliare i carter a 45°
         self.setMinimumHeight(260)
         self.setMinimumWidth(520)
         self.setFrameShape(QFrame.StyledPanel)
@@ -41,7 +41,7 @@ class HeadsView(QFrame):
         usable_w = max(50, w - left_margin - right_margin)
 
         # Dati macchina
-        min_mm = float(getattr(self.machine, "min_distance", 250.0))  # 250
+        min_mm = float(getattr(self.machine, "min_distance", 250.0))
         max_mm = float(getattr(self.machine, "max_cut_length", 4000.0))
         pos_mm = float(getattr(self.machine, "position_current", min_mm))
         pos_mm = max(min_mm, min(max_mm, pos_mm))
@@ -86,11 +86,11 @@ class HeadsView(QFrame):
         p.drawLine(int(left_margin), int(heads_y), int(left_margin + usable_w), int(heads_y))
 
         # Parametri grafici segmenti e carter
-        seg_len = 90         # lama più corta per non tagliare a 45°
-        seg_thick = 6
+        seg_len = 85          # lama più corta per non uscire
+        seg_thick = 5
         pivot_r = 6
-        carter_w = 44
-        carter_h = 92
+        carter_w = 36         # più stretto per rientrare a 45°
+        carter_h = 86
         carter_radius = 8
 
         # Posizione pivot SX: "0 mm" (fuori dalla scala a sinistra)
@@ -106,15 +106,15 @@ class HeadsView(QFrame):
             p.setPen(Qt.NoPen)
             p.drawEllipse(QPointF(x, heads_y), pivot_r, pivot_r)
 
-            # carter: rettangolo stondato che ruota attorno al pivot
+            # Carter: rettangolo stondato che ruota attorno al pivot
             p.save()
             p.translate(x, heads_y)
             rot = -angle_deg if outward_left else +angle_deg  # SX oraria (esterna), DX antioraria (esterna)
             p.rotate(rot)
 
             # Carter: base al pivot, sale verso l'alto
-            p.setBrush(QBrush(QColor("#22313f")))
-            p.setPen(QPen(QColor("#1b2836"), 1))
+            p.setBrush(QBrush(QColor("#34495e")))             # più visibile sullo sfondo
+            p.setPen(QPen(QColor("#95a5a6"), 1))              # bordo chiaro
             carter_rect = QRectF(-carter_w/2, -carter_h, carter_w, carter_h)
             p.drawRoundedRect(carter_rect, carter_radius, carter_radius)
 
