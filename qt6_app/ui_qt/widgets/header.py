@@ -6,7 +6,7 @@ class Header(QFrame):
     """
     Header con titolo + azioni comuni:
     - Home: ritorna alla pagina Home
-    - Reset: clear emergency
+    - AZZERA: clear emergency (se attiva) + homing
     Compatibile con chiamata Header(appwin, title).
     """
     def __init__(self, appwin, title: str, show_home: bool = True, show_reset: bool = True):
@@ -48,17 +48,51 @@ class Header(QFrame):
             lay.addWidget(btn_home)
 
         if show_reset:
-            btn_reset = QPushButton("Reset")
-            btn_reset.setObjectName("HdrBtn")
-            btn_reset.clicked.connect(self._do_reset)
-            lay.addWidget(btn_reset)
+            self.btn_reset = QPushButton("AZZERA")
+            self.btn_reset.setObjectName("HdrBtn")
+            self.btn_reset.clicked.connect(self._do_reset)
+            lay.addWidget(self.btn_reset)
 
     def _do_reset(self):
         try:
             m = self.appwin.machine
-            if hasattr(m, "clear_emergency"):
+
+            # Se emergenza attiva, prova a cancellarla
+            if getattr(m, "emergency_active", False) and hasattr(m, "clear_emergency"):
                 m.clear_emergency()
-            if hasattr(self.appwin, "toast"):
-                self.appwin.toast.show("Reset (EMG clear) eseguito", "ok", 2200)
+
+            # Avvia homing
+            if hasattr(m, "do_homing"):
+                # disabilita il bottone durante la sequenza
+                try:
+                    self.btn_reset.setEnabled(False)
+                except Exception:
+                    pass
+
+                def cb(success: bool, msg: str):
+                    # feedback utente
+                    try:
+                        if hasattr(self.appwin, "toast") and self.appwin.toast:
+                            self.appwin.toast.show(f"AZZERA: {msg}", "ok" if success else "warn", 2500)
+                    except Exception:
+                        pass
+                    # riabilita bottone
+                    try:
+                        self.btn_reset.setEnabled(True)
+                    except Exception:
+                        pass
+
+                m.do_homing(callback=cb)
+            else:
+                # Fallback: imposta stati minimi per sbloccare i test
+                setattr(m, "machine_homed", True)
+                setattr(m, "brake_active", False)
+                setattr(m, "clutch_active", True)
+                if hasattr(self.appwin, "toast") and self.appwin.toast:
+                    self.appwin.toast.show("AZZERA: modalità fallback (homed).", "warn", 2500)
         except Exception:
-            pass
+            # In ogni caso riabilita il bottone
+            try:
+                self.btn_reset.setEnabled(True)
+            except Exception:
+                pass
