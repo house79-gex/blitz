@@ -163,7 +163,11 @@ def main():
         machine_state = DummyMachineState()
 
     win = MainWindow(machine_state)
-    win.show()
+    # Avvio massimizzato
+    try:
+        win.showMaximized()
+    except Exception:
+        win.show()
     sys.exit(app.exec())
 
 if __name__ == "__main__":
