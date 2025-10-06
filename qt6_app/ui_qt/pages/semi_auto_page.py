@@ -11,10 +11,12 @@ import math
 class SemiAutoPage(QWidget):
     """
     Semi-Automatico:
-    - Colonna sinistra: Profilo (nome) -> Misura esterna, Quadro quote (ingrandito), Grafica teste (centrata, compatta)
-    - Colonna destra: Contapezzi, StatusPanel ristretto (~60% in meno), Inclinazioni (SX e DX) sulla stessa riga (blocchi affiancati)
-    - Teste: carter ruotato attorno al pivot, inclinazione verso l'esterno; SX fissa a 0mm, DX mappata su 250–4000
-    - Fuori quota: min consentita = min_distance − offset; se internal < (min−offset) mostra avviso modale, altrimenti posiziona a max(min, internal+offset)
+    - Riga alta: grafica teste (centrata, ampia) + StatusPanel stretto a destra
+    - Sotto: tutti gli input (profilo, spessore, misura, fuori quota), quadro quote grande,
+      inclinazioni sulla stessa riga (SX e DX, con etichette sopra), contapezzi, azioni
+    - Teste: SX fissa a 0mm, DX 250–4000; carter stondato + lama; inclinazione verso l'esterno
+    - Fuori quota: min consentita = min_distance − offset; se internal < (min−offset) => avviso modale.
+      Altrimenti posiziona a max(min_distance, internal + offset). Detrazioni considerate.
     """
     def __init__(self, appwin):
         super().__init__()
@@ -28,15 +30,26 @@ class SemiAutoPage(QWidget):
         root = QVBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(6)
         root.addWidget(Header(self.appwin, "SEMI-AUTOMATICO"))
 
-        body = QHBoxLayout(); body.setSpacing(8)
-        root.addLayout(body, 1)
+        # Riga superiore: grafica + status stretto
+        top = QHBoxLayout(); top.setSpacing(8)
+        root.addLayout(top, 1)
 
-        # ---------------- Colonna sinistra ----------------
-        left = QFrame(); body.addWidget(left, 3)
-        l = QVBoxLayout(left); l.setContentsMargins(6,6,6,6); l.setSpacing(10)
+        self.heads = HeadsView(self.machine, self)
+        top.addWidget(self.heads, 1)
+
+        self.status_panel = StatusPanel(self.machine, title="STATO")
+        try:
+            self.status_panel.setFixedWidth(180)     # restringi in orizzontale
+        except Exception:
+            pass
+        top.addWidget(self.status_panel, 0, alignment=Qt.AlignTop)
+
+        # Riga inferiore: input
+        bottom = QVBoxLayout(); bottom.setSpacing(8)
+        root.addLayout(bottom, 0)
 
         # Profilo e misura (misura sotto profilo)
-        meas_box = QFrame(); l.addWidget(meas_box)
+        meas_box = QFrame(); bottom.addWidget(meas_box)
         meas = QGridLayout(meas_box); meas.setHorizontalSpacing(8); meas.setVerticalSpacing(6)
         meas.addWidget(QLabel("Profilo e misura"), 0, 0, 1, 6, alignment=Qt.AlignLeft)
 
@@ -66,10 +79,10 @@ class SemiAutoPage(QWidget):
         meas.addWidget(self.spin_offset, 3, 3)
 
         # Quadro quote (ingrandito)
-        quotes = QGridLayout(); l.addLayout(quotes)
+        quotes = QGridLayout(); bottom.addLayout(quotes)
+        self.lbl_internal = QLabel("Quota interna: — mm")
         self.lbl_det_sx = QLabel("Detrazione SX: — mm")
         self.lbl_det_dx = QLabel("Detrazione DX: — mm")
-        self.lbl_internal = QLabel("Quota interna: — mm")
         for w in (self.lbl_internal, self.lbl_det_sx, self.lbl_det_dx):
             w.setStyleSheet("font-size: 16px; font-weight: 700;")
         quotes.addWidget(self.lbl_internal, 0, 0, 1, 2)
@@ -79,52 +92,9 @@ class SemiAutoPage(QWidget):
         self.lbl_note.setStyleSheet("color:#95a5a6;")
         quotes.addWidget(self.lbl_note, 2, 0, 1, 2)
 
-        # Grafica teste (centrata, più in alto)
-        self.heads = HeadsView(self.machine, left)
-        l.addWidget(self.heads, 3, alignment=Qt.AlignHCenter)
-
-        # Azioni
-        actions = QHBoxLayout(); l.addLayout(actions)
-        self.btn_start = QPushButton("START POSIZIONAMENTO")
-        self.btn_brake = QPushButton("SBLOCCA FRENO")
-        self.btn_start.clicked.connect(self._start_positioning)
-        self.btn_brake.clicked.connect(self._toggle_brake)
-        actions.addWidget(self.btn_start); actions.addWidget(self.btn_brake)
-        actions.addStretch(1)
-
-        # ---------------- Colonna destra ----------------
-        right = QFrame(); body.addWidget(right, 2)
-        r = QVBoxLayout(right); r.setContentsMargins(6,6,6,6); r.setSpacing(8)
-
-        # Contapezzi
-        cnt_box = QFrame(); r.addWidget(cnt_box)
-        cnt_box.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius:6px; }")
-        cnt = QGridLayout(cnt_box); cnt.setHorizontalSpacing(8); cnt.setVerticalSpacing(6)
-        title_cnt = QLabel("CONTAPEZZI (Semi-auto)")
-        title_cnt.setStyleSheet("font-weight:600;")
-        cnt.addWidget(title_cnt, 0, 0, 1, 4, alignment=Qt.AlignLeft)
-        cnt.addWidget(QLabel("Target:"), 1, 0)
-        self.spin_target = QSpinBox(); self.spin_target.setRange(0, 999999)
-        self.spin_target.setValue(int(getattr(self.machine, "semi_auto_target_pieces", 0)))
-        self.spin_target.valueChanged.connect(self._update_target_pieces)
-        cnt.addWidget(self.spin_target, 1, 1)
-        self.lbl_counted = QLabel("Contati: 0"); cnt.addWidget(self.lbl_counted, 2, 0)
-        self.lbl_remaining = QLabel("Rimanenti: 0"); cnt.addWidget(self.lbl_remaining, 2, 1)
-        self.btn_cnt_reset = QPushButton("Reset conteggio"); self.btn_cnt_reset.clicked.connect(self._reset_counter)
-        cnt.addWidget(self.btn_cnt_reset, 1, 3)
-
-        # Stato (ristretto del ~60%)
-        self.status_panel = StatusPanel(self.machine, title="STATO")
-        try:
-            self.status_panel.setMaximumHeight(90)
-        except Exception:
-            pass
-        r.addWidget(self.status_panel)
-
-        # Inclinazioni (stessa riga: due blocchi affiancati)
+        # Inclinazioni sulla stessa riga (due blocchi)
         ang_row = QHBoxLayout(); ang_row.setSpacing(16)
-
-        # SX block
+        # SX
         sx_block = QVBoxLayout()
         lbl_sx = QLabel("Testa SX (0–45°)"); lbl_sx.setStyleSheet("font-weight:600;")
         sx_row = QHBoxLayout()
@@ -137,8 +107,7 @@ class SemiAutoPage(QWidget):
         self.spin_sx.valueChanged.connect(self._apply_angles)
         sx_row.addWidget(self.btn_sx_45); sx_row.addWidget(self.btn_sx_0); sx_row.addWidget(self.spin_sx)
         sx_block.addWidget(lbl_sx); sx_block.addLayout(sx_row)
-
-        # DX block
+        # DX
         dx_block = QVBoxLayout()
         lbl_dx = QLabel("Testa DX (0–45°)"); lbl_dx.setStyleSheet("font-weight:600;")
         dx_row = QHBoxLayout()
@@ -151,13 +120,34 @@ class SemiAutoPage(QWidget):
         self.btn_dx_45.clicked.connect(lambda: self._set_angle_quick("dx", 45.0))
         dx_row.addWidget(self.spin_dx); dx_row.addWidget(self.btn_dx_0); dx_row.addWidget(self.btn_dx_45)
         dx_block.addWidget(lbl_dx); dx_block.addLayout(dx_row)
+        # compose
+        ang_row.addLayout(sx_block); ang_row.addLayout(dx_block); ang_row.addStretch(1)
+        bottom.addLayout(ang_row)
 
-        ang_row.addLayout(sx_block)
-        ang_row.addLayout(dx_block)
-        ang_row.addStretch(1)
-        r.addLayout(ang_row)
+        # Contapezzi
+        cnt_box = QFrame(); bottom.addWidget(cnt_box)
+        from PySide6.QtWidgets import QGridLayout as G
+        cnt = G(cnt_box); cnt.setHorizontalSpacing(8); cnt.setVerticalSpacing(6)
+        title_cnt = QLabel("CONTAPEZZI (Semi-auto)"); title_cnt.setStyleSheet("font-weight:600;")
+        cnt.addWidget(title_cnt, 0, 0, 1, 4, alignment=Qt.AlignLeft)
+        cnt.addWidget(QLabel("Target:"), 1, 0)
+        self.spin_target = QSpinBox(); self.spin_target.setRange(0, 999999)
+        self.spin_target.setValue(int(getattr(self.machine, "semi_auto_target_pieces", 0)))
+        self.spin_target.valueChanged.connect(self._update_target_pieces)
+        cnt.addWidget(self.spin_target, 1, 1)
+        self.lbl_counted = QLabel("Contati: 0"); cnt.addWidget(self.lbl_counted, 2, 0)
+        self.lbl_remaining = QLabel("Rimanenti: 0"); cnt.addWidget(self.lbl_remaining, 2, 1)
+        self.btn_cnt_reset = QPushButton("Reset conteggio"); self.btn_cnt_reset.clicked.connect(self._reset_counter)
+        cnt.addWidget(self.btn_cnt_reset, 1, 3)
 
-        r.addStretch(1)
+        # Azioni
+        actions = QHBoxLayout(); bottom.addLayout(actions)
+        self.btn_start = QPushButton("START POSIZIONAMENTO")
+        self.btn_brake = QPushButton("SBLOCCA FRENO")
+        self.btn_start.clicked.connect(self._start_positioning)
+        self.btn_brake.clicked.connect(self._toggle_brake)
+        actions.addWidget(self.btn_start); actions.addWidget(self.btn_brake)
+        actions.addStretch(1)
 
         self._start_poll()
 
@@ -246,7 +236,7 @@ class SemiAutoPage(QWidget):
         min_q = float(getattr(self.machine, "min_distance", 0.0))
         max_q = float(getattr(self.machine, "max_cut_length", 1e9))
         offset = float(self.spin_offset.value())
-        min_with_offset = max(0.0, min_q - offset)  # nuova minima con battuta
+        min_with_offset = max(0.0, min_q - offset)  # minima teor. con battuta
 
         # Verifica impossibilità anche con fuori quota
         if internal < min_with_offset:
@@ -260,11 +250,10 @@ class SemiAutoPage(QWidget):
 
         # Calcolo target di posizionamento
         if internal < min_q and self.chk_fuori_quota.isChecked():
-            adjusted = max(min_q, internal + offset)
+            adjusted = max(min_q, internal + offset)  # almeno la minima reale
             self._set_note(f"Fuori quota: posiziono a {adjusted:.1f} mm (target {internal:.1f} + offset {offset:.0f}).", error=False)
             target_for_move = adjusted
         else:
-            # quota in range standard
             target_for_move = internal
 
         if target_for_move > max_q:
