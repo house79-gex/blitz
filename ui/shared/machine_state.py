@@ -149,6 +149,19 @@ class MachineState:
     def is_emergency_contact_open(self):
         return self._emergency_contact_open
 
+    # Nuovi helper per EMG
+    def clear_emergency(self) -> bool:
+        self.set_emergency_input(False)
+        return True
+
+    def trigger_emergency(self) -> bool:
+        self.set_emergency_input(True)
+        return True
+
+    def toggle_emergency(self) -> bool:
+        self.set_emergency_input(not self._emergency_contact_open)
+        return True
+
     # ---------------- Pulsante fisico TESTA ----------------
     def set_head_button_input_enabled(self, enabled: bool):
         self._head_button_input_enabled = bool(enabled)
@@ -168,7 +181,7 @@ class MachineState:
     def reset(self):
         self.machine_homed = False
         self.emergency_active = False
-               self.brake_active = False
+        self.brake_active = False
         self.clutch_active = True
         self.positioning_active = False
         self.position_current = self.min_distance
