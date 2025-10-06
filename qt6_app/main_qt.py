@@ -4,7 +4,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtCore import Qt
 from ui_qt.theme import THEME, apply_global_stylesheet
 
-# Pagine: aggiunte progressivamente
+# Pagine
 try:
     from ui_qt.pages.home_page import HomePage
 except Exception:
@@ -14,15 +14,39 @@ except Exception:
             from PySide6.QtWidgets import QLabel, QVBoxLayout
             lay = QVBoxLayout(self)
             lay.addWidget(QLabel("Home (placeholder)"))
-        def on_show(self):
-            pass
+        def on_show(self): pass
 
 try:
     from ui_qt.pages.utility_page import UtilityPage
 except Exception:
     UtilityPage = None
 
-# Preferisci usare il MachineState reale (stessa API della versione Tk)
+try:
+    from ui_qt.pages.tipologie_page import TipologiePage
+except Exception:
+    TipologiePage = None
+
+try:
+    from ui_qt.pages.quote_vani_page import QuoteVaniPage
+except Exception:
+    QuoteVaniPage = None
+
+try:
+    from ui_qt.pages.semi_auto_page import SemiAutoPage
+except Exception:
+    SemiAutoPage = None
+
+try:
+    from ui_qt.pages.manuale_page import ManualePage
+except Exception:
+    ManualePage = None
+
+try:
+    from ui_qt.pages.automatico_page import AutomaticoPage
+except Exception:
+    AutomaticoPage = None
+
+# MachineState (stessa API del Tk)
 try:
     from ui.shared.machine_state import MachineState
 except Exception:
@@ -33,8 +57,7 @@ class DummyMachineState:
         self.machine_homed = False
         self.emergency_active = False
         self.work_queue = []
-    def rebuild_work_queue(self):
-        pass
+    def rebuild_work_queue(self): pass
 
 class MainWindow(QMainWindow):
     def __init__(self, machine_state):
@@ -48,8 +71,12 @@ class MainWindow(QMainWindow):
 
         # Registra le pagine disponibili
         self.pages["home"] = HomePage(self)
-        if UtilityPage is not None:
-            self.pages["utility"] = UtilityPage(self)
+        if UtilityPage is not None: self.pages["utility"] = UtilityPage(self)
+        if TipologiePage is not None: self.pages["tipologie"] = TipologiePage(self)
+        if QuoteVaniPage is not None: self.pages["quotevani"] = QuoteVaniPage(self)
+        if SemiAutoPage is not None: self.pages["semi"] = SemiAutoPage(self)
+        if ManualePage is not None: self.pages["manuale"] = ManualePage(self)
+        if AutomaticoPage is not None: self.pages["automatico"] = AutomaticoPage(self)
 
         for p in self.pages.values():
             self.stack.addWidget(p)
@@ -67,7 +94,6 @@ class MainWindow(QMainWindow):
         w = self.pages.get(key)
         if not w:
             return
-        # Parità con Tk: disabilita input TESTA di default, normalizza se esci da Manuale
         try:
             if hasattr(self.machine, "set_head_button_input_enabled"):
                 self.machine.set_head_button_input_enabled(False)
@@ -80,15 +106,12 @@ class MainWindow(QMainWindow):
             w.on_show()
 
     def _bind_hotkeys(self):
-        # F9/F10/F11 come in Tk (simulate head button / emergency toggle / cut pulse)
         QShortcut(QKeySequence("F9"), self, activated=self._simulate_head_button)
         QShortcut(QKeySequence("Shift+F9"), self, activated=self._simulate_head_button)
         QShortcut(QKeySequence("Ctrl+F9"), self, activated=self._simulate_head_button)
-
         QShortcut(QKeySequence("F10"), self, activated=self._simulate_emergency_toggle)
         QShortcut(QKeySequence("Shift+F10"), self, activated=self._simulate_emergency_toggle)
         QShortcut(QKeySequence("Ctrl+F10"), self, activated=self._simulate_emergency_toggle)
-
         QShortcut(QKeySequence("F11"), self, activated=self._simulate_cut_pulse)
 
     def _simulate_head_button(self):
