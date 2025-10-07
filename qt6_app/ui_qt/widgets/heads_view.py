@@ -6,7 +6,7 @@ import math
 class HeadsView(QFrame):
     """
     - Scala 0..max; min pos reale = min_distance (es. 250 mm)
-    - Blocco grafico centrato verticalmente nel frame
+    - Blocco grafico centrato verticalmente (dalla cima testa alla linea scala)
     - Testa SX a 0; DX mobile (>=min_distance)
     - Inclinazioni verso l'esterno (SX oraria, DX antioraria)
     - Carter “mezzo esagono” ancorato al segmento; gradi dentro il carter
@@ -47,22 +47,18 @@ class HeadsView(QFrame):
 
         # Safe area orizzontale: proiezione orizzontale massima a 45°
         max_theta = math.radians(45.0)
-        # Ampiezza massima dal pivot quando il carter è ruotato: body_w*cos + body_h*sin
         pad_x = int(body_w * math.cos(max_theta) + body_h * math.sin(max_theta)) + pivot_r + 8
         edge_pad = 16
         left_margin  = edge_pad + pad_x
         right_margin = edge_pad + pad_x
 
-        # Calcolo dell'altezza del blocco grafico per centrarlo verticalmente:
-        # top: altezza carter (ruota ma l'estensione verticale resta circa body_h)
-        # gap tra linea teste e scala: 76 px
-        # scala + tacche + label: ~24 px
+        # Vertical centering: considera dalla cima testa (top carter) alla linea scala
+        # Gap fisso tra linea teste e scala (geometria macchina, senza label scala)
         heads_to_scale_gap = 76
-        scale_block_h = 24
-        block_h = body_h + heads_to_scale_gap + scale_block_h
-        top_y = int((h - block_h) / 2) + body_h  # posiziona top del carter
-        base_y = top_y + heads_to_scale_gap
-        heads_y = top_y  # pivot sulla linea teste
+        block_h = body_h + heads_to_scale_gap  # top testa -> linea scala
+        center_y = h / 2.0
+        heads_y = int(center_y - (block_h / 2.0) + body_h)   # pivot (base carter)
+        base_y = heads_y + heads_to_scale_gap                 # linea scala
 
         # Mapper mm -> x pixel (scala 0..max)
         usable_w = max(50, w - left_margin - right_margin)
@@ -73,11 +69,11 @@ class HeadsView(QFrame):
             f = (mm - scale_min) / (scale_max - scale_min)
             return left_margin + f * usable_w
 
-        # Disegna scala base
+        # Scala base
         p.setPen(QPen(QColor("#3b4b5a"), 2))
         p.drawLine(int(left_margin), int(base_y), int(left_margin + usable_w), int(base_y))
 
-        # Tacche e etichette
+        # Tacche e etichette scala
         p.setPen(QPen(QColor("#5c738a"), 1))
         font = QFont(); font.setPointSizeF(max(8.0, self.font().pointSizeF() - 1))
         p.setFont(font)
@@ -88,11 +84,7 @@ class HeadsView(QFrame):
             tw = p.fontMetrics().horizontalAdvance(label)
             p.drawText(int(x - tw/2), int(base_y - 16), label)
 
-        # Nota range / minima
-        p.setPen(QPen(QColor("#9fb3c7")))
-        p.drawText(int(left_margin), int(base_y - heads_to_scale_gap - 20), f"0–{int(max_mm)} mm (min pos. {int(min_mm)})")
-
-        # Linea teste
+        # Linea teste (sopra scala)
         p.setPen(QPen(QColor("#4a6076"), 1))
         p.drawLine(int(left_margin), int(heads_y), int(left_margin + usable_w), int(heads_y))
 
