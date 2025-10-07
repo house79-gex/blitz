@@ -11,10 +11,10 @@ import math
 class SemiAutoPage(QWidget):
     """
     Layout:
-    - Alto: [Contapezzi 200x200 fisso] [Grafica teste centrata] [Status 200px verticale + Fuori quota sotto]
-    - Riga sotto grafica: [Profilo] [Inclinazione lame]
-    - Basso: Misura esterna + Quota posizionamento (grandi) sopra ai pulsanti Posizionamento / Sblocca
-    - Fuori quota: min consentita = min_distance − offset; se internal < (min−offset) => avviso. Target = max(min_distance, internal+offset).
+    - Riga alta: [Contapezzi 190x190] | [Cornice grafica centrale (larghezza=win−190−180, altezza dinamica)] | [Status 180px in larghezza (riempie in altezza) + sotto Fuori quota 180x160]
+    - Riga intermedia (sotto grafica): [Profilo/Spessore] | [Inclinazione teste]
+    - Riga bassa: [Misura esterna (input grande)] e [Quota posizionamento (display grande)] sopra ai pulsanti [Posizionamento] e [Sblocca]
+    - Fuori quota: min consentita = min_distance − offset; se internal < (min−offset) => avviso modale; target = max(min_distance, internal+offset)
     """
     def __init__(self, appwin):
         super().__init__()
@@ -32,9 +32,9 @@ class SemiAutoPage(QWidget):
         top = QHBoxLayout(); top.setSpacing(8)
         root.addLayout(top, 1)
 
-        # Contapezzi 200x200 fisso
+        # Contapezzi 190x190 fisso
         cnt_container = QFrame()
-        cnt_container.setFixedSize(QSize(200, 200))
+        cnt_container.setFixedSize(QSize(190, 190))
         cnt_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         cnt_container.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         cnt = QGridLayout(cnt_container); cnt.setHorizontalSpacing(6); cnt.setVerticalSpacing(4)
@@ -51,37 +51,48 @@ class SemiAutoPage(QWidget):
         cnt.addWidget(self.btn_cnt_reset, 4, 0, 1, 2)
         top.addWidget(cnt_container, 0, alignment=Qt.AlignTop | Qt.AlignLeft)
 
-        # Grafica teste (centro, in alto)
-        self.heads = HeadsView(self.machine, self)
-        top.addWidget(self.heads, 1, alignment=Qt.AlignTop | Qt.AlignHCenter)
+        # Cornice grafica centrale (si espande), riservando 250 px in basso
+        graph_frame = QFrame()
+        graph_frame.setObjectName("GraphFrame")
+        graph_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        graph_layout = QVBoxLayout(graph_frame); graph_layout.setContentsMargins(0,0,0,0); graph_layout.setSpacing(0)
 
-        # Status laterale (200 px) + Fuori quota sotto
-        right_side = QVBoxLayout(); right_side.setSpacing(6)
+        self.heads = HeadsView(self.machine, graph_frame)
+        self.heads.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        graph_layout.addWidget(self.heads, 1, alignment=Qt.AlignTop | Qt.AlignHCenter)
+
+        top.addWidget(graph_frame, 1)
+
+        # Lato destro: Status 180px (riempie in altezza) + Fuori quota 180x160 sotto
+        right_column = QVBoxLayout(); right_column.setSpacing(6)
+
         self.status_panel = StatusPanel(self.machine, title="STATO")
-        self.status_panel.setFixedWidth(200)
-        right_side.addWidget(self.status_panel, 1)
+        self.status_panel.setFixedWidth(180)
+        right_column.addWidget(self.status_panel, 1)  # riempie
 
         fq_box = QFrame()
+        fq_box.setFixedSize(QSize(180, 160))
         fq_box.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius:6px; }")
         fq = QGridLayout(fq_box); fq.setHorizontalSpacing(6); fq.setVerticalSpacing(4)
         from PySide6.QtWidgets import QCheckBox
-        self.chk_fuori_quota = QCheckBox("Fuori quota (battuta sup.)")
+        self.chk_fuori_quota = QCheckBox("Fuori quota")
         fq.addWidget(self.chk_fuori_quota, 0, 0, 1, 2)
         fq.addWidget(QLabel("Offset:"), 1, 0)
         self.spin_offset = QDoubleSpinBox(); self.spin_offset.setRange(0.0, 1000.0); self.spin_offset.setDecimals(0); self.spin_offset.setValue(120.0)
         self.spin_offset.setSuffix(" mm")
         fq.addWidget(self.spin_offset, 1, 1)
-        right_side.addWidget(fq_box, 0)
+        right_column.addWidget(fq_box, 0, alignment=Qt.AlignTop)
 
         right_container = QFrame()
-        rc_lay = QVBoxLayout(right_container); rc_lay.setContentsMargins(0,0,0,0); rc_lay.addLayout(right_side)
+        rc = QVBoxLayout(right_container); rc.setContentsMargins(0,0,0,0); rc.addLayout(right_column)
+        right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         top.addWidget(right_container, 0, alignment=Qt.AlignTop)
 
         # ----- Riga intermedia: profilo | inclinazione -----
         mid = QHBoxLayout(); mid.setSpacing(8)
         root.addLayout(mid, 0)
 
-        # Profilo (sinistra)
+        # Profilo/Spessore (sinistra)
         prof_box = QFrame()
         prof = QGridLayout(prof_box); prof.setHorizontalSpacing(8); prof.setVerticalSpacing(6)
         prof.addWidget(QLabel("Profilo"), 0, 0, 1, 4, alignment=Qt.AlignLeft)
@@ -105,7 +116,7 @@ class SemiAutoPage(QWidget):
         lbl_dx = QLabel("Testa DX (0–45°)"); lbl_dx.setStyleSheet("font-weight:600;")
         ang.addWidget(lbl_sx, 0, 0, alignment=Qt.AlignLeft)
         ang.addWidget(lbl_dx, 0, 3, alignment=Qt.AlignLeft)
-        # SX controls
+        # SX
         self.btn_sx_45 = QPushButton("45°"); self.btn_sx_45.setStyleSheet("background:#8e44ad; color:white;")
         self.btn_sx_45.clicked.connect(lambda: self._set_angle_quick("sx", 45.0))
         self.btn_sx_0  = QPushButton("0°");  self.btn_sx_0.setStyleSheet("background:#2c3e50; color:#ecf0f1;")
@@ -114,7 +125,7 @@ class SemiAutoPage(QWidget):
         self.spin_sx.setValue(float(getattr(self.machine, "left_head_angle", 0.0)))
         self.spin_sx.valueChanged.connect(self._apply_angles)
         ang.addWidget(self.btn_sx_45, 1, 0); ang.addWidget(self.btn_sx_0, 1, 1); ang.addWidget(self.spin_sx, 1, 2)
-        # DX controls
+        # DX
         self.spin_dx = QDoubleSpinBox(); self.spin_dx.setRange(0.0, 45.0); self.spin_dx.setDecimals(1)
         self.spin_dx.setValue(float(getattr(self.machine, "right_head_angle", 0.0)))
         self.spin_dx.valueChanged.connect(self._apply_angles)
@@ -125,20 +136,24 @@ class SemiAutoPage(QWidget):
         ang.addWidget(self.spin_dx, 1, 3); ang.addWidget(self.btn_dx_0, 1, 4); ang.addWidget(self.btn_dx_45, 1, 5)
         mid.addWidget(ang_box, 1)
 
-        # ----- Riga bassa: misure grandi + azioni -----
+        # ----- Riga bassa: misura/target grandi + azioni -----
         bottom = QVBoxLayout(); bottom.setSpacing(6)
+        bottom.setContentsMargins(0, 8, 0, 0)
         root.addLayout(bottom, 0)
 
-        # “Misura esterna” e “Quota posizionamento” evidenti
+        # Input misura esterna (grande) + quota posizionamento (display grande)
         big = QGridLayout(); bottom.addLayout(big)
-        self.lbl_ext_big = QLabel("Misura esterna: — mm")
+        big.addWidget(QLabel("Misura esterna (mm):"), 0, 0, alignment=Qt.AlignLeft)
+        self.ext_len = QLineEdit(); self.ext_len.setPlaceholderText("Es. 1000.0")
+        self.ext_len.setStyleSheet("font-size: 20px; font-weight: 700;")
+        self.ext_len.textChanged.connect(lambda _: self._recalc_displays())
+        big.addWidget(self.ext_len, 0, 1)
+
         self.lbl_target_big = QLabel("Quota posizionamento: — mm")
-        self.lbl_ext_big.setStyleSheet("font-size: 22px; font-weight: 800;")
         self.lbl_target_big.setStyleSheet("font-size: 22px; font-weight: 800;")
-        big.addWidget(self.lbl_ext_big, 0, 0, 1, 2)
         big.addWidget(self.lbl_target_big, 1, 0, 1, 2)
 
-        # Dettagli quote (normali) e nota
+        # Dettagli quote e nota
         quotes = QGridLayout(); bottom.addLayout(quotes)
         self.lbl_internal = QLabel("Quota interna: — mm")
         self.lbl_det_sx = QLabel("Detrazione SX: — mm")
@@ -197,21 +212,19 @@ class SemiAutoPage(QWidget):
             return default
 
     def _recalc_displays(self):
-        ext = self._parse_float(getattr(self, "ext_len", QLineEdit()).text() if hasattr(self, "ext_len") else "", 0.0)
-        th = self._parse_float(self.thickness.text(), 0.0)
+        ext = self._parse_float(self.ext_len.text(), 0.0)
+        th = self._parse_float(self.thickness.text(), 0.0)  # spessore 0 ok
         sx = float(self.spin_sx.value())
         dx = float(self.spin_dx.value())
         det_sx = th * math.tan(math.radians(sx)) if sx > 0 and th > 0 else 0.0
         det_dx = th * math.tan(math.radians(dx)) if dx > 0 and th > 0 else 0.0
         internal = ext - (det_sx + det_dx) if ext > 0 else None
 
+        self.lbl_internal.setText("Quota interna: — mm" if internal is None else f"Quota interna: {internal:.1f} mm")
         self.lbl_det_sx.setText(f"Detrazione SX: {det_sx:.1f} mm")
         self.lbl_det_dx.setText(f"Detrazione DX: {det_dx:.1f} mm")
-        self.lbl_internal.setText("Quota interna: — mm" if internal is None else f"Quota interna: {internal:.1f} mm")
 
-        # Anteprima “Misura esterna” e “Quota posizionamento”
-        self.lbl_ext_big.setText(f"Misura esterna: {ext:.1f} mm" if ext > 0 else "Misura esterna: — mm")
-
+        # Anteprima quota posizionamento considerando fuori quota
         target_preview = None
         if internal is not None:
             min_q = float(getattr(self.machine, "min_distance", 250.0))
@@ -224,8 +237,6 @@ class SemiAutoPage(QWidget):
                 target_preview = max(min_q, internal + offset)
             elif min_q <= internal <= max_q:
                 target_preview = internal
-            else:
-                target_preview = None
 
         self.lbl_target_big.setText(
             f"Quota posizionamento: {target_preview:.1f} mm" if target_preview is not None else "Quota posizionamento: — mm"
@@ -255,10 +266,7 @@ class SemiAutoPage(QWidget):
             self._set_note("Movimento in corso", error=True); return
 
         # Misura esterna
-        try:
-            ext = float(self.ext_len.text().replace(",", ".").strip())
-        except Exception:
-            ext = 0.0
+        ext = self._parse_float(self.ext_len.text(), 0.0)
         th = self._parse_float(self.thickness.text(), 0.0)
         if ext <= 0:
             self._set_note("MISURA ESTERNA NON VALIDA", error=True); return
@@ -274,7 +282,6 @@ class SemiAutoPage(QWidget):
         offset = float(self.spin_offset.value())
         min_with_offset = max(0.0, min_q - offset)
 
-        # Impossibilità anche con fuori quota
         if internal < min_with_offset:
             QMessageBox.warning(
                 self, "Fuori quota non possibile",
@@ -284,7 +291,6 @@ class SemiAutoPage(QWidget):
             self._set_note("Fuori quota impossibile con impostazioni attuali.", error=True)
             return
 
-        # Target posizionamento
         if internal < min_q and self.chk_fuori_quota.isChecked():
             target_for_move = max(min_q, internal + offset)
             self._set_note(f"Fuori quota: posiziono a {target_for_move:.1f} mm.", error=False)
