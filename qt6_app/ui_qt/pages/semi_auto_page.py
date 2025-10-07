@@ -15,7 +15,8 @@ DX_COLOR = "#9b59b6"
 class SemiAutoPage(QWidget):
     """
     Colonne:
-    - Sinistra (expanding): top [Contapezzi 190x190 | Grafica massimizzata], poi [Profilo/Spessore | Inclinazione], poi riga bassa [Btn SX | Quota (centro) | Btn DX]
+    - Sinistra (expanding): top [Contapezzi 190x190 | Grafica massimizzata], poi [Profilo/Spessore | Inclinazione],
+      poi riga bassa con: [Misura esterna (input grande)] sopra a [Btn SX | Quota (centro) | Btn DX]
     - Destra (fissa 180px): Status (riempie in altezza), sotto Fuori Quota 180x160
     """
     def __init__(self, appwin):
@@ -127,21 +128,33 @@ class SemiAutoPage(QWidget):
 
         left_col.addLayout(mid, 0)
 
-        # Riga bassa: pulsanti agli angoli e "Quota" al centro (live)
-        bottom = QHBoxLayout(); bottom.setSpacing(8)
+        # Riga bassa: misura (input grande) sopra, sotto i pulsanti angolari con "Quota" centrale
+        bottom_box = QVBoxLayout(); bottom_box.setSpacing(8)
+
+        # Misura esterna (input grande)
+        meas_row = QHBoxLayout()
+        meas_row.addWidget(QLabel("Misura esterna (mm):"), 0, alignment=Qt.AlignLeft)
+        self.ext_len = QLineEdit(); self.ext_len.setPlaceholderText("Es. 1000.0")
+        self.ext_len.setStyleSheet("font-size: 20px; font-weight: 700;")
+        meas_row.addWidget(self.ext_len, 1)
+        bottom_box.addLayout(meas_row)
+
+        # Pulsanti agli angoli + Quota live al centro
+        ctrl_row = QHBoxLayout()
         self.btn_brake = QPushButton("SBLOCCA FRENO")
         self.btn_brake.clicked.connect(self._toggle_brake)
-        bottom.addWidget(self.btn_brake, 0, alignment=Qt.AlignLeft)
+        ctrl_row.addWidget(self.btn_brake, 0, alignment=Qt.AlignLeft)
 
         self.lbl_target_big = QLabel("Quota: — mm")
         self.lbl_target_big.setStyleSheet("font-size: 22px; font-weight: 800;")
-        bottom.addWidget(self.lbl_target_big, 1, alignment=Qt.AlignHCenter | Qt.AlignVCenter)
+        ctrl_row.addWidget(self.lbl_target_big, 1, alignment=Qt.AlignHCenter | Qt.AlignVCenter)
 
         self.btn_start = QPushButton("START POSIZIONAMENTO")
         self.btn_start.clicked.connect(self._start_positioning)
-        bottom.addWidget(self.btn_start, 0, alignment=Qt.AlignRight)
+        ctrl_row.addWidget(self.btn_start, 0, alignment=Qt.AlignRight)
 
-        left_col.addLayout(bottom, 0)
+        bottom_box.addLayout(ctrl_row)
+        left_col.addLayout(bottom_box, 0)
 
         # Sidebar destra
         right_container = QFrame(); right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); right_container.setFixedWidth(180)
@@ -181,7 +194,7 @@ class SemiAutoPage(QWidget):
         dx = max(0.0, min(45.0, float(self.spin_dx.value())))
         if hasattr(self.machine, "set_head_angles"):
             ok = self.machine.set_head_angles(sx, dx)
-            if not ok: self._set_note("Angoli non applicati (EMG?)", error=True)
+            if not ok: pass
         else:
             setattr(self.machine, "left_head_angle", sx); setattr(self.machine, "right_head_angle", dx)
         self.heads.refresh()
@@ -189,10 +202,6 @@ class SemiAutoPage(QWidget):
     def _parse_float(self, s: str, default: float = 0.0) -> float:
         try: return float((s or "").replace(",", ".").strip())
         except Exception: return default
-
-    def _set_note(self, msg: str, error: bool=False):
-        # placeholder per eventuali note (non mostrato in UI per richieste attuali)
-        pass
 
     # ---- Contapezzi ----
     def _update_target_pieces(self, v: int):
@@ -208,7 +217,6 @@ class SemiAutoPage(QWidget):
         if getattr(self.machine, "brake_active", False): return
         if getattr(self.machine, "positioning_active", False): return
 
-        # Usa eventuale misura esterna e calcoli già presenti altrove se necessario
         if hasattr(self.machine, "move_to_length_and_angles"):
             sx = float(getattr(self.machine, "left_head_angle", 0.0) or 0.0)
             dx = float(getattr(self.machine, "right_head_angle", 0.0) or 0.0)
@@ -228,7 +236,7 @@ class SemiAutoPage(QWidget):
         try: self.heads.refresh()
         except Exception: pass
 
-        # Quota live (encoder -> fallback position_current)
+        # Quota live: encoder -> fallback a position_current
         pos = getattr(self.machine, "encoder_position", None)
         if pos is None:
             pos = getattr(self.machine, "position_current", None)
