@@ -5,19 +5,19 @@ from PySide6.QtCore import Qt, QRectF, QPointF
 class HeadsView(QFrame):
     """
     Visualizzazione teste:
-    - Scala quotata 0..max (linea base). La testa DX comunque non scende sotto 250 mm.
-    - Linea teste sopra la scala (alzata di +50 px).
-    - Testa SX: fissa a 0 mm (pivot a sinistra della scala).
-    - Testa DX: mobile su position_current (min 250 mm).
-    - Inclinazione verso l'esterno (SX oraria, DX antioraria).
-    - Il pallino è il fulcro (interno lame = quota posizionamento).
-    - Carter: “mezzo esagono” ancorato al lato interno (segmento).
+    - Scala 0..max (linea base); min posizionamento reale = min_distance (es. 250 mm)
+    - Linea teste sopra la scala (alzata di +50 px per evitare accavallamenti)
+    - Testa SX: fissa a 0 mm (pivot a sinistra su scala)
+    - Testa DX: mobile su position_current (vincolo min_distance)
+    - Inclinazione verso l'esterno (SX oraria, DX antioraria)
+    - Carter: “mezzo esagono” con lato interno coincidente con il segmento (lama)
+    - All’interno del carter è mostrato l’angolo in gradi; nessuna etichetta esterna
     """
     def __init__(self, machine, parent=None):
         super().__init__(parent)
         self.machine = machine
-        # Più alta per carter ingranditi (50% in più)
-        self.setMinimumHeight(340)
+        # Più alta per carter ingranditi (+50%)
+        self.setMinimumHeight(360)
         self.setMinimumWidth(560)
         self.setFrameShape(QFrame.StyledPanel)
         self.setFrameShadow(QFrame.Raised)
@@ -41,7 +41,7 @@ class HeadsView(QFrame):
         usable_w = max(50, w - left_margin - right_margin)
 
         # Dati macchina
-        min_mm = float(getattr(self.machine, "min_distance", 250.0))   # vincolo reale
+        min_mm = float(getattr(self.machine, "min_distance", 250.0))   # vincolo reale (es. 250)
         max_mm = float(getattr(self.machine, "max_cut_length", 4000.0))
         pos_mm = float(getattr(self.machine, "position_current", min_mm))
         pos_mm = max(min_mm, min(max_mm, pos_mm))
@@ -59,16 +59,15 @@ class HeadsView(QFrame):
             f = (mm - scale_min) / (scale_max - scale_min)
             return left_margin + f * usable_w
 
-        # ----- Disegna scala base 0..max -----
+        # ----- Scala base 0..max -----
         p.setPen(QPen(QColor("#3b4b5a"), 2))
         p.drawLine(int(left_margin), int(base_y), int(left_margin + usable_w), int(base_y))
 
-        # Tacche e label principali
+        # Tacche e label
         p.setPen(QPen(QColor("#5c738a"), 1))
         font = QFont()
         font.setPointSizeF(max(8.0, self.font().pointSizeF() - 1))
         p.setFont(font)
-
         ticks = [0, 1000, 2000, 3000, int(max_mm)]
         ticks = sorted(set([t for t in ticks if scale_min <= t <= scale_max]))
         for t in ticks:
@@ -78,27 +77,24 @@ class HeadsView(QFrame):
             tw = p.fontMetrics().horizontalAdvance(label)
             p.drawText(int(x - tw/2), int(base_y - 16), label)
 
-        # Etichetta range
-        rng = f"0–{int(max_mm)} mm (min pos. {int(min_mm)})"
         p.setPen(QPen(QColor("#9fb3c7")))
-        p.drawText(int(left_margin), int(top_margin + 4), rng)
+        p.drawText(int(left_margin), int(top_margin + 4), f"0–{int(max_mm)} mm (min pos. {int(min_mm)})")
 
         # ----- Linea teste (sopra scala) -----
         p.setPen(QPen(QColor("#4a6076"), 1))
         p.drawLine(int(left_margin), int(heads_y), int(left_margin + usable_w), int(heads_y))
 
-        # Parametri grafici segmenti e carter (50% più grandi)
-        seg_len = 120         # 80 * 1.5
+        # Parametri grafici segmenti e carter (+50%)
+        seg_len = 120
         seg_thick = 6
         pivot_r = 7
-        body_w = 54           # 36 * 1.5
-        body_h = 129          # 86 * 1.5
-        bevel  = 15           # 10 * 1.5
+        body_w = 54
+        body_h = 129
+        bevel  = 15
 
-        # Pivot SX: esattamente a 0 mm
-        x_sx = x_at(0.0)
-        # Pivot DX: quota attuale (min 250)
-        x_dx = x_at(pos_mm)
+        # Pivot SX e DX
+        x_sx = x_at(0.0)        # SX a 0 mm
+        x_dx = x_at(pos_mm)     # DX a quota attuale (>= min_mm)
 
         def draw_head(x: float, angle_deg: float, outward_left: bool, color: str):
             # pivot (pallino) sulla linea teste
@@ -123,12 +119,12 @@ class HeadsView(QFrame):
                 ]
             else:
                 pts = [
-                    QPointF(0, 0),                             # inner-bottom
-                    QPointF(body_w - bevel, 0),                # bottom edge
-                    QPointF(body_w, -bevel),                   # lower bevel 45°
-                    QPointF(body_w, -(body_h - bevel)),        # outer side
-                    QPointF(body_w - bevel, -body_h),          # upper bevel 45°
-                    QPointF(0, -body_h),                       # inner-top
+                    QPointF(0, 0),
+                    QPointF(body_w - bevel, 0),
+                    QPointF(body_w, -bevel),
+                    QPointF(body_w, -(body_h - bevel)),
+                    QPointF(body_w - bevel, -body_h),
+                    QPointF(0, -body_h),
                 ]
             poly = QPolygonF(pts)
             p.setBrush(QBrush(QColor("#34495e")))
@@ -141,9 +137,11 @@ class HeadsView(QFrame):
             p.setPen(pen)
             p.drawLine(0, 0, 0, -seg_len)
 
-            # Gradi all'interno del carter
+            # Gradi all'interno del carter (centrati circa a metà)
             p.setPen(QPen(QColor("#ecf0f1")))
-            p.drawText(int(-body_w/2 + 4 if outward_left else 4), int(-body_h/2), f"{angle_deg:.0f}°")
+            text_x = -body_w/2 + 6 if outward_left else 6
+            text_y = -body_h/2 + 6
+            p.drawText(int(text_x), int(text_y), f"{angle_deg:.0f}°")
 
             p.restore()
 
