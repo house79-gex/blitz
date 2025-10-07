@@ -14,10 +14,9 @@ DX_COLOR = "#9b59b6"
 
 class SemiAutoPage(QWidget):
     """
-    Layout a due colonne:
-    - Colonna sinistra (expanding): in alto Contapezzi 190x190 + Cornice Grafica che massimizza tra Contapezzi e Status; sotto Profilo/Spessore | Inclinazione; in basso Misura (input grande) + Quota posizionamento live + Azioni
-    - Colonna destra (fissa 180px): Status che riempie l'altezza, e sotto Fuori quota 180x160
-    - Quota posizionamento live = encoder_position (come nello StatusPanel)
+    Layout 2 colonne:
+    - Sinistra (expanding): top [Contapezzi 190x190 | Grafica (massimizzata tra contapezzi e status)], poi [Profilo/Spessore | Inclinazione], poi [Misura (input grande) | Quota live | Azioni]
+    - Destra (fissa 180px): Status che riempie in altezza, sotto Fuori Quota 180x160
     """
     def __init__(self, appwin):
         super().__init__()
@@ -28,55 +27,18 @@ class SemiAutoPage(QWidget):
         self._build()
 
     def _build(self):
-        # Offset dai bordi schermo
-        root = QHBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(8)
+        root = QHBoxLayout(self); root.setContentsMargins(16,16,16,16); root.setSpacing(8)
 
-        # ----- Sidebar destra: Status (riempie) + Fuori quota -----
-        right_container = QFrame()
-        right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        right_container.setFixedWidth(180)
-        right_col = QVBoxLayout(right_container)
-        right_col.setContentsMargins(0, 0, 0, 0)
-        right_col.setSpacing(6)
+        # Colonna sinistra
+        left_container = QFrame(); left_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        left_col = QVBoxLayout(left_container); left_col.setContentsMargins(0,0,0,0); left_col.setSpacing(8)
 
-        # Header in alto (a tutta larghezza finestra)
         header = Header(self.appwin, "SEMI-AUTOMATICO")
-        header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        left_col.addWidget(header, 0)
 
-        # Creiamo una colonna sinistra che conterrà header + contenuti; la sidebar sta a destra
-        left_column = QVBoxLayout()
-        left_column.setContentsMargins(0, 0, 0, 0)
-        left_column.setSpacing(8)
-        left_column.addWidget(header)
+        # Riga alta: contapezzi + grafica
+        top_left = QHBoxLayout(); top_left.setSpacing(8); top_left.setContentsMargins(0,0,0,0)
 
-        # Status (riempie tutta l'altezza meno il fuori quota)
-        self.status_panel = StatusPanel(self.machine, title="STATO")
-        self.status_panel.setFixedWidth(180)
-        self.status_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        right_col.addWidget(self.status_panel, 1)
-
-        # Fuori quota 180x160, sotto lo status
-        fq_box = QFrame()
-        fq_box.setFixedSize(QSize(180, 160))
-        fq_box.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius:6px; }")
-        fq = QGridLayout(fq_box); fq.setHorizontalSpacing(6); fq.setVerticalSpacing(4)
-        self.chk_fuori_quota = QCheckBox("Fuori quota")
-        fq.addWidget(self.chk_fuori_quota, 0, 0, 1, 2)
-        fq.addWidget(QLabel("Offset:"), 1, 0)
-        self.spin_offset = QDoubleSpinBox(); self.spin_offset.setRange(0.0, 1000.0); self.spin_offset.setDecimals(0); self.spin_offset.setValue(120.0)
-        self.spin_offset.setSuffix(" mm")
-        fq.addWidget(self.spin_offset, 1, 1)
-        right_col.addWidget(fq_box, 0, alignment=Qt.AlignTop)
-
-        # ----- Contenuti colonna sinistra -----
-        # Riga alta sinistra: contapezzi + cornice grafica (maximizzata tra contapezzi e status)
-        top_left = QHBoxLayout()
-        top_left.setContentsMargins(0, 0, 0, 0)
-        top_left.setSpacing(8)
-
-        # Contapezzi 190x190
         cnt_container = QFrame()
         cnt_container.setFixedSize(QSize(190, 190))
         cnt_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -95,24 +57,26 @@ class SemiAutoPage(QWidget):
         cnt.addWidget(self.btn_cnt_reset, 4, 0, 1, 2)
         top_left.addWidget(cnt_container, 0, alignment=Qt.AlignTop | Qt.AlignLeft)
 
-        # Cornice grafica centrale (massimizzata tra contapezzi e status)
         graph_frame = QFrame()
         graph_frame.setObjectName("GraphFrame")
         graph_frame.setStyleSheet("QFrame#GraphFrame { border: 1px solid #3b4b5a; border-radius: 8px; }")
         graph_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        graph_layout = QVBoxLayout(graph_frame); graph_layout.setContentsMargins(8, 8, 8, 8); graph_layout.setSpacing(0)
+        graph_layout = QVBoxLayout(graph_frame); graph_layout.setContentsMargins(0,0,0,0); graph_layout.setSpacing(0)
 
         self.heads = HeadsView(self.machine, graph_frame)
         self.heads.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        graph_layout.addWidget(self.heads, 1, alignment=Qt.AlignTop | Qt.AlignHCenter)
+        graph_layout.addWidget(self.heads)  # niente alignment per riempire
         top_left.addWidget(graph_frame, 1)
 
-        left_column.addLayout(top_left, 1)
+        # Stretch esplicito: 0 per contapezzi, 1 per grafica
+        top_left.setStretch(0, 0)
+        top_left.setStretch(1, 1)
 
-        # Riga intermedia: Profilo/Spessore | Inclinazione (larghezza = colonna sinistra; non invade la sidebar)
+        left_col.addLayout(top_left, 1)
+
+        # Riga intermedia: Profilo/Spessore | Inclinazione
         mid = QHBoxLayout(); mid.setSpacing(8)
 
-        # Profilo/Spessore
         prof_box = QFrame()
         prof_box.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         prof = QGridLayout(prof_box); prof.setHorizontalSpacing(8); prof.setVerticalSpacing(6)
@@ -123,21 +87,18 @@ class SemiAutoPage(QWidget):
         self.cb_profilo.setCurrentText("Nessuno")
         self.cb_profilo.currentTextChanged.connect(self._on_profile_changed)
         prof.addWidget(self.cb_profilo, 1, 1, 1, 3)
-
         prof.addWidget(QLabel("Spessore (mm):"), 2, 0)
         self.thickness = QLineEdit(); self.thickness.setPlaceholderText("0.0"); self.thickness.setText("0")
         self.thickness.textChanged.connect(lambda _: self._recalc_displays())
         prof.addWidget(self.thickness, 2, 1)
         mid.addWidget(prof_box, 1)
 
-        # Inclinazione con cornici SX/DX colorate
         ang_container = QFrame()
         ang_container.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         ang = QGridLayout(ang_container); ang.setHorizontalSpacing(8); ang.setVerticalSpacing(6)
 
-        sx_block = QFrame()
-        sx_block.setStyleSheet(f"QFrame {{ border:2px solid {SX_COLOR}; border-radius:6px; }}")
-        sx_lay = QVBoxLayout(sx_block); sx_lay.setContentsMargins(8, 8, 8, 8)
+        sx_block = QFrame(); sx_block.setStyleSheet(f"QFrame {{ border:2px solid {SX_COLOR}; border-radius:6px; }}")
+        sx_lay = QVBoxLayout(sx_block); sx_lay.setContentsMargins(8,8,8,8)
         sx_lay.addWidget(QLabel("Testa SX (0–45°)"))
         sx_row = QHBoxLayout()
         self.btn_sx_45 = QPushButton("45°"); self.btn_sx_45.setStyleSheet("background:#8e44ad; color:white;")
@@ -150,9 +111,8 @@ class SemiAutoPage(QWidget):
         sx_row.addWidget(self.btn_sx_45); sx_row.addWidget(self.btn_sx_0); sx_row.addWidget(self.spin_sx)
         sx_lay.addLayout(sx_row)
 
-        dx_block = QFrame()
-        dx_block.setStyleSheet(f"QFrame {{ border:2px solid {DX_COLOR}; border-radius:6px; }}")
-        dx_lay = QVBoxLayout(dx_block); dx_lay.setContentsMargins(8, 8, 8, 8)
+        dx_block = QFrame(); dx_block.setStyleSheet(f"QFrame {{ border:2px solid {DX_COLOR}; border-radius:6px; }}")
+        dx_lay = QVBoxLayout(dx_block); dx_lay.setContentsMargins(8,8,8,8)
         dx_lay.addWidget(QLabel("Testa DX (0–45°)"))
         dx_row = QHBoxLayout()
         self.spin_dx = QDoubleSpinBox(); self.spin_dx.setRange(0.0, 45.0); self.spin_dx.setDecimals(1)
@@ -169,9 +129,9 @@ class SemiAutoPage(QWidget):
         ang.addWidget(dx_block, 0, 1)
         mid.addWidget(ang_container, 1)
 
-        left_column.addLayout(mid, 0)
+        left_col.addLayout(mid, 0)
 
-        # Riga bassa: misura/target live + azioni
+        # Riga bassa: misura / quota live / azioni
         bottom = QVBoxLayout(); bottom.setSpacing(8)
         big = QGridLayout(); bottom.addLayout(big)
         big.addWidget(QLabel("Misura esterna (mm):"), 0, 0, alignment=Qt.AlignLeft)
@@ -202,15 +162,28 @@ class SemiAutoPage(QWidget):
         actions.addWidget(self.btn_start); actions.addWidget(self.btn_brake)
         actions.addStretch(1)
 
-        left_column.addLayout(bottom, 0)
+        left_col.addLayout(bottom, 0)
 
-        # Monta colonna sinistra e sidebar destra
-        left_container = QFrame()
-        left_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        left_container.setLayout(left_column)
+        # Sidebar destra
+        right_container = QFrame(); right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); right_container.setFixedWidth(180)
+        right_col = QVBoxLayout(right_container); right_col.setContentsMargins(0,0,0,0); right_col.setSpacing(6)
+        self.status_panel = StatusPanel(self.machine, title="STATO")
+        self.status_panel.setFixedWidth(180)
+        self.status_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        right_col.addWidget(self.status_panel, 1)
+        fq_box = QFrame(); fq_box.setFixedSize(QSize(180, 160)); fq_box.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius:6px; }")
+        fq = QGridLayout(fq_box); fq.setHorizontalSpacing(6); fq.setVerticalSpacing(4)
+        self.chk_fuori_quota = QCheckBox("Fuori quota"); fq.addWidget(self.chk_fuori_quota, 0, 0, 1, 2)
+        fq.addWidget(QLabel("Offset:"), 1, 0)
+        self.spin_offset = QDoubleSpinBox(); self.spin_offset.setRange(0.0, 1000.0); self.spin_offset.setDecimals(0); self.spin_offset.setValue(120.0); self.spin_offset.setSuffix(" mm")
+        fq.addWidget(self.spin_offset, 1, 1)
+        right_col.addWidget(fq_box, 0, alignment=Qt.AlignTop)
 
-        root.addWidget(left_container, 1)   # colonna sinistra (espande)
-        root.addWidget(right_container, 0)  # sidebar destra (fissa)
+        # Monta
+        root.addWidget(left_container, 1)
+        root.addWidget(right_container, 0)
+
+        self._start_poll()
 
     # ---- Profili ----
     def _on_profile_changed(self, name: str):
@@ -222,10 +195,8 @@ class SemiAutoPage(QWidget):
 
     # ---- Helpers ----
     def _set_angle_quick(self, side: str, val: float):
-        if side == "sx":
-            self.spin_sx.setValue(float(val))
-        else:
-            self.spin_dx.setValue(float(val))
+        if side == "sx": self.spin_sx.setValue(float(val))
+        else:            self.spin_dx.setValue(float(val))
         self._apply_angles()
 
     def _apply_angles(self):
@@ -233,29 +204,22 @@ class SemiAutoPage(QWidget):
         dx = max(0.0, min(45.0, float(self.spin_dx.value())))
         if hasattr(self.machine, "set_head_angles"):
             ok = self.machine.set_head_angles(sx, dx)
-            if not ok:
-                self._set_note("Angoli non applicati (EMG?)", error=True)
+            if not ok: self._set_note("Angoli non applicati (EMG?)", error=True)
         else:
-            setattr(self.machine, "left_head_angle", sx)
-            setattr(self.machine, "right_head_angle", dx)
-        self.heads.refresh()
-        self._recalc_displays()
+            setattr(self.machine, "left_head_angle", sx); setattr(self.machine, "right_head_angle", dx)
+        self.heads.refresh(); self._recalc_displays()
 
     def _parse_float(self, s: str, default: float = 0.0) -> float:
-        try:
-            return float((s or "").replace(",", ".").strip())
-        except Exception:
-            return default
+        try: return float((s or "").replace(",", ".").strip())
+        except Exception: return default
 
     def _recalc_displays(self):
         ext = self._parse_float(self.ext_len.text(), 0.0)
-        th = self._parse_float(self.thickness.text(), 0.0)
-        sx = float(self.spin_sx.value())
-        dx = float(self.spin_dx.value())
+        th  = self._parse_float(self.thickness.text(), 0.0)
+        sx  = float(self.spin_sx.value()); dx = float(self.spin_dx.value())
         det_sx = th * math.tan(math.radians(sx)) if sx > 0 and th > 0 else 0.0
         det_dx = th * math.tan(math.radians(dx)) if dx > 0 and th > 0 else 0.0
         internal = ext - (det_sx + det_dx) if ext > 0 else None
-
         self.lbl_internal.setText("Quota interna: — mm" if internal is None else f"Quota interna: {internal:.1f} mm")
         self.lbl_det_sx.setText(f"Detrazione SX: {det_sx:.1f} mm")
         self.lbl_det_dx.setText(f"Detrazione DX: {det_dx:.1f} mm")
@@ -274,19 +238,13 @@ class SemiAutoPage(QWidget):
 
     # ---- Azioni ----
     def _start_positioning(self):
-        if getattr(self.machine, "emergency_active", False):
-            self._set_note("EMERGENZA ATTIVA: ESEGUI AZZERA", error=True); return
-        if not getattr(self.machine, "machine_homed", False):
-            self._set_note("ESEGUI AZZERA (HOMING)", error=True); return
-        if getattr(self.machine, "brake_active", False):
-            self._set_note("SBLOCCA FRENO", error=True); return
-        if getattr(self.machine, "positioning_active", False):
-            self._set_note("Movimento in corso", error=True); return
+        if getattr(self.machine, "emergency_active", False): self._set_note("EMERGENZA ATTIVA: ESEGUI AZZERA", True); return
+        if not getattr(self.machine, "machine_homed", False): self._set_note("ESEGUI AZZERA (HOMING)", True); return
+        if getattr(self.machine, "brake_active", False): self._set_note("SBLOCCA FRENO", True); return
+        if getattr(self.machine, "positioning_active", False): self._set_note("Movimento in corso", True); return
 
-        ext = self._parse_float(self.ext_len.text(), 0.0)
-        th = self._parse_float(self.thickness.text(), 0.0)
-        if ext <= 0:
-            self._set_note("MISURA ESTERNA NON VALIDA", error=True); return
+        ext = self._parse_float(self.ext_len.text(), 0.0); th = self._parse_float(self.thickness.text(), 0.0)
+        if ext <= 0: self._set_note("MISURA ESTERNA NON VALIDA", True); return
 
         sx = float(self.spin_sx.value()); dx = float(self.spin_dx.value())
         det_sx = th * math.tan(math.radians(sx)) if sx > 0 and th > 0 else 0.0
@@ -295,66 +253,49 @@ class SemiAutoPage(QWidget):
 
         min_q = float(getattr(self.machine, "min_distance", 250.0))
         max_q = float(getattr(self.machine, "max_cut_length", 4000.0))
-        offset = float(self.spin_offset.value())
+        offset = self._parse_float(self.spin_offset.value(), 120.0)
         min_with_offset = max(0.0, min_q - offset)
 
         if internal < min_with_offset:
-            QMessageBox.warning(
-                self, "Fuori quota non possibile",
-                f"La quota interna {internal:.1f} mm è inferiore alla minima {min_with_offset:.1f} mm "
-                f"(min {min_q:.0f} − offset {offset:.0f})."
-            )
-            self._set_note("Fuori quota impossibile con impostazioni attuali.", error=True)
-            return
+            QMessageBox.warning(self, "Fuori quota non possibile", f"Quota interna {internal:.1f} < minima {min_with_offset:.1f} (min {min_q:.0f} − offset {offset:.0f}).")
+            self._set_note("Fuori quota impossibile con impostazioni attuali.", True); return
 
         if internal < min_q and self.chk_fuori_quota.isChecked():
-            target_for_move = max(min_q, internal + offset)
-            self._set_note(f"Fuori quota: posiziono a {target_for_move:.1f} mm.", error=False)
+            target_for_move = max(min_q, internal + offset); self._set_note(f"Fuori quota: posiziono a {target_for_move:.1f} mm.", False)
         else:
             target_for_move = internal
 
-        if target_for_move > max_q:
-            self._set_note(f"QUOTA MAX {int(max_q)}MM", error=True); return
+        if target_for_move > max_q: self._set_note(f"QUOTA MAX {int(max_q)}MM", True); return
 
         if hasattr(self.machine, "move_to_length_and_angles"):
-            self.machine.move_to_length_and_angles(
-                length_mm=target_for_move, ang_sx=sx, ang_dx=dx,
-                done_cb=lambda ok, msg: self._after_move(ok, msg)
-            )
+            self.machine.move_to_length_and_angles(length_mm=target_for_move, ang_sx=sx, ang_dx=dx, done_cb=lambda ok, msg: self._after_move(ok, msg))
         self._update_buttons()
 
     def _after_move(self, ok: bool, msg: str):
-        self._set_note("POSIZIONAMENTO OK" if ok else (msg or "Interrotto"), error=not ok)
+        self._set_note("POSIZIONAMENTO OK" if ok else (msg or "Interrotto"), not ok)
         self._update_buttons()
 
     def _toggle_brake(self):
         if hasattr(self.machine, "toggle_brake"):
             ok = self.machine.toggle_brake()
-            if not ok:
-                self._set_note("Operazione non consentita", error=True)
+            if not ok: self._set_note("Operazione non consentita", True)
         self._update_buttons()
 
     # ---- Poll / Stato / Quota live ----
     def _start_poll(self):
-        self._poll = QTimer(self)
-        self._poll.setInterval(200)
-        self._poll.timeout.connect(self._tick)
-        self._poll.start()
-        self._recalc_displays()
-        self._update_buttons()
+        self._poll = QTimer(self); self._poll.setInterval(200); self._poll.timeout.connect(self._tick); self._poll.start()
+        self._recalc_displays(); self._update_buttons()
 
     def _tick(self):
-        try:
-            self.status_panel.refresh()
-        except Exception:
-            pass
-        try:
-            self.heads.refresh()
-        except Exception:
-            pass
+        try: self.status_panel.refresh()
+        except Exception: pass
+        try: self.heads.refresh()
+        except Exception: pass
 
-        # Quota posizionamento live (encoder) come nello StatusPanel
+        # Quota posizionamento live: encoder -> fallback a position_current
         pos = getattr(self.machine, "encoder_position", None)
+        if pos is None:
+            pos = getattr(self.machine, "position_current", None)
         try:
             self.lbl_target_big.setText(f"Quota posizionamento: {float(pos):.1f} mm" if pos is not None else "Quota posizionamento: — mm")
         except Exception:
@@ -373,12 +314,9 @@ class SemiAutoPage(QWidget):
         emg = bool(getattr(self.machine, "emergency_active", False))
         brk = bool(getattr(self.machine, "brake_active", False))
         mov = bool(getattr(self.machine, "positioning_active", False))
-        enable_start = (homed and not emg and not brk and not mov)
-        self.btn_start.setEnabled(enable_start)
-        enable_brake = (homed and not mov and not emg)
-        self.btn_brake.setEnabled(enable_brake)
+        self.btn_start.setEnabled(homed and not emg and not brk and not mov)
+        self.btn_brake.setEnabled(homed and not mov and not emg)
         self.btn_brake.setText("SBLOCCA FRENO" if brk else "BLOCCA FRENO")
 
     def on_show(self):
-        self._recalc_displays()
-        self._update_buttons()
+        self._recalc_displays(); self._update_buttons()
