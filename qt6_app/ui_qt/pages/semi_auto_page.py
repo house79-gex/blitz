@@ -1,21 +1,19 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QSpinBox, QGridLayout, QDoubleSpinBox, QLineEdit, QComboBox,
-    QMessageBox, QSizePolicy, QCheckBox, QAbstractSpinBox
+    QMessageBox, QSizePolicy, QCheckBox, QAbstractSpinBox, QToolButton
 )
 from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtGui import QIcon
 from ui_qt.widgets.header import Header
-    # noqa
 from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.widgets.heads_view import HeadsView
+from ui_qt.dialogs.profile_edit_dialog import ProfileEditDialog
+from ui_qt.services.profiles_store import ProfilesStore
 import math
-import json
-from pathlib import Path
 
 SX_COLOR = "#2980b9"
 DX_COLOR = "#9b59b6"
-
-PROFILES_FILE = Path(__file__).resolve().parents[2] / "data" / "profili.json"
 
 class SemiAutoPage(QWidget):
     """
@@ -23,37 +21,33 @@ class SemiAutoPage(QWidget):
     - Sinistra (expanding): top [Contapezzi 190x190 | Grafica massimizzata], poi [Profilo/Spessore | Inclinazione],
       poi riga bassa con: [Misura esterna (input grande)] sopra a [Btn SX | Quota (centro) | Btn DX]
     - Destra (fissa 180px): Status (riempie in altezza), sotto Fuori Quota 180x160
+    - START calcola la quota target (detrazioni + fuori quota) e avvia il movimento; BLOCCA/SBLOCCA freno funzionano
     """
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
         self.machine = appwin.machine
         self._poll = None
-        self._profiles = self._load_profiles() or {"Nessuno": 0.0}
+
+        # Store profili/spessori (SQLite condiviso)
+        self.profiles_store = ProfilesStore()
+
+        # Cache profili in memoria: dict nome -> thickness
+        self._profiles = self._load_profiles_dict()
+
         self._build()
 
-    # ---------- storage profili ----------
-    def _load_profiles(self):
+    def _load_profiles_dict(self):
+        profs = {}
         try:
-            if PROFILES_FILE.exists():
-                with open(PROFILES_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                # normalizza in dict nome -> float spessore
-                return {str(k): float(v) for k, v in data.items()}
+            for row in self.profiles_store.list_profiles():
+                profs[row["name"]] = float(row["thickness"] or 0.0)
+            if not profs:
+                profs = {"Nessuno": 0.0}
         except Exception:
-            pass
-        return None
+            profs = {"Nessuno": 0.0}
+        return profs
 
-    def _save_profiles(self):
-        try:
-            PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(PROFILES_FILE, "w", encoding="utf-8") as f:
-                json.dump(self._profiles, f, ensure_ascii=False, indent=2)
-            QMessageBox.information(self, "Profili", "Profilo salvato.")
-        except Exception as e:
-            QMessageBox.warning(self, "Profili", f"Errore salvataggio: {e!s}")
-
-    # ---------- UI ----------
     def _build(self):
         root = QHBoxLayout(self); root.setContentsMargins(16,16,16,16); root.setSpacing(8)
 
@@ -67,6 +61,7 @@ class SemiAutoPage(QWidget):
         # Riga alta: contapezzi + grafica massimizzata
         top_left = QHBoxLayout(); top_left.setSpacing(8); top_left.setContentsMargins(0,0,0,0)
 
+        # Contapezzi 190x190
         cnt_container = QFrame()
         cnt_container.setFixedSize(QSize(190, 190))
         cnt_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -76,6 +71,7 @@ class SemiAutoPage(QWidget):
         cnt.addWidget(title_cnt, 0, 0, 1, 2, alignment=Qt.AlignLeft)
         cnt.addWidget(QLabel("Target:"), 1, 0)
         self.spin_target = QSpinBox(); self.spin_target.setRange(0, 999999)
+        self.spin_target.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.spin_target.setValue(int(getattr(self.machine, "semi_auto_target_pieces", 0)))
         self.spin_target.valueChanged.connect(self._update_target_pieces)
         cnt.addWidget(self.spin_target, 1, 1)
@@ -85,6 +81,7 @@ class SemiAutoPage(QWidget):
         cnt.addWidget(self.btn_cnt_reset, 4, 0, 1, 2)
         top_left.addWidget(cnt_container, 0, alignment=Qt.AlignTop | Qt.AlignLeft)
 
+        # Cornice grafica
         graph_frame = QFrame()
         graph_frame.setObjectName("GraphFrame")
         graph_frame.setStyleSheet("QFrame#GraphFrame { border: 1px solid #3b4b5a; border-radius: 8px; }")
@@ -103,41 +100,42 @@ class SemiAutoPage(QWidget):
         # Riga intermedia: Profilo/Spessore | Inclinazione
         mid = QHBoxLayout(); mid.setSpacing(8)
 
+        # Profilo/Spessore + icona salvataggio (modal)
         prof_box = QFrame(); prof_box.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         prof = QGridLayout(prof_box); prof.setHorizontalSpacing(8); prof.setVerticalSpacing(6)
         prof.addWidget(QLabel("Profilo"), 0, 0, 1, 5, alignment=Qt.AlignLeft)
         prof.addWidget(QLabel("Nome:"), 1, 0)
         self.cb_profilo = QComboBox(); self.cb_profilo.setEditable(True)
-        # popola profili
-        for name in self._profiles.keys():
+        for name, th in self._profiles.items():
             self.cb_profilo.addItem(name)
         self.cb_profilo.setCurrentText(next(iter(self._profiles.keys())))
         self.cb_profilo.currentTextChanged.connect(self._on_profile_changed)
         prof.addWidget(self.cb_profilo, 1, 1, 1, 3)
 
-        # salva profilo
-        self.btn_save_profile = QPushButton("Salva profilo")
-        self.btn_save_profile.clicked.connect(self._on_save_profile)
+        # Icona salvataggio -> apre dialog modale per nome/spessore
+        self.btn_save_profile = QToolButton()
+        self.btn_save_profile.setIcon(QIcon.fromTheme("document-save"))
+        if self.btn_save_profile.icon().isNull():
+            self.btn_save_profile.setText("💾")
+        self.btn_save_profile.setToolTip("Salva profilo/spessore")
+        self.btn_save_profile.clicked.connect(self._open_save_profile_dialog)
         prof.addWidget(self.btn_save_profile, 1, 4)
 
         prof.addWidget(QLabel("Spessore (mm):"), 2, 0)
         self.thickness = QLineEdit(); self.thickness.setPlaceholderText("0.0")
-        # imposta spessore corrente se presente
         cur_prof = self.cb_profilo.currentText().strip()
-        if cur_prof in self._profiles:
-            self.thickness.setText(str(self._profiles[cur_prof]))
-        else:
-            self.thickness.setText("0")
+        self.thickness.setText(str(self._profiles.get(cur_prof, 0.0)))
         self.thickness.textChanged.connect(self._recalc_displays)
         prof.addWidget(self.thickness, 2, 1)
         mid.addWidget(prof_box, 1)
 
+        # Inclinazione con input decimali e senza frecce
         ang_container = QFrame(); ang_container.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         ang = QGridLayout(ang_container); ang.setHorizontalSpacing(8); ang.setVerticalSpacing(6)
 
-        # SX block
-        sx_block = QFrame(); sx_block.setStyleSheet(f"QFrame {{ border:2px solid {SX_COLOR}; border-radius:6px; }}")
+        # SX
         from PySide6.QtWidgets import QVBoxLayout as VB, QHBoxLayout as HB
+        sx_block = QFrame(); sx_block.setStyleSheet(f"QFrame {{ border:2px solid {SX_COLOR}; border-radius:6px; }}")
         sx_lay = VB(sx_block); sx_lay.setContentsMargins(8,8,8,8)
         sx_lay.addWidget(QLabel("Testa SX (0–45°)"))
         sx_row = HB()
@@ -152,7 +150,7 @@ class SemiAutoPage(QWidget):
         sx_row.addWidget(self.btn_sx_45); sx_row.addWidget(self.btn_sx_0); sx_row.addWidget(self.spin_sx)
         sx_lay.addLayout(sx_row)
 
-        # DX block
+        # DX
         dx_block = QFrame(); dx_block.setStyleSheet(f"QFrame {{ border:2px solid {DX_COLOR}; border-radius:6px; }}")
         dx_lay = VB(dx_block); dx_lay.setContentsMargins(8,8,8,8)
         dx_lay.addWidget(QLabel("Testa DX (0–45°)"))
@@ -177,28 +175,28 @@ class SemiAutoPage(QWidget):
         # Riga bassa: misura sopra, sotto i pulsanti agli angoli e "Quota" al centro
         bottom_box = QVBoxLayout(); bottom_box.setSpacing(8)
 
-        # Misura esterna (input grande, +30% circa)
+        # Misura esterna (input grande)
         meas_row = QHBoxLayout()
         meas_row.addWidget(QLabel("Misura esterna (mm):"), 0, alignment=Qt.AlignLeft)
         self.ext_len = QLineEdit(); self.ext_len.setPlaceholderText("Es. 1000.0")
-        self.ext_len.setStyleSheet("font-size: 24px; font-weight: 700;")  # +30% circa
+        self.ext_len.setStyleSheet("font-size: 24px; font-weight: 700;")
         self.ext_len.setMinimumHeight(44)
         self.ext_len.textChanged.connect(self._recalc_displays)
         meas_row.addWidget(self.ext_len, 1)
         bottom_box.addLayout(meas_row)
 
-        # Pulsanti agli angoli (+30% altezza) + Quota live al centro (+30% font)
+        # Pulsanti agli angoli + Quota live al centro
         ctrl_row = QHBoxLayout()
-        self.btn_brake = QPushButton("SBLOCCA FRENO")
+        self.btn_brake = QPushButton("SBLOCCA")  # testo aggiornato dinamicamente
         self.btn_brake.setMinimumHeight(52)
         self.btn_brake.clicked.connect(self._toggle_brake)
         ctrl_row.addWidget(self.btn_brake, 0, alignment=Qt.AlignLeft)
 
         self.lbl_target_big = QLabel("Quota: — mm")
-        self.lbl_target_big.setStyleSheet("font-size: 28px; font-weight: 800;")  # +30%
+        self.lbl_target_big.setStyleSheet("font-size: 28px; font-weight: 800;")
         ctrl_row.addWidget(self.lbl_target_big, 1, alignment=Qt.AlignHCenter | Qt.AlignVCenter)
 
-        self.btn_start = QPushButton("START POSIZIONAMENTO")
+        self.btn_start = QPushButton("START")
         self.btn_start.setMinimumHeight(52)
         self.btn_start.clicked.connect(self._start_positioning)
         ctrl_row.addWidget(self.btn_start, 0, alignment=Qt.AlignRight)
@@ -206,16 +204,18 @@ class SemiAutoPage(QWidget):
         bottom_box.addLayout(ctrl_row)
         left_col.addLayout(bottom_box, 0)
 
-        # Sidebar destra
+        # Sidebar destra: Status + Fuori quota
         right_container = QFrame(); right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); right_container.setFixedWidth(180)
         right_col = QVBoxLayout(right_container); right_col.setContentsMargins(0,0,0,0); right_col.setSpacing(6)
         self.status_panel = StatusPanel(self.machine, title="STATO"); self.status_panel.setFixedWidth(180); self.status_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         right_col.addWidget(self.status_panel, 1)
+
         fq_box = QFrame(); fq_box.setFixedSize(QSize(180, 160)); fq_box.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius:6px; }")
         fq = QGridLayout(fq_box); fq.setHorizontalSpacing(6); fq.setVerticalSpacing(4)
         self.chk_fuori_quota = QCheckBox("Fuori quota"); fq.addWidget(self.chk_fuori_quota, 0, 0, 1, 2)
         fq.addWidget(QLabel("Offset:"), 1, 0)
         self.spin_offset = QDoubleSpinBox(); self.spin_offset.setRange(0.0, 1000.0); self.spin_offset.setDecimals(0); self.spin_offset.setValue(120.0); self.spin_offset.setSuffix(" mm")
+        self.spin_offset.setButtonSymbols(QAbstractSpinBox.NoButtons)
         fq.addWidget(self.spin_offset, 1, 1)
         right_col.addWidget(fq_box, 0, alignment=Qt.AlignTop)
 
@@ -225,67 +225,75 @@ class SemiAutoPage(QWidget):
 
         self._start_poll()
 
-    # ---- Profili ----
+    # ---- Profili / dialog ----
     def _on_profile_changed(self, name: str):
-        name = name.strip()
+        name = (name or "").strip()
         if name in self._profiles:
-            th = self._profiles.get(name, 0.0)
-            self.thickness.setText(str(th))
-        else:
-            # profilo nuovo non presente: non tocco lo spessore, resta quello inserito
-            pass
+            self.thickness.setText(str(self._profiles.get(name, 0.0)))
         self._recalc_displays()
 
-    def _on_save_profile(self):
-        name = self.cb_profilo.currentText().strip()
+    def _open_save_profile_dialog(self):
+        # Precompila con i valori attuali
+        cur_name = (self.cb_profilo.currentText() or "").strip()
         try:
-            th = float((self.thickness.text() or "0").replace(",", "."))
+            cur_th = float((self.thickness.text() or "0").replace(",", "."))
         except Exception:
-            th = 0.0
-        if not name:
-            QMessageBox.information(self, "Profili", "Inserisci un nome profilo.")
-            return
-        self._profiles[name] = th
-        # aggiorna combo se necessario
-        if self.cb_profilo.findText(name) < 0:
-            self.cb_profilo.addItem(name)
-            self.cb_profilo.setCurrentText(name)
-        self._save_profiles()
+            cur_th = 0.0
+        dlg = ProfileEditDialog(self, default_name=cur_name, default_thickness=cur_th)
+        if dlg.exec():
+            name, th = dlg.result_name, dlg.result_thickness
+            try:
+                self.profiles_store.upsert_profile(name, th)
+                self._profiles[name] = th
+                if self.cb_profilo.findText(name) < 0:
+                    self.cb_profilo.addItem(name)
+                self.cb_profilo.setCurrentText(name)
+                self.thickness.setText(str(th))
+                QMessageBox.information(self, "Profili", "Profilo salvato.")
+            except Exception as e:
+                QMessageBox.warning(self, "Profili", f"Errore salvataggio: {e!s}")
 
     # ---- Helpers ----
-    def _set_angle_quick(self, side: str, val: float):
-        if side == "sx": self.spin_sx.setValue(float(val))
-        else:            self.spin_dx.setValue(float(val))
-        self._apply_angles()
-
-    def _apply_angles(self):
-        sx = max(0.0, min(45.0, float(self.spin_sx.value())))
-        dx = max(0.0, min(45.0, float(self.spin_dx.value())))
-        if hasattr(self.machine, "set_head_angles"):
-            ok = self.machine.set_head_angles(sx, dx)
-            if not ok: pass
-        else:
-            setattr(self.machine, "left_head_angle", sx); setattr(self.machine, "right_head_angle", dx)
-        self.heads.refresh()
-        self._recalc_displays()
-
     def _parse_float(self, s: str, default: float = 0.0) -> float:
-        try: return float((s or "").replace(",", ".").strip())
+        try: return float((str(s) or "").replace(",", ".").strip())
         except Exception: return default
 
     def _recalc_displays(self):
-        # ricalcolo detrazioni/anteprime se serviranno in seguito
-        try:
-            ext = self._parse_float(self.ext_len.text(), 0.0)
-        except Exception:
-            ext = 0.0
+        # placeholder per futuri calcoli; la quota live è aggiornata nel tick
+        pass
+
+    def _compute_target_from_inputs(self):
+        # Calcola quota interna e target posizionamento (con fuori quota)
+        ext = self._parse_float(self.ext_len.text(), 0.0)
         th = self._parse_float(self.thickness.text(), 0.0)
         sx = float(self.spin_sx.value())
         dx = float(self.spin_dx.value())
+
         det_sx = th * math.tan(math.radians(sx)) if sx > 0 and th > 0 else 0.0
         det_dx = th * math.tan(math.radians(dx)) if dx > 0 and th > 0 else 0.0
-        # la quota live è aggiornata nel tick; qui nessun update UI per evitare conflitti
-        _ = (ext, det_sx, det_dx)  # placeholder per futuri usi
+
+        if ext <= 0:
+            raise ValueError("MISURA ESTERNA NON VALIDA")
+
+        internal = ext - (det_sx + det_dx)
+
+        min_q = float(getattr(self.machine, "min_distance", 250.0))
+        max_q = float(getattr(self.machine, "max_cut_length", 4000.0))
+        offset = float(self.spin_offset.value())
+        min_with_offset = max(0.0, min_q - offset)
+
+        if internal < min_with_offset:
+            raise ValueError(f"Quota interna {internal:.1f} < minima {min_with_offset:.1f} (min {min_q:.0f} − offset {offset:.0f})")
+
+        if internal < min_q and self.chk_fuori_quota.isChecked():
+            target = max(min_q, internal + offset)
+        else:
+            target = internal
+
+        if target > max_q:
+            raise ValueError(f"QUOTA MAX {int(max_q)}MM")
+
+        return target, sx, dx
 
     # ---- Contapezzi ----
     def _update_target_pieces(self, v: int):
@@ -296,25 +304,55 @@ class SemiAutoPage(QWidget):
 
     # ---- Azioni ----
     def _start_positioning(self):
-        if getattr(self.machine, "emergency_active", False): return
-        if not getattr(self.machine, "machine_homed", False): return
-        if getattr(self.machine, "brake_active", False): return
-        if getattr(self.machine, "positioning_active", False): return
+        # Blocchi di sicurezza essenziali
+        if getattr(self.machine, "emergency_active", False):
+            QMessageBox.warning(self, "Attenzione", "EMERGENZA ATTIVA: ESEGUI AZZERA")
+            return
+        if not getattr(self.machine, "machine_homed", False):
+            QMessageBox.warning(self, "Attenzione", "ESEGUI AZZERA (HOMING)")
+            return
+        if getattr(self.machine, "positioning_active", False):
+            QMessageBox.information(self, "Info", "Movimento in corso")
+            return
 
+        # Calcolo target
+        try:
+            target, sx, dx = self._compute_target_from_inputs()
+        except Exception as e:
+            QMessageBox.warning(self, "Dati non validi", str(e))
+            return
+
+        # Se freno attivo, prova a sbloccare
+        if getattr(self.machine, "brake_active", False):
+            if hasattr(self.machine, "toggle_brake"):
+                ok = self.machine.toggle_brake()
+                if not ok:
+                    QMessageBox.warning(self, "Attenzione", "Impossibile sbloccare il freno.")
+                    return
+
+        # Avvio movimento
         if hasattr(self.machine, "move_to_length_and_angles"):
-            sx = float(getattr(self.machine, "left_head_angle", 0.0) or 0.0)
-            dx = float(getattr(self.machine, "right_head_angle", 0.0) or 0.0)
-            target = getattr(self.machine, "position_target", getattr(self.machine, "position_current", float(getattr(self.machine, "min_distance", 250.0))))
-            self.machine.move_to_length_and_angles(length_mm=float(target), ang_sx=sx, ang_dx=dx, done_cb=lambda ok, msg: None)
+            self.machine.move_to_length_and_angles(
+                length_mm=float(target), ang_sx=float(sx), ang_dx=float(dx),
+                done_cb=lambda ok, msg: None
+            )
+        # Aggiorna UI
+        self._update_buttons()
 
     def _toggle_brake(self):
-        if hasattr(self.machine, "toggle_brake"): self.machine.toggle_brake()
+        if hasattr(self.machine, "toggle_brake"):
+            ok = self.machine.toggle_brake()
+            if not ok:
+                QMessageBox.warning(self, "Attenzione", "Operazione non consentita")
+        self._update_buttons()
 
     # ---- Poll / Stato / Quota live ----
     def _start_poll(self):
         self._poll = QTimer(self); self._poll.setInterval(200); self._poll.timeout.connect(self._tick); self._poll.start()
+        self._update_buttons()
 
     def _tick(self):
+        # Status + Grafica
         try: self.status_panel.refresh()
         except Exception: pass
         try: self.heads.refresh()
@@ -328,3 +366,25 @@ class SemiAutoPage(QWidget):
             self.lbl_target_big.setText(f"Quota: {float(pos):.1f} mm" if pos is not None else "Quota: — mm")
         except Exception:
             self.lbl_target_big.setText("Quota: — mm")
+
+        # Contapezzi
+        tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0))
+        done = int(getattr(self.machine, "semi_auto_count_done", 0))
+        rem = max(0, tgt - done)
+        self.lbl_remaining.setText(f"Rimanenti: {rem}")
+        self.lbl_counted.setText(f"Contati: {done}")
+
+        self._update_buttons()
+
+    def _update_buttons(self):
+        homed = bool(getattr(self.machine, "machine_homed", False))
+        emg = bool(getattr(self.machine, "emergency_active", False))
+        brk = bool(getattr(self.machine, "brake_active", False))
+        mov = bool(getattr(self.machine, "positioning_active", False))
+
+        # START abilitato se: homed, no EMG, non in movimento
+        self.btn_start.setEnabled(homed and not emg and not mov)
+
+        # BLOCCA/SBLOCCA sempre abilitato se homed e non in movimento e no EMG
+        self.btn_brake.setEnabled(homed and not mov and not emg)
+        self.btn_brake.setText("SBLOCCA" if brk else "BLOCCA")
