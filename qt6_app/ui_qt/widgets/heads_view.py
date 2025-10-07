@@ -4,20 +4,16 @@ from PySide6.QtCore import Qt, QPointF
 
 class HeadsView(QFrame):
     """
-    Visualizzazione teste:
-    - Scala 0..max (linea base); min posizionamento reale = min_distance (es. 250 mm)
-    - Linea teste sopra la scala (alzata di +50 px)
-    - Testa SX: fissa a 0 mm (pivot a sinistra su scala)
-    - Testa DX: mobile su position_current (>= min_distance)
+    - Scala 0..max; min pos reale = min_distance (es. 250 mm)
+    - Linea teste alzata; grafica centrata nel frame
+    - Testa SX a 0; DX mobile (>=min_distance)
     - Inclinazioni verso l'esterno (SX oraria, DX antioraria)
-    - Carter: “mezzo esagono” con lato interno coincidente con il segmento (lama)
-    - Gradi mostrati all'interno del carter; nessuna etichetta esterna
-    - Safe area orizzontale per non tagliare carter ai bordi
+    - Carter “mezzo esagono” ancorato al segmento; gradi dentro il carter
+    - Safe area orizzontale con pad per evitare tagli a 45°
     """
     def __init__(self, machine, parent=None):
         super().__init__(parent)
         self.machine = machine
-        # Più alta per carter maggiorati e linea teste alta
         self.setMinimumHeight(360)
         self.setMinimumWidth(560)
         self.setFrameShape(QFrame.StyledPanel)
@@ -33,10 +29,7 @@ class HeadsView(QFrame):
         w = self.width()
         h = self.height()
 
-        # Offset di sicurezza dal perimetro
-        edge_pad = 16
-
-        # Parametri carter (50% in più)
+        # Carter dimensioni (+50%)
         seg_len = 120
         seg_thick = 6
         pivot_r = 7
@@ -44,15 +37,14 @@ class HeadsView(QFrame):
         body_h = 129
         bevel  = 15
 
-        # Safe pad ai lati per non far uscire i carter
-        head_pad = body_w + 12
-
-        # Margini e dimensioni scala
+        # Offset perimetrali e safe area ai lati per evitare tagli
+        edge_pad = 16
+        head_pad = body_w + 20  # più ampio per sicurezza a 45°
         left_margin = edge_pad + head_pad
         right_margin = edge_pad + head_pad
-        top_margin = 8
-        base_y = h - 64                  # linea scala (0..max)
-        heads_y = base_y - 26 - 50       # linea teste (sopra la scala, +50 px)
+
+        base_y = h - 64
+        heads_y = base_y - 26 - 50
         usable_w = max(50, w - left_margin - right_margin)
 
         # Dati macchina
@@ -60,32 +52,26 @@ class HeadsView(QFrame):
         max_mm = float(getattr(self.machine, "max_cut_length", 4000.0))
         pos_mm = float(getattr(self.machine, "position_current", min_mm))
         pos_mm = max(min_mm, min(max_mm, pos_mm))
-        ang_sx = float(getattr(self.machine, "left_head_angle", 0.0) or 0.0)
-        ang_dx = float(getattr(self.machine, "right_head_angle", 0.0) or 0.0)
-        ang_sx = max(0.0, min(45.0, ang_sx))
-        ang_dx = max(0.0, min(45.0, ang_dx))
+        ang_sx = max(0.0, min(45.0, float(getattr(self.machine, "left_head_angle", 0.0) or 0.0)))
+        ang_dx = max(0.0, min(45.0, float(getattr(self.machine, "right_head_angle", 0.0) or 0.0)))
 
-        # Mapper mm -> x pixel (scala 0..max)
-        scale_min = 0.0
-        scale_max = max_mm
+        # Scala 0..max
+        scale_min, scale_max = 0.0, max_mm
         def x_at(mm: float) -> float:
             if scale_max <= scale_min:
                 return left_margin
             f = (mm - scale_min) / (scale_max - scale_min)
             return left_margin + f * usable_w
 
-        # ----- Scala base 0..max -----
+        # Scala base
         p.setPen(QPen(QColor("#3b4b5a"), 2))
         p.drawLine(int(left_margin), int(base_y), int(left_margin + usable_w), int(base_y))
 
-        # Tacche e label
+        # Tacche
         p.setPen(QPen(QColor("#5c738a"), 1))
-        font = QFont()
-        font.setPointSizeF(max(8.0, self.font().pointSizeF() - 1))
+        font = QFont(); font.setPointSizeF(max(8.0, self.font().pointSizeF() - 1))
         p.setFont(font)
-        ticks = [0, 1000, 2000, 3000, int(max_mm)]
-        for t in ticks:
-            if not (scale_min <= t <= scale_max): continue
+        for t in (0, 1000, 2000, 3000, int(max_mm)):
             x = x_at(t)
             p.drawLine(int(x), int(base_y), int(x), int(base_y - 12))
             label = f"{int(t)}"
@@ -93,36 +79,34 @@ class HeadsView(QFrame):
             p.drawText(int(x - tw/2), int(base_y - 16), label)
 
         p.setPen(QPen(QColor("#9fb3c7")))
-        p.drawText(int(left_margin), int(top_margin + 4), f"0–{int(max_mm)} mm (min pos. {int(min_mm)})")
+        p.drawText(int(left_margin), int(heads_y - 48), f"0–{int(max_mm)} mm (min pos. {int(min_mm)})")
 
-        # ----- Linea teste (sopra scala) -----
+        # Linea teste sopra scala
         p.setPen(QPen(QColor("#4a6076"), 1))
         p.drawLine(int(left_margin), int(heads_y), int(left_margin + usable_w), int(heads_y))
 
-        # Pivot SX e DX
-        x_sx = x_at(0.0)     # SX a 0 mm
-        x_dx = x_at(pos_mm)  # DX a quota attuale (>= min_mm)
+        # Pivot SX (0) e DX (pos attuale)
+        x_sx = x_at(0.0)
+        x_dx = x_at(pos_mm)
 
         def draw_head(x: float, angle_deg: float, outward_left: bool, color: str):
-            # pivot (pallino) sulla linea teste
-            p.setBrush(QBrush(QColor(color)))
-            p.setPen(Qt.NoPen)
+            # pivot
+            p.setBrush(QBrush(QColor(color))); p.setPen(Qt.NoPen)
             p.drawEllipse(QPointF(x, heads_y), pivot_r, pivot_r)
 
             p.save()
             p.translate(x, heads_y)
-            rot = -angle_deg if outward_left else +angle_deg  # SX oraria (esterna), DX antioraria (esterna)
-            p.rotate(rot)
+            p.rotate(-angle_deg if outward_left else +angle_deg)
 
-            # Carter “mezzo esagono”: lato interno = segmento (x=0)
+            # Poligono carter “mezzo esagono”
             if outward_left:
                 pts = [
-                    QPointF(0, 0),                             # inner-bottom
-                    QPointF(-(body_w - bevel), 0),             # bottom edge
-                    QPointF(-body_w, -bevel),                  # lower bevel 45°
-                    QPointF(-body_w, -(body_h - bevel)),       # outer side
-                    QPointF(-(body_w - bevel), -body_h),       # upper bevel 45°
-                    QPointF(0, -body_h),                       # inner-top
+                    QPointF(0, 0),
+                    QPointF(-(body_w - bevel), 0),
+                    QPointF(-body_w, -bevel),
+                    QPointF(-body_w, -(body_h - bevel)),
+                    QPointF(-(body_w - bevel), -body_h),
+                    QPointF(0, -body_h),
                 ]
             else:
                 pts = [
@@ -138,13 +122,12 @@ class HeadsView(QFrame):
             p.setPen(QPen(QColor("#95a5a6"), 1))
             p.drawPolygon(poly)
 
-            # Lama (segmento) sul lato interno
-            pen = QPen(QColor(color))
-            pen.setWidth(seg_thick)
+            # Lama (segmento interno)
+            pen = QPen(QColor(color)); pen.setWidth(seg_thick)
             p.setPen(pen)
             p.drawLine(0, 0, 0, -seg_len)
 
-            # Gradi all'interno del carter
+            # Gradi all'interno carter
             p.setPen(QPen(QColor("#ecf0f1")))
             text_x = -body_w/2 + 6 if outward_left else 6
             text_y = -body_h/2 + 6
