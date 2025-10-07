@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel
 from PySide6.QtCore import Qt
 from ui_qt.theme import THEME
 
@@ -13,6 +13,7 @@ class StatusPanel(QFrame):
     Pannello stato:
     - LED/controlli raggruppati in alto
     - Quota (encoder) allineata in basso del frame
+    - LED aggiuntivi "LAMA SX" e "LAMA DX": verde=abilitata, giallo=inibita
     - Fallback colori per massima visibilità
     """
     def __init__(self, machine_state=None, title="STATO", parent=None):
@@ -38,7 +39,8 @@ class StatusPanel(QFrame):
         self.leds = {}
         leds_col = QVBoxLayout()
         leds_col.setSpacing(3)
-        for label in ["EMERGENZA", "HOMED", "FRENO", "MOVIMENTO", "FRIZIONE"]:
+        # LED ordine
+        for label in ["EMERGENZA", "HOMED", "FRENO", "MOVIMENTO", "FRIZIONE", "LAMA SX", "LAMA DX"]:
             leds_col.addLayout(self._make_led_row(label))
         top_area.addLayout(leds_col)
 
@@ -83,15 +85,12 @@ class StatusPanel(QFrame):
         m = self.machine
         ok_col   = _color("OK", "#2ecc71")
         err_col  = _color("ERR", "#e74c3c")
-        warn_col = _color("WARN", "#f1c40f")
+        warn_col = _color("WARN", "#f39c12")
         acc2_col = _color("ACCENT_2", "#9b59b6")
 
         if not m:
-            self._set_led("EMERGENZA", "#7f8c8d")
-            self._set_led("HOMED", "#7f8c8d")
-            self._set_led("FRENO", warn_col)
-            self._set_led("MOVIMENTO", "#7f8c8d")
-            self._set_led("FRIZIONE", warn_col)
+            for k in self.leds.keys():
+                self._set_led(k, "#7f8c8d")
             self.lbl_encoder.setText("QUOTA: -")
             return
 
@@ -100,6 +99,12 @@ class StatusPanel(QFrame):
         self._set_led("FRENO", ok_col if getattr(m, "brake_active", False) else warn_col)
         self._set_led("MOVIMENTO", acc2_col if getattr(m, "positioning_active", False) else "#7f8c8d")
         self._set_led("FRIZIONE", ok_col if getattr(m, "clutch_active", False) else warn_col)
+
+        # Inibizione lame (verde = abilitata, giallo = inibita)
+        left_inhib = bool(getattr(m, "left_blade_inhibit", getattr(m, "blade_inhibit_left", False)))
+        right_inhib = bool(getattr(m, "right_blade_inhibit", getattr(m, "blade_inhibit_right", False)))
+        self._set_led("LAMA SX", warn_col if left_inhib else ok_col)
+        self._set_led("LAMA DX", warn_col if right_inhib else ok_col)
 
         pos = getattr(m, "encoder_position", None)
         if pos is None:
