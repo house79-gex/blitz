@@ -1,16 +1,21 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QSpinBox, QGridLayout, QDoubleSpinBox, QLineEdit, QComboBox,
-    QMessageBox, QSizePolicy, QCheckBox
+    QMessageBox, QSizePolicy, QCheckBox, QAbstractSpinBox
 )
 from PySide6.QtCore import Qt, QTimer, QSize
 from ui_qt.widgets.header import Header
+    # noqa
 from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.widgets.heads_view import HeadsView
 import math
+import json
+from pathlib import Path
 
 SX_COLOR = "#2980b9"
 DX_COLOR = "#9b59b6"
+
+PROFILES_FILE = Path(__file__).resolve().parents[2] / "data" / "profili.json"
 
 class SemiAutoPage(QWidget):
     """
@@ -24,9 +29,31 @@ class SemiAutoPage(QWidget):
         self.appwin = appwin
         self.machine = appwin.machine
         self._poll = None
-        self._profiles = {"Nessuno": 0.0, "Alluminio 50": 50.0, "PVC 60": 60.0, "Legno 40": 40.0}
+        self._profiles = self._load_profiles() or {"Nessuno": 0.0}
         self._build()
 
+    # ---------- storage profili ----------
+    def _load_profiles(self):
+        try:
+            if PROFILES_FILE.exists():
+                with open(PROFILES_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                # normalizza in dict nome -> float spessore
+                return {str(k): float(v) for k, v in data.items()}
+        except Exception:
+            pass
+        return None
+
+    def _save_profiles(self):
+        try:
+            PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(PROFILES_FILE, "w", encoding="utf-8") as f:
+                json.dump(self._profiles, f, ensure_ascii=False, indent=2)
+            QMessageBox.information(self, "Profili", "Profilo salvato.")
+        except Exception as e:
+            QMessageBox.warning(self, "Profili", f"Errore salvataggio: {e!s}")
+
+    # ---------- UI ----------
     def _build(self):
         root = QHBoxLayout(self); root.setContentsMargins(16,16,16,16); root.setSpacing(8)
 
@@ -78,41 +105,60 @@ class SemiAutoPage(QWidget):
 
         prof_box = QFrame(); prof_box.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         prof = QGridLayout(prof_box); prof.setHorizontalSpacing(8); prof.setVerticalSpacing(6)
-        prof.addWidget(QLabel("Profilo"), 0, 0, 1, 4, alignment=Qt.AlignLeft)
+        prof.addWidget(QLabel("Profilo"), 0, 0, 1, 5, alignment=Qt.AlignLeft)
         prof.addWidget(QLabel("Nome:"), 1, 0)
         self.cb_profilo = QComboBox(); self.cb_profilo.setEditable(True)
-        for name in self._profiles.keys(): self.cb_profilo.addItem(name)
-        self.cb_profilo.setCurrentText("Nessuno")
+        # popola profili
+        for name in self._profiles.keys():
+            self.cb_profilo.addItem(name)
+        self.cb_profilo.setCurrentText(next(iter(self._profiles.keys())))
         self.cb_profilo.currentTextChanged.connect(self._on_profile_changed)
         prof.addWidget(self.cb_profilo, 1, 1, 1, 3)
+
+        # salva profilo
+        self.btn_save_profile = QPushButton("Salva profilo")
+        self.btn_save_profile.clicked.connect(self._on_save_profile)
+        prof.addWidget(self.btn_save_profile, 1, 4)
+
         prof.addWidget(QLabel("Spessore (mm):"), 2, 0)
-        self.thickness = QLineEdit(); self.thickness.setPlaceholderText("0.0"); self.thickness.setText("0")
-        self.thickness.textChanged.connect(lambda _: self._recalc_displays())
+        self.thickness = QLineEdit(); self.thickness.setPlaceholderText("0.0")
+        # imposta spessore corrente se presente
+        cur_prof = self.cb_profilo.currentText().strip()
+        if cur_prof in self._profiles:
+            self.thickness.setText(str(self._profiles[cur_prof]))
+        else:
+            self.thickness.setText("0")
+        self.thickness.textChanged.connect(self._recalc_displays)
         prof.addWidget(self.thickness, 2, 1)
         mid.addWidget(prof_box, 1)
 
         ang_container = QFrame(); ang_container.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         ang = QGridLayout(ang_container); ang.setHorizontalSpacing(8); ang.setVerticalSpacing(6)
 
+        # SX block
         sx_block = QFrame(); sx_block.setStyleSheet(f"QFrame {{ border:2px solid {SX_COLOR}; border-radius:6px; }}")
-        sx_lay = QVBoxLayout(sx_block); sx_lay.setContentsMargins(8,8,8,8)
+        from PySide6.QtWidgets import QVBoxLayout as VB, QHBoxLayout as HB
+        sx_lay = VB(sx_block); sx_lay.setContentsMargins(8,8,8,8)
         sx_lay.addWidget(QLabel("Testa SX (0–45°)"))
-        sx_row = QHBoxLayout()
+        sx_row = HB()
         self.btn_sx_45 = QPushButton("45°"); self.btn_sx_45.setStyleSheet("background:#8e44ad; color:white;")
         self.btn_sx_45.clicked.connect(lambda: self._set_angle_quick('sx', 45.0))
         self.btn_sx_0  = QPushButton("0°");  self.btn_sx_0.setStyleSheet("background:#2c3e50; color:#ecf0f1;")
         self.btn_sx_0.clicked.connect(lambda: self._set_angle_quick('sx', 0.0))
         self.spin_sx = QDoubleSpinBox(); self.spin_sx.setRange(0.0, 45.0); self.spin_sx.setDecimals(1)
+        self.spin_sx.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.spin_sx.setValue(float(getattr(self.machine, "left_head_angle", 0.0)))
         self.spin_sx.valueChanged.connect(self._apply_angles)
         sx_row.addWidget(self.btn_sx_45); sx_row.addWidget(self.btn_sx_0); sx_row.addWidget(self.spin_sx)
         sx_lay.addLayout(sx_row)
 
+        # DX block
         dx_block = QFrame(); dx_block.setStyleSheet(f"QFrame {{ border:2px solid {DX_COLOR}; border-radius:6px; }}")
-        dx_lay = QVBoxLayout(dx_block); dx_lay.setContentsMargins(8,8,8,8)
+        dx_lay = VB(dx_block); dx_lay.setContentsMargins(8,8,8,8)
         dx_lay.addWidget(QLabel("Testa DX (0–45°)"))
-        dx_row = QHBoxLayout()
+        dx_row = HB()
         self.spin_dx = QDoubleSpinBox(); self.spin_dx.setRange(0.0, 45.0); self.spin_dx.setDecimals(1)
+        self.spin_dx.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.spin_dx.setValue(float(getattr(self.machine, "right_head_angle", 0.0)))
         self.spin_dx.valueChanged.connect(self._apply_angles)
         self.btn_dx_0  = QPushButton("0°");  self.btn_dx_0.setStyleSheet("background:#2c3e50; color:#ecf0f1;")
@@ -128,28 +174,32 @@ class SemiAutoPage(QWidget):
 
         left_col.addLayout(mid, 0)
 
-        # Riga bassa: misura (input grande) sopra, sotto i pulsanti angolari con "Quota" centrale
+        # Riga bassa: misura sopra, sotto i pulsanti agli angoli e "Quota" al centro
         bottom_box = QVBoxLayout(); bottom_box.setSpacing(8)
 
-        # Misura esterna (input grande)
+        # Misura esterna (input grande, +30% circa)
         meas_row = QHBoxLayout()
         meas_row.addWidget(QLabel("Misura esterna (mm):"), 0, alignment=Qt.AlignLeft)
         self.ext_len = QLineEdit(); self.ext_len.setPlaceholderText("Es. 1000.0")
-        self.ext_len.setStyleSheet("font-size: 20px; font-weight: 700;")
+        self.ext_len.setStyleSheet("font-size: 24px; font-weight: 700;")  # +30% circa
+        self.ext_len.setMinimumHeight(44)
+        self.ext_len.textChanged.connect(self._recalc_displays)
         meas_row.addWidget(self.ext_len, 1)
         bottom_box.addLayout(meas_row)
 
-        # Pulsanti agli angoli + Quota live al centro
+        # Pulsanti agli angoli (+30% altezza) + Quota live al centro (+30% font)
         ctrl_row = QHBoxLayout()
         self.btn_brake = QPushButton("SBLOCCA FRENO")
+        self.btn_brake.setMinimumHeight(52)
         self.btn_brake.clicked.connect(self._toggle_brake)
         ctrl_row.addWidget(self.btn_brake, 0, alignment=Qt.AlignLeft)
 
         self.lbl_target_big = QLabel("Quota: — mm")
-        self.lbl_target_big.setStyleSheet("font-size: 22px; font-weight: 800;")
+        self.lbl_target_big.setStyleSheet("font-size: 28px; font-weight: 800;")  # +30%
         ctrl_row.addWidget(self.lbl_target_big, 1, alignment=Qt.AlignHCenter | Qt.AlignVCenter)
 
         self.btn_start = QPushButton("START POSIZIONAMENTO")
+        self.btn_start.setMinimumHeight(52)
         self.btn_start.clicked.connect(self._start_positioning)
         ctrl_row.addWidget(self.btn_start, 0, alignment=Qt.AlignRight)
 
@@ -180,8 +230,27 @@ class SemiAutoPage(QWidget):
         name = name.strip()
         if name in self._profiles:
             th = self._profiles.get(name, 0.0)
-            self.thickness.setText(f"{th:.0f}" if float(th).is_integer() else f"{th}")
-        # nessun ricalcolo immediato della quota live
+            self.thickness.setText(str(th))
+        else:
+            # profilo nuovo non presente: non tocco lo spessore, resta quello inserito
+            pass
+        self._recalc_displays()
+
+    def _on_save_profile(self):
+        name = self.cb_profilo.currentText().strip()
+        try:
+            th = float((self.thickness.text() or "0").replace(",", "."))
+        except Exception:
+            th = 0.0
+        if not name:
+            QMessageBox.information(self, "Profili", "Inserisci un nome profilo.")
+            return
+        self._profiles[name] = th
+        # aggiorna combo se necessario
+        if self.cb_profilo.findText(name) < 0:
+            self.cb_profilo.addItem(name)
+            self.cb_profilo.setCurrentText(name)
+        self._save_profiles()
 
     # ---- Helpers ----
     def _set_angle_quick(self, side: str, val: float):
@@ -198,10 +267,25 @@ class SemiAutoPage(QWidget):
         else:
             setattr(self.machine, "left_head_angle", sx); setattr(self.machine, "right_head_angle", dx)
         self.heads.refresh()
+        self._recalc_displays()
 
     def _parse_float(self, s: str, default: float = 0.0) -> float:
         try: return float((s or "").replace(",", ".").strip())
         except Exception: return default
+
+    def _recalc_displays(self):
+        # ricalcolo detrazioni/anteprime se serviranno in seguito
+        try:
+            ext = self._parse_float(self.ext_len.text(), 0.0)
+        except Exception:
+            ext = 0.0
+        th = self._parse_float(self.thickness.text(), 0.0)
+        sx = float(self.spin_sx.value())
+        dx = float(self.spin_dx.value())
+        det_sx = th * math.tan(math.radians(sx)) if sx > 0 and th > 0 else 0.0
+        det_dx = th * math.tan(math.radians(dx)) if dx > 0 and th > 0 else 0.0
+        # la quota live è aggiornata nel tick; qui nessun update UI per evitare conflitti
+        _ = (ext, det_sx, det_dx)  # placeholder per futuri usi
 
     # ---- Contapezzi ----
     def _update_target_pieces(self, v: int):
