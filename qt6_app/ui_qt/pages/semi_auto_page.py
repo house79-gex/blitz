@@ -10,7 +10,7 @@ from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.widgets.heads_view import HeadsView
 import math
 
-# Moduli opzionali per salvataggio profili su SQLite
+# Opzionali per salvataggio profili (se non presenti, il salvataggio viene ignorato con messaggio info)
 try:
     from ui_qt.dialogs.profile_edit_dialog import ProfileEditDialog
     from ui_qt.services.profiles_store import ProfilesStore
@@ -25,21 +25,23 @@ DX_COLOR = "#9b59b6"
 class SemiAutoPage(QWidget):
     """
     Semi-Automatico: layout a due colonne.
-    - Colonna sinistra (expanding):
-      • Alto: Contapezzi 190x190 + cornice grafica (HeadsView) massimizzata.
-      • Sotto: Profilo/Spessore (con salvataggio su DB profili) | Inclinazione SX/DX (decimi, senza frecce).
-      • Basso: Misura esterna (input grande) e, sotto, riga comandi: [BLOCCA/SBLOCCA] | [Quota live (+ dettagli FQ)] | [START].
-    - Colonna destra (fissa 180px): StatusPanel (riempie altezza) + box Fuori Quota (offset) + pulsante INTESTATURA.
-    Funzioni:
-    - Fuori Quota (FQ): mostra Pezzo reale e Pos. testa (quota+offset); in FQ inibisce sempre la lama DX (mobile).
-    - Intestatura (singola, pulsante “INTESTATURA”):
-        DX -> 45°, posiziona alla minima, blocca freno, inibisce lama SX e abilita lama DX;
-        attende incremento conteggio pezzi DX (da pulsantiera reale oppure simulazione via tastiera).
-        Al termine: ripristina angolo DX precedente; se FQ attivo re-inibisce lama DX e riposiziona a (quota+offset).
-    - TASTI DI SVILUPPO (simulazione):
-        F6 (oppure K): simula conteggio pezzo DX (+1) per chiudere l’intestatura.
-    - Nota: per evitare crash in sviluppo, questa pagina usa banner interni al posto di finestre modali.
+    - Sinistra (expanding): contapezzi + grafica; profilo/spessore + inclinazioni; misura; comandi BLOCCA/SBLOCCA, START e Quota live con dettagli Fuori Quota.
+    - Destra (fissa 180px): StatusPanel + Fuori Quota (offset) + pulsante INTESTATURA (one-shot).
+
+    Funzioni chiave
+    - Fuori Quota (FQ): mostra Pezzo reale e Pos. testa (quota+offset). In FQ la lama DX (mobile) è SEMPRE inibita.
+    - INTESTATURA (one-shot): richiede FQ attivo. Alla pressione:
+        DX -> 45°, posizionamento alla quota minima; BLOCCA freno; INIBISCE lama SX; ABILITA lama DX.
+        Il taglio è avviato dall'operatore (pulsantiera). Il termine del taglio si rileva con l'input “uscita lama DX”
+        (aperto durante il taglio e richiuso a fine ciclo). In sviluppo, F5 (premuto=uscita attiva; rilasciato=uscita chiusa).
+        Al rilascio (uscita chiusa), si conclude l'intestatura: ripristina l'angolo DX precedente; se FQ è attivo, re‑inibisce lama DX
+        e si riposiziona a (quota+offset).
+    - Inclinazione SX/DX: accetta decimali con punto e virgola (la virgola viene convertita in punto), step 0.1°, senza frecce.
+    - Simulazioni tastiera:
+        F5: tieni premuto per simulare “uscita lama DX aperta”; al rilascio si chiude e, se intestatura in corso, termina l'operazione.
+        F6/K: (facoltativo) simula incremento conteggio DX (legacy).
     """
+
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
@@ -49,14 +51,15 @@ class SemiAutoPage(QWidget):
         self.profiles_store = ProfilesStore() if ProfilesStore else None
         self._profiles = self._load_profiles_dict()
 
-        # Stato intestatura
+        # Stato intestatura / FQ
         self._intest_in_progress = False
         self._intest_prev_ang_dx = 0.0
-        self._intest_dx_count_before = None
-
-        # Cache ultimo calcolo Fuori Quota
         self._last_internal = None
         self._last_target = None
+
+        # Monitor “uscita lama DX”
+        self._last_dx_blade_out = None  # ultimo stato noto (bool)
+        self._dx_blade_out_sim = False  # simulazione via tastiera
 
         self._poll = None
         self._build()
@@ -70,7 +73,6 @@ class SemiAutoPage(QWidget):
                 for row in rows:
                     profs[row["name"]] = float(row["thickness"] or 0.0)
                 if not profs:
-                    # seed iniziale
                     for n, t in (("Nessuno", 0.0), ("Alluminio 50", 50.0), ("PVC 60", 60.0), ("Legno 40", 40.0)):
                         self.profiles_store.upsert_profile(n, t)
                     for row in self.profiles_store.list_profiles():
@@ -83,7 +85,7 @@ class SemiAutoPage(QWidget):
 
     # ---------- UI ----------
     def _build(self):
-        # Abilita cattura tasti (per simulazioni)
+        # per catturare i tasti funzione (F5, F6, K)
         self.setFocusPolicy(Qt.StrongFocus)
 
         root = QHBoxLayout(self)
@@ -100,7 +102,7 @@ class SemiAutoPage(QWidget):
         header = Header(self.appwin, "SEMI-AUTOMATICO")
         left_col.addWidget(header, 0)
 
-        # Banner dinamico per messaggi (info/warn/errore)
+        # Banner per messaggi non-modali (evita crash in sviluppo per assenza IO)
         self.banner = QLabel("")
         self.banner.setVisible(False)
         self.banner.setWordWrap(True)
@@ -126,7 +128,7 @@ class SemiAutoPage(QWidget):
         cnt.addWidget(QLabel("Target:"), 1, 0)
         self.spin_target = QSpinBox()
         self.spin_target.setRange(0, 999999)
-        self.spin_target.setButtonSymbols(QAbstractSpinBox.NoButtons)  # no frecce
+        self.spin_target.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.spin_target.setValue(int(getattr(self.machine, "semi_auto_target_pieces", 0)))
         self.spin_target.valueChanged.connect(self._update_target_pieces)
         cnt.addWidget(self.spin_target, 1, 1)
@@ -150,7 +152,7 @@ class SemiAutoPage(QWidget):
 
         self.heads = HeadsView(self.machine, graph_frame)
         self.heads.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        graph_layout.addWidget(self.heads)  # riempie il frame
+        graph_layout.addWidget(self.heads)
         top_left.addWidget(graph_frame, 1)
 
         top_left.setStretch(0, 0)
@@ -161,7 +163,7 @@ class SemiAutoPage(QWidget):
         mid = QHBoxLayout()
         mid.setSpacing(8)
 
-        # Profilo/Spessore + icona salvataggio (modal)
+        # Profilo/Spessore + salvataggio (se disponibile)
         prof_box = QFrame()
         prof_box.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         prof = QGridLayout(prof_box)
@@ -194,7 +196,7 @@ class SemiAutoPage(QWidget):
         prof.addWidget(self.thickness, 2, 1)
         mid.addWidget(prof_box, 1)
 
-        # Inclinazione (decimali, senza frecce). Accetta . e , (converte a .).
+        # Inclinazione (decimali, senza frecce)
         ang_container = QFrame()
         ang_container.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         ang = QGridLayout(ang_container)
@@ -202,32 +204,38 @@ class SemiAutoPage(QWidget):
         ang.setVerticalSpacing(6)
 
         # SX
+        from PySide6.QtWidgets import QVBoxLayout as VB, QHBoxLayout as HB
         sx_block = QFrame()
         sx_block.setStyleSheet(f"QFrame {{ border:2px solid {SX_COLOR}; border-radius:6px; }}")
-        from PySide6.QtWidgets import QVBoxLayout as VB, QHBoxLayout as HB
-        sx_lay = VB(sx_block); sx_lay.setContentsMargins(8, 8, 8, 8)
+        sx_lay = VB(sx_block)
+        sx_lay.setContentsMargins(8, 8, 8, 8)
         sx_lay.addWidget(QLabel("Testa SX (0–45°)"))
         sx_row = HB()
-        self.btn_sx_45 = QPushButton("45°"); self.btn_sx_45.setStyleSheet("background:#8e44ad; color:white;")
+        self.btn_sx_45 = QPushButton("45°")
+        self.btn_sx_45.setStyleSheet("background:#8e44ad; color:white;")
         self.btn_sx_45.clicked.connect(lambda: self._set_angle_quick('sx', 45.0))
-        self.btn_sx_0 = QPushButton("0°"); self.btn_sx_0.setStyleSheet("background:#2c3e50; color:#ecf0f1;")
+        self.btn_sx_0 = QPushButton("0°")
+        self.btn_sx_0.setStyleSheet("background:#2c3e50; color:#ecf0f1;")
         self.btn_sx_0.clicked.connect(lambda: self._set_angle_quick('sx', 0.0))
         self.spin_sx = QDoubleSpinBox()
         self.spin_sx.setRange(0.0, 45.0)
         self.spin_sx.setDecimals(1)
         self.spin_sx.setSingleStep(0.1)
-        self.spin_sx.setLocale(QLocale(QLocale.C))  # accetta il punto
+        self.spin_sx.setLocale(QLocale(QLocale.C))  # accetta '.'
         self.spin_sx.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.spin_sx.setValue(float(getattr(self.machine, "left_head_angle", 0.0)))
         self.spin_sx.valueChanged.connect(self._apply_angles)
         self.spin_sx.lineEdit().textEdited.connect(lambda s: self._force_decimal_point(self.spin_sx, s))
-        sx_row.addWidget(self.btn_sx_45); sx_row.addWidget(self.btn_sx_0); sx_row.addWidget(self.spin_sx)
+        sx_row.addWidget(self.btn_sx_45)
+        sx_row.addWidget(self.btn_sx_0)
+        sx_row.addWidget(self.spin_sx)
         sx_lay.addLayout(sx_row)
 
         # DX
         dx_block = QFrame()
         dx_block.setStyleSheet(f"QFrame {{ border:2px solid {DX_COLOR}; border-radius:6px; }}")
-        dx_lay = VB(dx_block); dx_lay.setContentsMargins(8, 8, 8, 8)
+        dx_lay = VB(dx_block)
+        dx_lay.setContentsMargins(8, 8, 8, 8)
         dx_lay.addWidget(QLabel("Testa DX (0–45°)"))
         dx_row = HB()
         self.spin_dx = QDoubleSpinBox()
@@ -239,19 +247,25 @@ class SemiAutoPage(QWidget):
         self.spin_dx.setValue(float(getattr(self.machine, "right_head_angle", 0.0)))
         self.spin_dx.valueChanged.connect(self._apply_angles)
         self.spin_dx.lineEdit().textEdited.connect(lambda s: self._force_decimal_point(self.spin_dx, s))
-        self.btn_dx_0 = QPushButton("0°"); self.btn_dx_0.setStyleSheet("background:#2c3e50; color:#ecf0f1;")
+        self.btn_dx_0 = QPushButton("0°")
+        self.btn_dx_0.setStyleSheet("background:#2c3e50; color:#ecf0f1;")
         self.btn_dx_0.clicked.connect(lambda: self._set_angle_quick('dx', 0.0))
-        self.btn_dx_45 = QPushButton("45°"); self.btn_dx_45.setStyleSheet("background:#8e44ad; color:white;")
+        self.btn_dx_45 = QPushButton("45°")
+        self.btn_dx_45.setStyleSheet("background:#8e44ad; color:white;")
         self.btn_dx_45.clicked.connect(lambda: self._set_angle_quick('dx', 45.0))
-        dx_row.addWidget(self.spin_dx); dx_row.addWidget(self.btn_dx_0); dx_row.addWidget(self.btn_dx_45)
+        dx_row.addWidget(self.spin_dx)
+        dx_row.addWidget(self.btn_dx_0)
+        dx_row.addWidget(self.btn_dx_45)
         dx_lay.addLayout(dx_row)
 
-        ang.addWidget(sx_block, 0, 0); ang.addWidget(dx_block, 0, 1)
+        ang.addWidget(sx_block, 0, 0)
+        ang.addWidget(dx_block, 0, 1)
         mid.addWidget(ang_container, 1)
         left_col.addLayout(mid, 0)
 
         # Riga bassa: misura + pulsanti + Quota + dettagli FQ
-        bottom_box = QVBoxLayout(); bottom_box.setSpacing(8)
+        bottom_box = QVBoxLayout()
+        bottom_box.setSpacing(8)
         meas_row = QHBoxLayout()
         meas_row.addWidget(QLabel("Misura esterna (mm):"), 0, alignment=Qt.AlignLeft)
         self.ext_len = QLineEdit()
@@ -288,7 +302,7 @@ class SemiAutoPage(QWidget):
         bottom_box.addLayout(ctrl_row)
         left_col.addLayout(bottom_box, 0)
 
-        # Sidebar destra: Status + Fuori Quota + Intestatura (one-shot)
+        # Sidebar destra: Status + Fuori Quota + INTESTATURA
         right_container = QFrame()
         right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         right_container.setFixedWidth(180)
@@ -302,7 +316,7 @@ class SemiAutoPage(QWidget):
         right_col.addWidget(self.status_panel, 1)
 
         fq_box = QFrame()
-        fq_box.setFixedSize(QSize(180, 200))  # spazio extra per intestatura
+        fq_box.setFixedSize(QSize(180, 200))
         fq_box.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius:6px; }")
         fq = QGridLayout(fq_box)
         fq.setHorizontalSpacing(6)
@@ -321,7 +335,7 @@ class SemiAutoPage(QWidget):
         self.spin_offset.setButtonSymbols(QAbstractSpinBox.NoButtons)
         fq.addWidget(self.spin_offset, 1, 1)
 
-        # Pulsante unico INTESATURA (rinominato) - nessuna checkbox persistente
+        # Pulsante INTESTATURA (one-shot)
         self.btn_intesta = QPushButton("INTESTATURA")
         self.btn_intesta.clicked.connect(self._do_intestatura)
         fq.addWidget(self.btn_intesta, 2, 0, 1, 2)
@@ -367,7 +381,7 @@ class SemiAutoPage(QWidget):
 
     # ---------- Utils ----------
     def _force_decimal_point(self, spinbox: QDoubleSpinBox, s: str):
-        # accetta ',' e la converte in '.' senza creare loop
+        # accetta ',' e la converte in '.'
         if ',' in s:
             new_s = s.replace(',', '.')
             if new_s != s:
@@ -413,7 +427,6 @@ class SemiAutoPage(QWidget):
         self._apply_angles()
 
     def _apply_angles(self):
-        # Leggo dal testo per supportare sia '.' che ','
         sx = self._parse_float(self.spin_sx.text(), 0.0)
         dx = self._parse_float(self.spin_dx.text(), 0.0)
         sx = max(0.0, min(45.0, sx))
@@ -438,12 +451,12 @@ class SemiAutoPage(QWidget):
             return default
 
     def _recalc_displays(self):
-        # La quota live è aggiornata nel tick; qui potremo inserire preview se richiesto
+        # Quota live nel tick; qui eventuali preview future
         pass
 
     # ---------- Fuori Quota / Target ----------
     def _compute_target_from_inputs(self):
-        # Calcola quota interna e target (mai posizionare a "min" forzatamente; usa banner/proposta FQ)
+        # Quota interna = esterna − detrazioni; target = interna (oppure interna+offset in FQ)
         ext = self._parse_float(self.ext_len.text(), 0.0)
         th = self._parse_float(self.thickness.text(), 0.0)
         sx = self._parse_float(self.spin_sx.text(), 0.0)
@@ -460,7 +473,6 @@ class SemiAutoPage(QWidget):
         offset = float(self.spin_offset.value())
         min_with_offset = max(0.0, min_q - offset)
 
-        # Messaggi e condizioni
         if internal < min_with_offset:
             self._show_warn(f"Quota troppo piccola: {internal:.1f} < {min_with_offset:.1f} mm (min {min_q:.0f} − offset {offset:.0f})")
             self._last_internal = None
@@ -469,7 +481,7 @@ class SemiAutoPage(QWidget):
             raise ValueError("Quota troppo piccola")
 
         if internal < min_q and not self.chk_fuori_quota.isChecked():
-            self._show_warn(f"Quota {internal:.1f} sotto minima ({min_q:.1f}). Abilita FUORI QUOTA per taglio.")
+            self._show_warn(f"Quota {internal:.1f} sotto minima ({min_q:.1f}). Abilita FUORI QUOTA.")
             self._last_internal = None
             self._last_target = None
             self.lbl_fq_details.setVisible(False)
@@ -480,7 +492,6 @@ class SemiAutoPage(QWidget):
 
         if internal < min_q and self.chk_fuori_quota.isChecked():
             target = max(min_q, internal + offset)
-            # Mostra dettagli Fuori Quota
             self._last_internal = internal
             self._last_target = target
             self.lbl_fq_details.setText(f"Pezzo: {internal:.1f} mm | Pos. testa: {target:.1f} mm (quota+offset)")
@@ -498,34 +509,34 @@ class SemiAutoPage(QWidget):
         return target, sx, dx
 
     def _on_fuori_quota_toggle(self, on: bool):
-        # In Fuori Quota inibire SEMPRE lama DX (mobile); quando FQ off, riabilitarla
+        # In Fuori Quota inibire SEMPRE lama DX; quando FQ off, riabilitarla
         self._set_right_blade_inhibit(bool(on))
-        # azzera indicatore
         self.lbl_fq_details.setVisible(False)
         self._last_internal = None
         self._last_target = None
 
     # ---------- Intestatura (one-shot) ----------
     def _do_intestatura(self):
-        # Solo operazione di preparazione; taglio avviato dall'operatore
+        # Necessita FQ attivo; posiziona e prepara inibizioni. Taglio avviato dall'operatore. Fine taglio: input uscita lama DX (simulabile con F5).
         if not self.chk_fuori_quota.isChecked():
-            self._show_warn("Abilita prima la modalità Fuori Quota.")
+            self._show_warn("Abilita prima la modalità Fuori Quota.", auto_hide_ms=2500)
             return
         if getattr(self.machine, "emergency_active", False):
-            self._show_warn("EMERGENZA ATTIVA.")
+            self._show_warn("EMERGENZA ATTIVA.", auto_hide_ms=2500)
             return
         if not getattr(self.machine, "machine_homed", False):
-            self._show_warn("ESEGUI AZZERA (HOMING) prima.")
+            self._show_warn("ESEGUI AZZERA (HOMING) prima.", auto_hide_ms=2500)
             return
         if self._intest_in_progress:
             return
 
         min_q = float(getattr(self.machine, "min_distance", 250.0))
+
         # Memorizza stato precedente
         self._intest_in_progress = True
         self._intest_prev_ang_dx = float(getattr(self.machine, "right_head_angle", 0.0) or 0.0)
 
-        # Inibizioni: SX inibita, DX abilitata per il taglio
+        # Inibizioni: SX inibita, DX abilitata (permette uscita lama DX)
         self._set_left_blade_inhibit(True)
         self._set_right_blade_inhibit(False)
 
@@ -542,20 +553,19 @@ class SemiAutoPage(QWidget):
 
         # Sblocca freno per muovere
         if getattr(self.machine, "brake_active", False) and hasattr(self.machine, "toggle_brake"):
-            self.machine.toggle_brake()  # sblocca
+            self.machine.toggle_brake()
 
-        # Muovi a minima, poi blocca freno e attendi taglio (nessuna finestra modale)
+        # Muovi a minima; dopo movimento, blocca freno e attendi input “uscita lama DX”
         def _after_move_ui():
-            # Blocca il freno (se non è già attivo)
+            # Blocca il freno (se non già attivo)
             if hasattr(self.machine, "toggle_brake"):
                 if not getattr(self.machine, "brake_active", False):
                     self.machine.toggle_brake()
-            # Salva conteggio DX iniziale
-            self._intest_dx_count_before = self._get_dx_piece_count()
-            self._show_info("Intestatura pronta: DX @45° alla minima. SX INIBITA, DX ABILITATA. Esegui taglio da pulsantiera.")
+            # inizializza monitor uscita lama DX
+            self._last_dx_blade_out = self._get_dx_blade_out()
+            self._show_info("Intestatura pronta: DX @45° alla minima. SX INIBITA, DX ABILITATA. Premi F5 per simulare 'uscita lama' (tieni premuto durante il taglio).")
 
         if hasattr(self.machine, "move_to_length_and_angles"):
-            # Assicura callback UI-safe
             self.machine.move_to_length_and_angles(
                 length_mm=float(min_q), ang_sx=float(sx_cur), ang_dx=45.0,
                 done_cb=lambda ok, msg: QTimer.singleShot(0, _after_move_ui)
@@ -564,10 +574,10 @@ class SemiAutoPage(QWidget):
             QTimer.singleShot(0, _after_move_ui)
 
     def _finish_intestatura(self):
-        # Ripristini post-taglio
+        # Ripristino post-taglio. Se FQ è attivo: re‑inibisci DX e riposiziona a last_target (o ricalcola).
         fq = self.chk_fuori_quota.isChecked()
 
-        # SX lama torna abilitata; DX re-inibita se FQ attivo
+        # SX abilitata; DX re-inibita se FQ attivo
         self._set_left_blade_inhibit(False)
         self._set_right_blade_inhibit(True if fq else False)
 
@@ -582,7 +592,15 @@ class SemiAutoPage(QWidget):
         except Exception:
             pass
 
-        # Se abbiamo un target FQ calcolato, riposiziona a quota+offset
+        # Se FQ e target non noto, prova a ricalcolare
+        if fq and self._last_target is None:
+            try:
+                target, _, _ = self._compute_target_from_inputs()
+                self._last_target = target
+            except Exception:
+                self._last_target = None
+
+        # Riposiziona a quota+offset se disponibile
         if fq and self._last_target is not None:
             # Sblocca freno per muovere
             if getattr(self.machine, "brake_active", False) and hasattr(self.machine, "toggle_brake"):
@@ -597,40 +615,28 @@ class SemiAutoPage(QWidget):
 
         # Reset stato intestatura
         self._intest_in_progress = False
+        self._intest_prev_ang_dx = 0.0
         self._intest_dx_count_before = None
+        self._last_dx_blade_out = None
+        self._dx_blade_out_sim = False
         self._show_info("Intestatura completata.", auto_hide_ms=2000)
 
-    def _get_dx_piece_count(self):
-        # Prova varie denominazioni comuni dal firmware
-        for name in [
-            "right_head_piece_count", "dx_piece_count", "right_cut_count",
-            "piece_count_right", "cut_dx_count", "semi_auto_count_done_dx"
-        ]:
+    # ---------- Lettura “uscita lama DX” ----------
+    def _get_dx_blade_out(self):
+        """
+        Rileva lo stato dell'input 'uscita lama DX'.
+        Nomi possibili (firmware): 'dx_blade_out', 'right_blade_out', 'blade_out_right'.
+        In sviluppo, se attiva la simulazione con F5, ritorna True mentre il tasto è premuto.
+        """
+        if self._dx_blade_out_sim:
+            return True
+        for name in ("dx_blade_out", "right_blade_out", "blade_out_right"):
             if hasattr(self.machine, name):
                 try:
-                    return int(getattr(self.machine, name))
+                    return bool(getattr(self.machine, name))
                 except Exception:
-                    try:
-                        return int(float(getattr(self.machine, name) or 0))
-                    except Exception:
-                        return None
-        return None
-
-    def _inc_dx_piece_count(self):
-        # Simulazione incremento conteggio pezzi DX (sviluppo)
-        for name in [
-            "right_head_piece_count", "dx_piece_count", "right_cut_count",
-            "piece_count_right", "cut_dx_count", "semi_auto_count_done_dx"
-        ]:
-            if hasattr(self.machine, name):
-                try:
-                    cur = int(getattr(self.machine, name) or 0)
-                except Exception:
-                    cur = 0
-                setattr(self.machine, name, cur + 1)
-                return
-        # Se non esiste alcun attributo, crea quello più “parlante”
-        setattr(self.machine, "right_head_piece_count", 1)
+                    return False
+        return False
 
     # ---------- Contapezzi ----------
     def _update_target_pieces(self, v: int):
@@ -654,14 +660,12 @@ class SemiAutoPage(QWidget):
         try:
             target, sx, dx = self._compute_target_from_inputs()
         except Exception:
-            # banner già mostrato
             return
 
-        # Sblocca freno se serve
+        # Sblocca freno se attivo
         if getattr(self.machine, "brake_active", False) and hasattr(self.machine, "toggle_brake"):
             self.machine.toggle_brake()
 
-        # Avvio movimento
         if hasattr(self.machine, "move_to_length_and_angles"):
             self.machine.move_to_length_and_angles(
                 length_mm=float(target), ang_sx=float(sx), ang_dx=float(dx),
@@ -679,7 +683,7 @@ class SemiAutoPage(QWidget):
     # ---------- Poll ----------
     def _start_poll(self):
         self._poll = QTimer(self)
-        self._poll.setInterval(200)
+        self._poll.setInterval(100)  # più reattivo per tracciare F5 e uscita lama
         self._poll.timeout.connect(self._tick)
         self._poll.start()
         self._update_buttons()
@@ -695,7 +699,7 @@ class SemiAutoPage(QWidget):
         except Exception:
             pass
 
-        # Quota live: encoder -> fallback a position_current
+        # Quota live
         pos = getattr(self.machine, "encoder_position", None)
         if pos is None:
             pos = getattr(self.machine, "position_current", None)
@@ -704,12 +708,16 @@ class SemiAutoPage(QWidget):
         except Exception:
             self.lbl_target_big.setText("Quota: — mm")
 
-        # Monitor fine intestatura via contatore DX
-        if self._intest_in_progress and (self._intest_dx_count_before is not None):
-            cur = self._get_dx_piece_count()
-            if cur is not None and cur > self._intest_dx_count_before:
-                # Chiude intestatura in modo UI-safe
-                QTimer.singleShot(0, self._finish_intestatura)
+        # Monitor termine intestatura tramite “uscita lama DX”: fronte di discesa (da True a False)
+        if self._intest_in_progress:
+            cur_out = self._get_dx_blade_out()
+            if self._last_dx_blade_out is None:
+                self._last_dx_blade_out = cur_out
+            else:
+                if self._last_dx_blade_out and not cur_out:
+                    # fine taglio: uscita lama si richiude
+                    QTimer.singleShot(0, self._finish_intestatura)
+                self._last_dx_blade_out = cur_out
 
         # Contapezzi
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0))
@@ -739,7 +747,6 @@ class SemiAutoPage(QWidget):
 
     # ---------- Inibizioni Lama ----------
     def _set_left_blade_inhibit(self, on: bool):
-        # setta attributo o chiama API se presente
         if hasattr(self.machine, "set_left_blade_inhibit"):
             try:
                 self.machine.set_left_blade_inhibit(bool(on))
@@ -757,11 +764,35 @@ class SemiAutoPage(QWidget):
                 pass
         setattr(self.machine, "right_blade_inhibit", bool(on))
 
-    # ---------- Simulazioni da tastiera ----------
+    # ---------- Simulazioni tastiera ----------
     def keyPressEvent(self, event: QKeyEvent):
-        # F6 / K = simula conteggio pezzo DX (+1) per chiudere intestatura
+        # F5 = “uscita lama DX” attiva mentre il tasto è premuto
+        if event.key() == Qt.Key_F5:
+            if not self._dx_blade_out_sim:
+                self._dx_blade_out_sim = True
+                # facoltativo: riflette anche nell'oggetto macchina
+                setattr(self.machine, "dx_blade_out", True)
+                self._show_info("Uscita lama DX: ATTIVA (simulazione F5)")
+            event.accept()
+            return
+        # F6/K = (legacy) simula incremento contapezzi DX
         if event.key() in (Qt.Key_F6, Qt.Key_K):
-            self._inc_dx_piece_count()
+            # opzionale legacy; non più usato per terminare intestatura
+            done = int(getattr(self.machine, "semi_auto_count_done", 0))
+            setattr(self.machine, "semi_auto_count_done", done + 1)
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent):
+        # Rilascio F5 = “uscita lama DX” chiusa -> termina intestatura se in corso
+        if event.key() == Qt.Key_F5:
+            if self._dx_blade_out_sim:
+                self._dx_blade_out_sim = False
+                setattr(self.machine, "dx_blade_out", False)
+                self._show_info("Uscita lama DX: CHIUSA (simulazione F5)", auto_hide_ms=1200)
+                if self._intest_in_progress:
+                    QTimer.singleShot(0, self._finish_intestatura)
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
