@@ -35,7 +35,7 @@ class HeadsView(QFrame):
         pivot_r   = 7
         body_w    = 54
         body_h    = 129
-        bevel     = 15
+        bevel     = 20
 
         # Dati macchina
         min_mm = float(getattr(self.machine, "min_distance", 250.0))
