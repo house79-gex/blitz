@@ -1,23 +1,33 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSizePolicy, QGridLayout
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QLabel, QFrame
 from PySide6.QtCore import Qt
 
+# Palette
 OK = "#2ecc71"
 WARN = "#f39c12"
 ERR = "#e74c3c"
-MUTED = "#7f8c8d"
+INFO = "#2980b9"
 TEXT = "#2c3e50"
-PANEL_BG = "#f7f9fb"
+MUTED = "#7f8c8d"
+CARD_BG = "#f7f9fb"
 BORDER = "#dfe6e9"
+
+def _pill(text: str, color: str, bold: bool = True) -> QLabel:
+    lbl = QLabel(text)
+    lb = "font-weight:900;" if bold else "font-weight:700;"
+    lbl.setStyleSheet(
+        f"{lb} color:white; background:{color}; border-radius:10px; padding:3px 8px;"
+    )
+    lbl.setAlignment(Qt.AlignCenter)
+    return lbl
 
 class StatusPanel(QWidget):
     """
-    Pannello stato compatto.
-    Mostra:
+    Pannello stato compatto e leggibile (ripristinato):
     - EMG (rosso/verde)
-    - Homed/Azzerata (verde/giallo)
-    - Freno (BLOCCATO/SBLOCCATO con colori evidenti)
-    - Frizione (INSERITA/DISINSERITA)
-    - Quota (se disponibile)
+    - HOMED (verde/giallo)
+    - FRENO (BLOCCATO=verde / SBLOCCATO=arancio) ben evidente
+    - FRIZIONE (INSERITA=verde / DISINSERITA=arancio)
+    - QUOTA (mm) se disponibile
     """
     def __init__(self, machine_state, title="STATO", parent=None):
         super().__init__(parent)
@@ -30,44 +40,43 @@ class StatusPanel(QWidget):
         root.setSpacing(6)
 
         title_lbl = QLabel(title.upper())
-        title_lbl.setStyleSheet("font-weight: 800; color: #34495e;")
+        title_lbl.setStyleSheet("font-weight: 900; color: #34495e;")
         root.addWidget(title_lbl, 0, alignment=Qt.AlignLeft)
 
         card = QFrame()
-        card.setStyleSheet(f"QFrame{{background:{PANEL_BG}; border:1px solid {BORDER}; border-radius:10px;}}")
+        card.setStyleSheet(f"QFrame{{background:{CARD_BG}; border:1px solid {BORDER}; border-radius:10px;}}")
         root.addWidget(card, 1)
 
         grid = QGridLayout(card)
         grid.setContentsMargins(8, 8, 8, 8)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(6)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
 
-        # Labels
-        self._emg = QLabel("-")
-        self._homed = QLabel("-")
-        self._brake = QLabel("-")
-        self._clutch = QLabel("-")
-        self._enc = QLabel("-")
+        # Etichette
+        def add_row(r, name, value_widget):
+            name_lbl = QLabel(name)
+            name_lbl.setStyleSheet("font-weight:700; color:#2c3e50;")
+            grid.addWidget(name_lbl, r, 0, alignment=Qt.AlignLeft)
+            grid.addWidget(value_widget, r, 1, alignment=Qt.AlignRight)
 
-        font_l = "font-weight:700; color:#2c3e50;"
-        font_v = "font-weight:800;"
+        # Placeholders
+        self.w_emg = _pill("-", MUTED)
+        self.w_homed = _pill("-", MUTED)
+        self.w_brake = _pill("-", MUTED)
+        self.w_clutch = _pill("-", MUTED)
+        self.w_enc = QLabel("—")
+        self.w_enc.setStyleSheet("font-weight:800; color:#2980b9;")
 
-        def add_row(r, name, w: QLabel):
-            lbl = QLabel(name)
-            lbl.setStyleSheet(font_l)
-            w.setStyleSheet(font_v)
-            grid.addWidget(lbl, r, 0, alignment=Qt.AlignLeft)
-            grid.addWidget(w, r, 1, alignment=Qt.AlignRight)
-
-        add_row(0, "EMG", self._emg)
-        add_row(1, "HOMED", self._homed)
-        add_row(2, "FRENO", self._brake)
-        add_row(3, "FRIZIONE", self._clutch)
-        add_row(4, "QUOTA", self._enc)
+        add_row(0, "EMG", self.w_emg)
+        add_row(1, "HOMED", self.w_homed)
+        add_row(2, "FRENO", self.w_brake)
+        add_row(3, "FRIZIONE", self.w_clutch)
+        add_row(4, "QUOTA", self.w_enc)
 
         root.addStretch(1)
 
-    def _bool_attr(self, *names, default=False):
+    # Helpers stato
+    def _b(self, *names, default=False):
         for n in names:
             if hasattr(self.m, n):
                 try:
@@ -76,7 +85,7 @@ class StatusPanel(QWidget):
                     pass
         return default
 
-    def _num_attr(self, *names):
+    def _n(self, *names):
         for n in names:
             if hasattr(self.m, n):
                 try:
@@ -87,26 +96,38 @@ class StatusPanel(QWidget):
 
     def refresh(self):
         # EMG
-        emg = self._bool_attr("emergency_active", "emg_active", "is_emg", "in_emergency", default=False)
-        self._emg.setText("ATTIVA" if emg else "OK")
-        self._emg.setStyleSheet(f"font-weight:800; color:{ERR if emg else OK};")
+        emg = self._b("emergency_active", "emg_active", "is_emg", "in_emergency")
+        self.w_emg.setText("ATTIVA" if emg else "OK")
+        self.w_emg.setStyleSheet(
+            f"font-weight:900; color:white; background:{ERR if emg else OK}; border-radius:10px; padding:3px 8px;"
+        )
 
-        # Homed/Azzerata
-        homed = self._bool_attr("is_homed", "homed", "is_zeroed", "zeroed", "azzerata", default=False)
-        self._homed.setText("HOMED" if homed else "NO")
-        self._homed.setStyleSheet(f"font-weight:800; color:{OK if homed else WARN};")
+        # HOMED
+        homed = self._b("is_homed", "homed", "is_zeroed", "zeroed", "azzerata")
+        self.w_homed.setText("HOMED" if homed else "NO")
+        self.w_homed.setStyleSheet(
+            f"font-weight:900; color:white; background:{OK if homed else WARN}; border-radius:10px; padding:3px 8px;"
+        )
 
-        # Freno
-        brake = self._bool_attr("brake_active", "freno_attivo", default=False)
-        self._brake.setText("BLOCCATO" if brake else "SBLOCCATO")
-        self._brake.setStyleSheet(f"font-weight:900; color:{OK if brake else ORANGE};")
+        # FRENO
+        brake = self._b("brake_active", "freno_attivo")
+        self.w_brake.setText("BLOCCATO" if brake else "SBLOCCATO")
+        self.w_brake.setStyleSheet(
+            f"font-weight:900; color:white; background:{OK if brake else WARN}; border-radius:10px; padding:3px 8px;"
+        )
 
-        # Frizione
-        clutch = self._bool_attr("clutch_active", "frizione_inserita", default=True)
-        self._clutch.setText("INSERITA" if clutch else "DISINSERITA")
-        self._clutch.setStyleSheet(f"font-weight:900; color:{OK if clutch else ORANGE};")
+        # FRIZIONE
+        clutch = self._b("clutch_active", "frizione_inserita", default=True)
+        self.w_clutch.setText("INSERITA" if clutch else "DISINSERITA")
+        self.w_clutch.setStyleSheet(
+            f"font-weight:900; color:white; background:{OK if clutch else WARN}; border-radius:10px; padding:3px 8px;"
+        )
 
-        # Quota
-        enc = self._num_attr("encoder_position", "pos_mm", "quota_mm")
-        self._enc.setText(f"{enc:.2f} mm" if enc is not None else "—")
-        self._enc.setStyleSheet("font-weight:800; color:#2980b9;" if enc is not None else "color:#7f8c8d;")
+        # QUOTA
+        enc = self._n("encoder_position", "pos_mm", "quota_mm")
+        if enc is not None:
+            self.w_enc.setText(f"{enc:.2f} mm")
+            self.w_enc.setStyleSheet("font-weight:900; color:#2980b9;")
+        else:
+            self.w_enc.setText("—")
+            self.w_enc.setStyleSheet("color:#7f8c8d; font-weight:700;")
