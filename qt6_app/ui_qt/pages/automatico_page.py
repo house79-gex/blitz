@@ -1,3 +1,5 @@
+from typing import Optional
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QComboBox, QSpinBox, QTreeWidget, QTreeWidgetItem, QTextEdit, QCheckBox, QSizePolicy
@@ -27,54 +29,82 @@ class AutomaticoPage(QWidget):
         self.seq.step_finished.connect(self._on_step_finished)
         self.seq.finished.connect(self._on_seq_done)
 
-        self.status: StatusPanel | None = None
-        self._poll: QTimer | None = None
+        self.status: Optional[StatusPanel] = None
+        self._poll: Optional[QTimer] = None
 
-        self.spin_target: QSpinBox | None = None
-        self.lbl_done: QLabel | None = None
-        self.lbl_remaining: QLabel | None = None
-        self.chk_fuori_quota: QCheckBox | None = None
+        self.spin_target: Optional[QSpinBox] = None
+        self.lbl_done: Optional[QLabel] = None
+        self.lbl_remaining: Optional[QLabel] = None
+        self.chk_fuori_quota: Optional[QCheckBox] = None
 
-        self.log: QTextEdit | None = None
+        self.log: Optional[QTextEdit] = None
+        self.tree: Optional[QTreeWidget] = None
 
         self._build()
 
     # ---------------- Helpers nav/reset ----------------
-    def _nav_home(self):
+    def _nav_home(self) -> bool:
+        # Navigazione Home robusta
+        if hasattr(self.appwin, "show_page") and callable(getattr(self.appwin, "show_page")):
+            try:
+                self.appwin.show_page("home")
+                return True
+            except Exception:
+                pass
         for attr in ("go_home", "show_home", "navigate_home", "home"):
             if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
-                try: getattr(self.appwin, attr)(); return
-                except Exception: pass
+                try:
+                    getattr(self.appwin, attr)()
+                    return True
+                except Exception:
+                    pass
         if hasattr(self.appwin, "nav") and hasattr(self.appwin.nav, "go_home") and callable(self.appwin.nav.go_home):
-            try: self.appwin.nav.go_home(); return
-            except Exception: pass
+            try:
+                self.appwin.nav.go_home()
+                return True
+            except Exception:
+                pass
+        return False
 
     def _reset_and_home(self):
-        # Arresta sequenza e pulisce piano/viste
-        try: self.seq.stop()
-        except Exception: pass
+        # Arresta sequenza e pulisce piano/viste; Header poi richiama Home
+        try:
+            self.seq.stop()
+        except Exception:
+            pass
         self.plan = {"solver": "", "steps": []}
-        try: self.tree.clear()
-        except Exception: pass
-        if self.log: self.log.clear()
+        try:
+            if self.tree:
+                self.tree.clear()
+        except Exception:
+            pass
+        if self.log:
+            self.log.clear()
 
     def _build(self):
-        root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
 
-        # Header con Reset rosso e Home funzionanti
+        # Header con Reset rosso e Home funzionanti (callback + fallback)
         root.addWidget(Header(self.appwin, "AUTOMATICO", mode="default", on_home=self._nav_home, on_reset=self._reset_and_home))
 
         # Controls top bar
-        ctrl = QHBoxLayout(); ctrl.setSpacing(8); root.addLayout(ctrl)
+        ctrl = QHBoxLayout()
+        ctrl.setSpacing(8)
+        root.addLayout(ctrl)
         ctrl.addWidget(QLabel("Solver:"))
-        self.cb_solver = QComboBox(); self.cb_solver.addItems(["ILP", "BFD"])
+        self.cb_solver = QComboBox()
+        self.cb_solver.addItems(["ILP", "BFD"])
         cfg = read_settings()
         if str(cfg.get("solver", "ILP")).upper() in ("ILP", "BFD"):
             self.cb_solver.setCurrentText(str(cfg.get("solver", "ILP")).upper())
         ctrl.addWidget(self.cb_solver)
 
         ctrl.addWidget(QLabel("Time limit (s):"))
-        self.spin_tl = QSpinBox(); self.spin_tl.setRange(1, 600); self.spin_tl.setValue(int(cfg.get("ilp_time_limit_s", 15)))
+        self.spin_tl = QSpinBox()
+        self.spin_tl.setRange(1, 600)
+        self.spin_tl.setValue(int(cfg.get("ilp_time_limit_s", 15)))
         ctrl.addWidget(self.spin_tl)
 
         btn_calc = QPushButton("Calcola Piano"); btn_calc.clicked.connect(self._calc_plan)
@@ -86,14 +116,22 @@ class AutomaticoPage(QWidget):
         ctrl.addStretch(1)
 
         # Corpo
-        body = QHBoxLayout(); body.setSpacing(8); root.addLayout(body, 1)
+        body = QHBoxLayout()
+        body.setSpacing(8)
+        root.addLayout(body, 1)
 
         # Sinistra: contapezzi, tree, log
-        left = QFrame(); body.addWidget(left, 1)
-        ll = QVBoxLayout(left); ll.setContentsMargins(6, 6, 6, 6); ll.setSpacing(8)
+        left = QFrame()
+        body.addWidget(left, 1)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(6, 6, 6, 6)
+        ll.setSpacing(8)
 
-        cnt_box = QFrame(); cnt_box.setFixedSize(COUNTER_W, COUNTER_H); cnt_box.setFrameShape(QFrame.StyledPanel)
-        cnt_l = QVBoxLayout(cnt_box); cnt_l.setContentsMargins(8, 8, 8, 8)
+        cnt_box = QFrame()
+        cnt_box.setFixedSize(COUNTER_W, COUNTER_H)
+        cnt_box.setFrameShape(QFrame.StyledPanel)
+        cnt_l = QVBoxLayout(cnt_box)
+        cnt_l.setContentsMargins(8, 8, 8, 8)
         title_cnt = QLabel("CONTAPEZZI"); title_cnt.setStyleSheet("font-weight:700;")
         cnt_l.addWidget(title_cnt)
         row_t = QHBoxLayout()
@@ -111,10 +149,12 @@ class AutomaticoPage(QWidget):
         cnt_l.addLayout(row_s)
         ll.addWidget(cnt_box, 0, alignment=Qt.AlignLeft | Qt.AlignTop)
 
-        self.tree = QTreeWidget(); self.tree.setHeaderLabels(["#", "ID", "Len (mm)", "Qty", "Stock"])
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["#", "ID", "Len (mm)", "Qty", "Stock"])
         ll.addWidget(self.tree, 4)
 
-        log_box = QFrame(); log_l = QVBoxLayout(log_box); log_l.setContentsMargins(4, 4, 4, 4)
+        log_box = QFrame()
+        log_l = QVBoxLayout(log_box); log_l.setContentsMargins(4, 4, 4, 4)
         log_l.addWidget(QLabel("Log"))
         self.log = QTextEdit(); self.log.setReadOnly(True); self.log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         log_l.addWidget(self.log, 1)
@@ -137,18 +177,20 @@ class AutomaticoPage(QWidget):
         self.chk_fuori_quota.toggled.connect(self._toggle_fuori_quota)
         fql.addWidget(self.chk_fuori_quota); fql.addStretch(1)
         rl.addWidget(fq_box, 0, alignment=Qt.AlignLeft)
-
         rl.addStretch(1)
 
     def _toast(self, msg, level="info"):
-        if hasattr(self.appwin, "toast"): self.appwin.toast.show(msg, level, 2500)
+        if hasattr(self.appwin, "toast"):
+            self.appwin.toast.show(msg, level, 2500)
 
     # Piano/Sequencer
     def _calc_plan(self):
         dummy_jobs = [{"id": "A", "len": 500.0, "qty": 3}, {"id": "B", "len": 750.0, "qty": 2}]
         solver = self.cb_solver.currentText()
-        if solver == "ILP": self.plan = plan_ilp(dummy_jobs, stock=None, time_limit_s=int(self.spin_tl.value()))
-        else: self.plan = plan_bfd(dummy_jobs, stock=None)
+        if solver == "ILP":
+            self.plan = plan_ilp(dummy_jobs, stock=None, time_limit_s=int(self.spin_tl.value()))
+        else:
+            self.plan = plan_bfd(dummy_jobs, stock=None)
         self._populate_plan(); self._toast(f"Piano calcolato ({self.plan['solver']})", "ok")
 
     def _populate_plan(self):
@@ -167,7 +209,7 @@ class AutomaticoPage(QWidget):
     def _on_step_started(self, idx: int, step: dict): self._log(f"Step {idx+1} start: {step.get('id')}")
     def _on_step_finished(self, idx: int, step: dict): self._log(f"Step {idx+1} done")
     def _on_seq_done(self): self._log("Sequenza completata"); self._toast("Automatico: completato", "ok")
-    def _log(self, s: str): 
+    def _log(self, s: str):
         if self.log: self.log.append(s)
 
     # Contapezzi / Fuori Quota
