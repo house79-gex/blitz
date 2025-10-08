@@ -10,7 +10,7 @@ from ui_qt.widgets.status_panel import StatusPanel
 class AutomaticoPage(QWidget):
     """
     Pianificatore ILP/BFD e sequencer.
-    Mantiene le stesse funzioni di alto livello del Tk: calcolo piano, avvio/pausa/stop.
+    Aggiunto StatusPanel con polling.
     """
     def __init__(self, appwin):
         super().__init__()
@@ -28,28 +28,20 @@ class AutomaticoPage(QWidget):
         self._build()
 
     def _build(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
         root.addWidget(Header(self.appwin, "AUTOMATICO"))
 
         # Controls
-        ctrl = QHBoxLayout()
-        ctrl.setSpacing(8)
-        root.addLayout(ctrl)
-
+        ctrl = QHBoxLayout(); ctrl.setSpacing(8); root.addLayout(ctrl)
         ctrl.addWidget(QLabel("Solver:"))
-        self.cb_solver = QComboBox()
-        self.cb_solver.addItems(["ILP", "BFD"])
+        self.cb_solver = QComboBox(); self.cb_solver.addItems(["ILP", "BFD"])
         cfg = read_settings()
         if str(cfg.get("solver", "ILP")).upper() in ("ILP", "BFD"):
             self.cb_solver.setCurrentText(str(cfg.get("solver", "ILP")).upper())
         ctrl.addWidget(self.cb_solver)
 
         ctrl.addWidget(QLabel("Time limit (s):"))
-        self.spin_tl = QSpinBox()
-        self.spin_tl.setRange(1, 600)
-        self.spin_tl.setValue(int(cfg.get("ilp_time_limit_s", 15)))
+        self.spin_tl = QSpinBox(); self.spin_tl.setRange(1, 600); self.spin_tl.setValue(int(cfg.get("ilp_time_limit_s", 15)))
         ctrl.addWidget(self.spin_tl)
 
         btn_calc = QPushButton("Calcola Piano"); btn_calc.clicked.connect(self._calc_plan)
@@ -61,22 +53,16 @@ class AutomaticoPage(QWidget):
         ctrl.addStretch(1)
 
         # Plan view
-        body = QHBoxLayout()
-        body.setSpacing(8)
-        root.addLayout(body, 1)
+        body = QHBoxLayout(); body.setSpacing(8); root.addLayout(body, 1)
 
-        left = QFrame()
-        body.addWidget(left, 2)
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(6, 6, 6, 6)
+        left = QFrame(); body.addWidget(left, 2)
+        ll = QVBoxLayout(left); ll.setContentsMargins(6, 6, 6, 6)
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["#", "ID", "Len (mm)", "Qty", "Stock"])
         ll.addWidget(self.tree, 1)
 
-        right = QFrame()
-        body.addWidget(right, 1)
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(6, 6, 6, 6)
+        right = QFrame(); body.addWidget(right, 1)
+        rl = QVBoxLayout(right); rl.setContentsMargins(6, 6, 6, 6)
 
         # StatusPanel in alto (nuovo)
         self.status = StatusPanel(self.machine, "STATO", right)
@@ -84,8 +70,7 @@ class AutomaticoPage(QWidget):
 
         # Log
         rl.addWidget(QLabel("Log"))
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
+        self.log = QTextEdit(); self.log.setReadOnly(True)
         rl.addWidget(self.log, 1)
 
     def _toast(self, msg, level="info"):
@@ -93,7 +78,7 @@ class AutomaticoPage(QWidget):
             self.appwin.toast.show(msg, level, 2500)
 
     def _calc_plan(self):
-        # TODO: sostituire jobs/stock con sorgenti dati reali (come nel Tk)
+        # TODO: dati reali (come Tk)
         dummy_jobs = [
             {"id": "A", "len": 500.0, "qty": 3},
             {"id": "B", "len": 750.0, "qty": 2},
@@ -121,36 +106,26 @@ class AutomaticoPage(QWidget):
     def _start_seq(self):
         steps = self.plan.get("steps") or []
         if not steps:
-            self._toast("Nessun piano: calcola prima", "warn")
-            return
+            self._toast("Nessun piano: calcola prima", "warn"); return
         self.seq.load_plan(steps)
         self.seq.start()
         self._log("Sequenza avviata")
 
     def _pause_seq(self):
-        self.seq.pause()
-        self._log("Sequenza in pausa")
+        self.seq.pause(); self._log("Sequenza in pausa")
 
     def _resume_seq(self):
-        self.seq.resume()
-        self._log("Sequenza ripresa")
+        self.seq.resume(); self._log("Sequenza ripresa")
 
     def _stop_seq(self):
-        self.seq.stop()
-        self._log("Sequenza arrestata")
+        self.seq.stop(); self._log("Sequenza arrestata")
 
-    def _on_step_started(self, idx: int, step: dict):
-        self._log(f"Step {idx+1} start: {step.get('id')}")
-
-    def _on_step_finished(self, idx: int, step: dict):
-        self._log(f"Step {idx+1} done")
-
+    def _on_step_started(self, idx: int, step: dict): self._log(f"Step {idx+1} start: {step.get('id')}")
+    def _on_step_finished(self, idx: int, step: dict): self._log(f"Step {idx+1} done")
     def _on_seq_done(self):
-        self._log("Sequenza completata")
-        self._toast("Automatico: completato", "ok")
+        self._log("Sequenza completata"); self._toast("Automatico: completato", "ok")
 
-    def _log(self, s: str):
-        self.log.append(s)
+    def _log(self, s: str): self.log.append(s)
 
     # --- Polling StatusPanel ---
     def on_show(self):
@@ -167,9 +142,7 @@ class AutomaticoPage(QWidget):
     def hideEvent(self, ev):
         # ferma polling quando la pagina non è visibile
         if self._poll is not None:
-            try:
-                self._poll.stop()
-            except Exception:
-                pass
+            try: self._poll.stop()
+            except Exception: pass
             self._poll = None
         super().hideEvent(ev)
