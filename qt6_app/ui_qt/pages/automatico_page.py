@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
-    QComboBox, QSpinBox, QTreeWidget, QTreeWidgetItem, QTextEdit, QCheckBox, QDoubleSpinBox
+    QComboBox, QSpinBox, QTreeWidget, QTreeWidgetItem, QTextEdit, QCheckBox, QSizePolicy
 )
 from PySide6.QtCore import Qt, QTimer
 from ui_qt.widgets.header import Header
@@ -9,16 +9,23 @@ from ui_qt.logic.planner import plan_ilp, plan_bfd
 from ui_qt.logic.sequencer import Sequencer
 from ui_qt.widgets.status_panel import StatusPanel
 
-STATUS_PANEL_HEIGHT = 220  # uniforma dimensioni a Semi-Auto (regolabile)
+# Dimensioni “identiche” a Semi-Automatico (aggiorna qui per allineare)
+PANEL_W = 420      # larghezza StatusPanel
+PANEL_H = 220      # altezza StatusPanel
+COUNTER_W = 420    # larghezza pannello contapezzi (sinistra)
+COUNTER_H = 150    # altezza pannello contapezzi
+FQ_H = 100         # altezza riquadro “Fuori Quota” (in basso a destra)
 
 
 class AutomaticoPage(QWidget):
     """
     Pianificatore ILP/BFD e sequencer.
     Stato a destra con:
-    - StatusPanel (stessa dimensione di Semi-Auto)
-    - Contapezzi (target/tagliati/rimanenti)
-    - Modalità Fuori Quota (toggle)
+    - StatusPanel (dimensioni identiche a Semi-Automatico)
+    - Sezione Fuori Quota in basso (identica a Semi-Automatico)
+    A sinistra:
+    - Pannello Contapezzi in alto a sinistra (dimensioni identiche a Semi-Automatico)
+    - Piano (tree) e Log in basso
     """
     def __init__(self, appwin):
         super().__init__()
@@ -40,6 +47,9 @@ class AutomaticoPage(QWidget):
         # Fuori quota
         self.chk_fuori_quota: QCheckBox | None = None
 
+        # Log
+        self.log: QTextEdit | None = None
+
         self._build()
 
     def _build(self):
@@ -48,7 +58,7 @@ class AutomaticoPage(QWidget):
         root.setSpacing(6)
         root.addWidget(Header(self.appwin, "AUTOMATICO"))
 
-        # Controls
+        # Controls top bar
         ctrl = QHBoxLayout()
         ctrl.setSpacing(8)
         root.addLayout(ctrl)
@@ -75,34 +85,24 @@ class AutomaticoPage(QWidget):
         ctrl.addWidget(btn_calc); ctrl.addWidget(btn_start); ctrl.addWidget(btn_pause); ctrl.addWidget(btn_resume); ctrl.addWidget(btn_stop)
         ctrl.addStretch(1)
 
-        # Plan view
+        # Corpo: sinistra (contapezzi + tree + log) e destra (status + fuori quota)
         body = QHBoxLayout()
         body.setSpacing(8)
         root.addLayout(body, 1)
 
+        # ------------------ Sinistra ------------------
         left = QFrame()
-        body.addWidget(left, 2)
+        body.addWidget(left, 1)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(6, 6, 6, 6)
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["#", "ID", "Len (mm)", "Qty", "Stock"])
-        ll.addWidget(self.tree, 1)
+        ll.setSpacing(8)
 
-        right = QFrame()
-        body.addWidget(right, 1)
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(6, 6, 6, 6)
-        rl.setSpacing(8)
-
-        # StatusPanel in alto (uniformato)
-        self.status = StatusPanel(self.machine, "STATO", right)
-        self.status.setMinimumHeight(STATUS_PANEL_HEIGHT)
-        self.status.setMaximumHeight(STATUS_PANEL_HEIGHT)
-        rl.addWidget(self.status)
-
-        # Contapezzi (come in Semi-Auto)
+        # Contapezzi in alto a sinistra (dimensioni fisse)
         cnt_box = QFrame()
-        cnt_l = QVBoxLayout(cnt_box); cnt_l.setContentsMargins(6, 6, 6, 6)
+        cnt_box.setFixedSize(COUNTER_W, COUNTER_H)
+        cnt_box.setFrameShape(QFrame.StyledPanel)
+        cnt_l = QVBoxLayout(cnt_box)
+        cnt_l.setContentsMargins(8, 8, 8, 8)
         title_cnt = QLabel("CONTAPEZZI"); title_cnt.setStyleSheet("font-weight:700;")
         cnt_l.addWidget(title_cnt)
 
@@ -121,23 +121,54 @@ class AutomaticoPage(QWidget):
         row_s.addWidget(self.lbl_done); row_s.addWidget(self.lbl_remaining); row_s.addStretch(1); row_s.addWidget(btn_reset)
         cnt_l.addLayout(row_s)
 
-        rl.addWidget(cnt_box)
+        ll.addWidget(cnt_box, 0, alignment=Qt.AlignLeft | Qt.AlignTop)
 
-        # Modalità Fuori Quota (come in Semi-Auto: toggle)
+        # Piano (tree)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["#", "ID", "Len (mm)", "Qty", "Stock"])
+        ll.addWidget(self.tree, 4)
+
+        # Log sotto al tree
+        log_box = QFrame()
+        log_l = QVBoxLayout(log_box)
+        log_l.setContentsMargins(4, 4, 4, 4)
+        log_l.addWidget(QLabel("Log"))
+        self.log = QTextEdit(); self.log.setReadOnly(True)
+        self.log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        log_l.addWidget(self.log, 1)
+        ll.addWidget(log_box, 3)
+
+        # ------------------ Destra ------------------
+        right = QFrame()
+        # forza la stessa larghezza del blocco destro di Semi-Auto
+        right.setFixedWidth(PANEL_W + 12)
+        body.addWidget(right, 0)
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(6, 6, 6, 6)
+        rl.setSpacing(8)
+
+        # StatusPanel (dimensioni fisse)
+        status_wrap = QFrame()
+        status_wrap.setFixedSize(PANEL_W, PANEL_H)
+        swl = QVBoxLayout(status_wrap); swl.setContentsMargins(0, 0, 0, 0)
+        self.status = StatusPanel(self.machine, "STATO", status_wrap)
+        self.status.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        swl.addWidget(self.status)
+        rl.addWidget(status_wrap, 0, alignment=Qt.AlignLeft | Qt.AlignTop)
+
+        # Riquadro “Fuori Quota” in basso (identico spacing/dimensioni)
         fq_box = QFrame()
-        fq_l = QHBoxLayout(fq_box); fq_l.setContentsMargins(6, 6, 6, 6)
+        fq_box.setFixedSize(PANEL_W, FQ_H)
+        fq_box.setFrameShape(QFrame.StyledPanel)
+        fql = QHBoxLayout(fq_box); fql.setContentsMargins(8, 8, 8, 8)
         self.chk_fuori_quota = QCheckBox("Modalità fuori quota")
         cur_fq = bool(getattr(self.machine, "fuori_quota_mode", False) or getattr(self.machine, "out_of_quota_mode", False))
         self.chk_fuori_quota.setChecked(cur_fq)
         self.chk_fuori_quota.toggled.connect(self._toggle_fuori_quota)
-        fq_l.addWidget(self.chk_fuori_quota); fq_l.addStretch(1)
-        rl.addWidget(fq_box)
+        fql.addWidget(self.chk_fuori_quota); fql.addStretch(1)
+        rl.addWidget(fq_box, 0, alignment=Qt.AlignLeft)
 
-        # Log
-        rl.addWidget(QLabel("Log"))
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        rl.addWidget(self.log, 1)
+        rl.addStretch(1)
 
     def _toast(self, msg, level="info"):
         if hasattr(self.appwin, "toast"):
@@ -202,7 +233,8 @@ class AutomaticoPage(QWidget):
         self._toast("Automatico: completato", "ok")
 
     def _log(self, s: str):
-        self.log.append(s)
+        if self.log:
+            self.log.append(s)
 
     # ----------------- Contapezzi / Fuori Quota -----------------
     def _apply_target(self):
@@ -216,7 +248,6 @@ class AutomaticoPage(QWidget):
 
     def _reset_counter(self):
         try:
-            # allinea alla semantica di Semi-Auto
             setattr(self.machine, "semi_auto_count_done", 0)
             self._update_counters_ui()
             self._toast("Contatore pezzi azzerato", "ok")
@@ -224,7 +255,6 @@ class AutomaticoPage(QWidget):
             pass
 
     def _toggle_fuori_quota(self, checked: bool):
-        # esponi entrambi i nomi per compat
         try:
             setattr(self.machine, "fuori_quota_mode", bool(checked))
             setattr(self.machine, "out_of_quota_mode", bool(checked))
@@ -245,12 +275,10 @@ class AutomaticoPage(QWidget):
 
     # ----------------- Polling Status/Counters -----------------
     def on_show(self):
-        # avvia polling status quando la pagina diventa attiva
         if self._poll is None:
             self._poll = QTimer(self)
             self._poll.timeout.connect(self._tick)
             self._poll.start(200)
-        # sync iniziale
         self._update_counters_ui()
         if self.status:
             self.status.refresh()
@@ -261,7 +289,6 @@ class AutomaticoPage(QWidget):
             self.status.refresh()
 
     def hideEvent(self, ev):
-        # ferma polling quando la pagina non è visibile
         if self._poll is not None:
             try:
                 self._poll.stop()
