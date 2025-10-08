@@ -195,69 +195,44 @@ class ManualePage(QWidget):
 
     # ---------------- Button logic ----------------
     def _toggle_freno(self):
-        cur = bool(getattr(self.machine, "brake_active", False) or getattr(self.machine, "brake_on", False) or getattr(self.machine, "freno_bloccato", False))
-        self._set_brake(not cur)
+        # Forza stato desiderato provando API robuste
+        want = not bool(getattr(self.machine, "brake_active", False) or getattr(self.machine, "brake_on", False) or getattr(self.machine, "freno_bloccato", False))
+        if hasattr(self.machine, "set_brake") and callable(getattr(self.machine, "set_brake")):
+            try: self.machine.set_brake(want)
+            except Exception: pass
+        else:
+            cur = bool(getattr(self.machine, "brake_active", False))
+            if hasattr(self.machine, "toggle_brake") and callable(getattr(self.machine, "toggle_brake")):
+                try:
+                    if cur != want: self.machine.toggle_brake()
+                except Exception: pass
+            else:
+                # fallback su attributi
+                for attr in ("brake_active", "brake_on", "freno_bloccato"):
+                    if hasattr(self.machine, attr):
+                        try: setattr(self.machine, attr, bool(want)); break
+                        except Exception: pass
         self._style_buttons_by_state()
-        if self.status:
-            self.status.refresh()
+        if self.status: self.status.refresh()
 
     def _toggle_frizione(self):
-        cur = bool(getattr(self.machine, "clutch_active", True) or getattr(self.machine, "clutch_on", False) or getattr(self.machine, "frizione_inserita", True))
-        self._set_clutch(not cur)
+        want = not bool(getattr(self.machine, "clutch_active", True) or getattr(self.machine, "clutch_on", False) or getattr(self.machine, "frizione_inserita", True))
+        if hasattr(self.machine, "set_clutch") and callable(getattr(self.machine, "set_clutch")):
+            try: self.machine.set_clutch(want)
+            except Exception: pass
+        else:
+            cur = bool(getattr(self.machine, "clutch_active", True))
+            if hasattr(self.machine, "toggle_clutch") and callable(getattr(self.machine, "toggle_clutch")):
+                try:
+                    if cur != want: self.machine.toggle_clutch()
+                except Exception: pass
+            else:
+                for attr in ("clutch_active", "clutch_on", "frizione_inserita"):
+                    if hasattr(self.machine, attr):
+                        try: setattr(self.machine, attr, bool(want)); break
+                        except Exception: pass
         self._style_buttons_by_state()
-        if self.status:
-            self.status.refresh()
-
-    def _set_brake(self, want_active: bool) -> bool:
-        m = self.machine
-        try:
-            # API dirette boolean
-            if hasattr(m, "set_brake") and callable(m.set_brake):
-                m.set_brake(want_active); return True
-            # API con metodi separati
-            if want_active:
-                for name in ("brake_lock", "lock_brake", "engage_brake", "brake_on", "enable_brake", "set_brake_on"):
-                    if hasattr(m, name) and callable(getattr(m, name)): getattr(m, name)(); return True
-            else:
-                for name in ("brake_unlock", "unlock_brake", "release_brake", "brake_off", "disable_brake", "set_brake_off"):
-                    if hasattr(m, name) and callable(getattr(m, name)): getattr(m, name)(); return True
-            # API a singolo metodo con bool
-            for name in ("brake", "set_freno"):
-                if hasattr(m, name) and callable(getattr(m, name)):
-                    getattr(m, name)(want_active); return True
-            # Toggle
-            if hasattr(m, "toggle_brake") and callable(getattr(m, "toggle_brake")):
-                cur = bool(getattr(m, "brake_active", False))
-                if cur != want_active: m.toggle_brake(); return True
-            # Attributi
-            for attr in ("brake_active", "brake_on", "freno_bloccato"):
-                if hasattr(m, attr): setattr(m, attr, bool(want_active)); return True
-        except Exception:
-            pass
-        return False
-
-    def _set_clutch(self, want_active: bool) -> bool:
-        m = self.machine
-        try:
-            if hasattr(m, "set_clutch") and callable(m.set_clutch):
-                m.set_clutch(want_active); return True
-            if want_active:
-                for name in ("clutch_lock", "engage_clutch", "clutch_on", "enable_clutch", "insert_clutch", "set_clutch_on", "set_frizione_on"):
-                    if hasattr(m, name) and callable(getattr(m, name)): getattr(m, name)(); return True
-            else:
-                for name in ("clutch_unlock", "release_clutch", "clutch_off", "disable_clutch", "remove_clutch", "set_clutch_off", "set_frizione_off"):
-                    if hasattr(m, name) and callable(getattr(m, name)): getattr(m, name)(); return True
-            for name in ("clutch", "set_frizione"):
-                if hasattr(m, name) and callable(getattr(m, name)):
-                    getattr(m, name)(want_active); return True
-            if hasattr(m, "toggle_clutch") and callable(getattr(m, "toggle_clutch")):
-                cur = bool(getattr(m, "clutch_active", True))
-                if cur != want_active: m.toggle_clutch(); return True
-            for attr in ("clutch_active", "clutch_on", "frizione_inserita"):
-                if hasattr(m, attr): setattr(m, attr, bool(want_active)); return True
-        except Exception:
-            pass
-        return False
+        if self.status: self.status.refresh()
 
     # ---------------- Encoder display ----------------
     @staticmethod
@@ -266,16 +241,21 @@ class ManualePage(QWidget):
         except Exception: return "—"
 
     def _update_quota_label(self):
-        if hasattr(self.machine, "encoder_position"):
-            try:
-                val = float(getattr(self.machine, "encoder_position"))
-                if self.lbl_quota_val:
-                    self.lbl_quota_val.setText(self._fmt_mm(val))
-                return
-            except Exception:
-                pass
-        brake_on = bool(getattr(self.machine, "brake_active", False) or getattr(self.machine, "brake_on", False) or getattr(self.machine, "freno_bloccato", False))
-        clutch_on = bool(getattr(self.machine, "clutch_active", True) or getattr(self.machine, "clutch_on", False) or getattr(self.machine, "frizione_inserita", True))
+        # Preferisci il valore reale se disponibile
+        # 1) encoder_position; 2) position_current; 3) simulazione locale
+        for name in ("encoder_position", "position_current"):
+            if hasattr(self.machine, name):
+                try:
+                    val = float(getattr(self.machine, name))
+                    if self.lbl_quota_val:
+                        self.lbl_quota_val.setText(self._fmt_mm(val))
+                    return
+                except Exception:
+                    pass
+
+        # Simulazione locale: muovi solo con freno sbloccato e frizione disinserita
+        brake_on = bool(getattr(self.machine, "brake_active", False))
+        clutch_on = bool(getattr(self.machine, "clutch_active", True))
         manual_move_ok = (not brake_on) and (not clutch_on)
         if manual_move_ok:
             if not (0.0 <= self._sim_mm <= 4000.0):
@@ -283,7 +263,8 @@ class ManualePage(QWidget):
             self._sim_mm += self._sim_dir * 1.5
             if self._sim_mm >= 4000.0: self._sim_mm = 4000.0; self._sim_dir = -1.0
             elif self._sim_mm <= 0.0: self._sim_mm = 0.0; self._sim_dir = +1.0
-        if self.lbl_quota_val: self.lbl_quota_val.setText(self._fmt_mm(self._sim_mm))
+        if self.lbl_quota_val:
+            self.lbl_quota_val.setText(self._fmt_mm(self._sim_mm))
 
     # ---------------- Lifecycle ----------------
     def on_show(self):
