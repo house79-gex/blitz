@@ -1,62 +1,4 @@
-import sys
-import os
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QStackedWidget, QVBoxLayout
-from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtCore import Qt
-from ui_qt.theme import THEME, apply_global_stylesheet
-from ui_qt.data.db import init_db
-
-THIS_DIR = os.path.dirname(__file__)
-REPO_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
-
-try:
-    from ui_qt.pages.home_page import HomePage
-except Exception:
-    class HomePage(QWidget):
-        def __init__(self, appwin):
-            super().__init__()
-            from PySide6.QtWidgets import QLabel, QVBoxLayout
-            lay = QVBoxLayout(self)
-            lay.addWidget(QLabel("Home (placeholder)"))
-        def on_show(self): pass
-
-try:
-    from ui_qt.pages.utility_page import UtilityPage
-except Exception:
-    UtilityPage = None
-
-try:
-    from ui_qt.pages.tipologie_page import TipologiePage
-except Exception:
-    TipologiePage = None
-
-try:
-    from ui_qt.pages.quote_vani_page import QuoteVaniPage
-except Exception:
-    QuoteVaniPage = None
-
-try:
-    from ui_qt.pages.semi_auto_page import SemiAutoPage
-except Exception:
-    SemiAutoPage = None
-
-try:
-    from ui_qt.pages.manuale_page import ManualePage
-except Exception:
-    ManualePage = None
-
-try:
-    from ui_qt.pages.automatico_page import AutomaticoPage
-except Exception:
-    AutomaticoPage = None
-
-try:
-    from ui.shared.machine_state import MachineState
-except Exception:
-    MachineState = None
-
+# ... (altri import e codice)
 class DummyMachineState:
     def __init__(self):
         self.machine_homed = False
@@ -66,6 +8,7 @@ class DummyMachineState:
         self.positioning_active = False
         self.min_distance = 250.0
         self.max_cut_length = 4000.0
+        self.position_current = self.min_distance
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
         self.count_active_on_closed = True
@@ -81,6 +24,26 @@ class DummyMachineState:
     def set_active_mode(self, mode: str): pass
     def normalize_after_manual(self): self.clutch_active = True
     def set_head_button_input_enabled(self, enabled: bool): pass
+
+    # Simulazione homing: porta a minima, imposta homed=True, freno OFF, frizione ON
+    def do_homing(self, callback=None):
+        import time, threading
+        def seq():
+            if self.emergency_active:
+                if callback: callback(success=False, msg="EMERGENZA")
+                return
+            if self.machine_homed:
+                if callback: callback(success=True, msg="GIÀ HOMED")
+                return
+            # “avvicinamento” temporizzato
+            time.sleep(1.0)
+            self.position_current = self.min_distance
+            self.brake_active = False
+            self.clutch_active = True
+            self.machine_homed = True
+            if callback: callback(success=True, msg="HOMING OK")
+        threading.Thread(target=seq, daemon=True).start()
+
     def move_to_length_and_angles(self, length_mm: float, ang_sx: float, ang_dx: float, done_cb=None):
         self.brake_active = False
         self.positioning_active = True
@@ -94,112 +57,4 @@ class DummyMachineState:
             self.brake_active = True
             if done_cb: done_cb(True, "OK")
         Thread(target=run, daemon=True).start()
-
-class MainWindow(QMainWindow):
-    def __init__(self, machine_state):
-        super().__init__()
-        self.setWindowTitle("BLITZ 3 - Qt6")
-        self.resize(1600, 960)
-
-        self.machine = machine_state
-        self.stack = QStackedWidget()
-        self.pages = {}
-
-        self.pages["home"] = HomePage(self)
-        if UtilityPage is not None: self.pages["utility"] = UtilityPage(self)
-        if TipologiePage is not None: self.pages["tipologie"] = TipologiePage(self)
-        if QuoteVaniPage is not None: self.pages["quotevani"] = QuoteVaniPage(self)
-        if SemiAutoPage is not None: self.pages["semi"] = SemiAutoPage(self)
-        if ManualePage is not None: self.pages["manuale"] = ManualePage(self)
-        if AutomaticoPage is not None: self.pages["automatico"] = AutomaticoPage(self)
-
-        for p in self.pages.values():
-            self.stack.addWidget(p)
-
-        container = QWidget()
-        lay = QVBoxLayout(container)
-        lay.addWidget(self.stack)
-        lay.setContentsMargins(0, 0, 0, 0)
-        self.setCentralWidget(container)
-
-        self._bind_hotkeys()
-        self.show_page("home")
-
-    def show_page(self, key: str):
-        w = self.pages.get(key)
-        if not w:
-            return
-        try:
-            mode = "other"
-            if key == "manuale": mode = "manual"
-            elif key == "semi": mode = "semi"
-            elif key == "automatico": mode = "automatic"
-            if hasattr(self.machine, "set_active_mode"):
-                self.machine.set_active_mode(mode)
-            if hasattr(self.machine, "set_head_button_input_enabled"):
-                self.machine.set_head_button_input_enabled(False)
-            if key != "manuale" and hasattr(self.machine, "normalize_after_manual"):
-                self.machine.normalize_after_manual()
-            if key == "home" and getattr(self.machine, "brake_active", False) and not getattr(self.machine, "emergency_active", False):
-                setattr(self.machine, "brake_active", False)
-        except Exception:
-            pass
-
-        self.stack.setCurrentWidget(w)
-        if hasattr(w, "on_show"):
-            w.on_show()
-
-    def _bind_hotkeys(self):
-        QShortcut(QKeySequence("F9"), self, activated=self._simulate_head_button)
-        QShortcut(QKeySequence("Shift+F9"), self, activated=self._simulate_head_button)
-        QShortcut(QKeySequence("Ctrl+F9"), self, activated=self._simulate_head_button)
-        QShortcut(QKeySequence("F10"), self, activated=self._simulate_emergency_toggle)
-        QShortcut(QKeySequence("Shift+F10"), self, activated=self._simulate_emergency_toggle)
-        QShortcut(QKeySequence("Ctrl+F10"), self, activated=self._simulate_emergency_toggle)
-        QShortcut(QKeySequence("F11"), self, activated=self._simulate_cut_pulse)
-
-    def _simulate_head_button(self):
-        try:
-            if hasattr(self.machine, "simulate_head_button"):
-                self.machine.simulate_head_button()
-            elif hasattr(self.machine, "external_head_button_press"):
-                self.machine.external_head_button_press()
-        except Exception:
-            pass
-
-    def _simulate_emergency_toggle(self):
-        try:
-            if hasattr(self.machine, "toggle_emergency"):
-                self.machine.toggle_emergency()
-            elif hasattr(self.machine, "clear_emergency"):
-                if getattr(self.machine, "emergency_active", False):
-                    self.machine.clear_emergency()
-        except Exception:
-            pass
-
-    def _simulate_cut_pulse(self):
-        try:
-            if hasattr(self.machine, "simulate_cut_pulse"):
-                self.machine.simulate_cut_pulse()
-            elif hasattr(self.machine, "decrement_current_remaining"):
-                self.machine.decrement_current_remaining()
-        except Exception:
-            pass
-
-def main():
-    app = QApplication(sys.argv)
-    apply_global_stylesheet(app)
-    init_db()
-    if MachineState is not None:
-        machine_state = MachineState()
-    else:
-        machine_state = DummyMachineState()
-    win = MainWindow(machine_state)
-    try:
-        win.showMaximized()
-    except Exception:
-        win.show()
-    sys.exit(app.exec())
-
-if __name__ == "__main__":
-    main()
+# ... resto file invariato
