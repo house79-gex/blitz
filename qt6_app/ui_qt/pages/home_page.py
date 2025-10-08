@@ -14,7 +14,7 @@ class HomePage(QWidget):
         super().__init__()
         self.appwin = appwin
         self._banner: Optional[QFrame] = None
-        self._banner_lbl: Optional[QLabel] = None
+        self._banner_lbl: Optional[Label] = None
         self._poll: Optional[QTimer] = None
         self._build()
 
@@ -43,7 +43,7 @@ class HomePage(QWidget):
         self._banner_lbl.setAlignment(Qt.AlignCenter)
         bl.addWidget(self._banner_lbl)
         root.addWidget(self._banner)
-        self._banner.hide()  # parte nascosto finché non serve
+        self._banner.hide()
 
         # Griglia di tile principali
         grid = QGridLayout()
@@ -94,15 +94,14 @@ class HomePage(QWidget):
         spacer.setMinimumHeight(20)
         root.addWidget(spacer)
 
-        # Aggiorna subito il banner alla costruzione
         self._update_banner()
 
     # ---- logica banner ----
     def _is_zeroed(self) -> bool:
         m = getattr(self.appwin, "machine", None)
         if not m:
-            return False  # trattiamo come NON azzerata, così si vede il warning
-        for name in ("is_homed", "homed", "is_zeroed", "zeroed", "azzerata", "home_done", "calibrated", "is_calibrated"):
+            return False
+        for name in ("machine_homed", "is_homed", "homed", "is_zeroed", "zeroed", "azzerata", "home_done", "calibrated", "is_calibrated"):
             if hasattr(m, name):
                 try:
                     return bool(getattr(m, name))
@@ -122,13 +121,13 @@ class HomePage(QWidget):
     def _azzera_home(self):
         try:
             m = self.appwin.machine
-            # Metodi tipici di homing/azzeramento completo (più alias coperti)
-            for attr in ("start_homing", "start_home", "begin_homing", "homing_start", "home", "go_home", "do_zero"):
+            # Preferisci la logica di homing reale (do_homing), poi altri alias
+            for attr in ("do_homing", "start_homing", "start_home", "begin_homing", "homing_start", "home", "go_home", "do_zero"):
                 if hasattr(m, attr) and callable(getattr(m, attr)):
                     getattr(m, attr)()
                     break
             else:
-                # fallback su azzeramento quota
+                # fallback: azzeramento quota
                 for attr in ("set_zero", "zero_position", "zero", "set_zero_absolute"):
                     if hasattr(m, attr) and callable(getattr(m, attr)):
                         getattr(m, attr)()
@@ -141,7 +140,6 @@ class HomePage(QWidget):
     def _reset_home(self):
         try:
             m = self.appwin.machine
-            # Alias comuni per reset EMG/allarmi
             for attr in ("clear_emergency", "reset_emergency", "clear_emg", "emg_reset", "reset_alarm", "reset"):
                 if hasattr(m, attr) and callable(getattr(m, attr)):
                     getattr(m, attr)()
@@ -153,7 +151,6 @@ class HomePage(QWidget):
 
     # ---- lifecycle ----
     def on_show(self):
-        # avvia polling banner
         if self._poll is None:
             self._poll = QTimer(self)
             self._poll.timeout.connect(self._update_banner)
@@ -161,7 +158,6 @@ class HomePage(QWidget):
         self._update_banner()
 
     def showEvent(self, ev: QEvent):
-        # protezione nel caso on_show non venisse chiamato
         if self._poll is None:
             self._poll = QTimer(self)
             self._poll.timeout.connect(self._update_banner)
