@@ -25,11 +25,11 @@ LABEL_COLOR = "#2c3e50"   # etichette “Quota” e “mm”
 class ManualePage(QWidget):
     """
     Modalità MANUALE:
-    - Visualizza quota encoder (simulata se non disponibile), molto grande, centrata, con 'Quota' a sinistra e 'mm' a destra in una cornice.
-    - Pulsanti grandi BLOCCA/SBLOCCA FRENO e INSERISCI/DISINSERISCI FRIZIONE, centrati, con stile 3D arrotondato e colore dinamico:
+    - Quota encoder (simulata se non disponibile), centrata in cornice: 'Quota' | VALORE | 'mm'
+    - Pulsanti grandi FRENO/FRIZIONE, 3D arrotondati, colore dinamico:
         * BLOCCO/INSERITA -> verde brillante
         * SBLOCCO/DISINSERITA -> arancione
-    - A destra StatusPanel con dimensioni identiche a Semi-Auto; sotto placeholder 'Fuori Quota' (stesse dimensioni).
+    - StatusPanel a destra con dimensioni identiche a Semi-Auto; sotto placeholder 'Fuori Quota' (stesse dimensioni).
     - Abilita lettura del pulsante hardware TESTA solo qui (toggle freno/frizione a impulsi).
     - All'uscita: disabilita TESTA e reinserisce sempre la frizione.
     """
@@ -49,10 +49,36 @@ class ManualePage(QWidget):
 
         self._build()
 
-    # ---------------- Style helpers ----------------
+    # ---------------- Color helpers ----------------
     @staticmethod
-    def _btn_style_3d(base: str, dark: str) -> str:
-        # stile 3D arrotondato con gradienti e stati hover/pressed
+    def _hex_to_rgb(hex_color: str):
+        h = hex_color.lstrip("#")
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+    @staticmethod
+    def _rgb_to_hex(rgb):
+        return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+    def _shade(self, hex_color: str, delta: float) -> str:
+        # delta > 0 schiarisce (0..1), delta < 0 scurisce (-1..0)
+        r, g, b = self._hex_to_rgb(hex_color)
+        if delta >= 0:
+            r = min(255, int(r + (255 - r) * delta))
+            g = min(255, int(g + (255 - g) * delta))
+            b = min(255, int(b + (255 - b) * delta))
+        else:
+            r = max(0, int(r * (1 + delta)))
+            g = max(0, int(g * (1 + delta)))
+            b = max(0, int(b * (1 + delta)))
+        return self._rgb_to_hex((r, g, b))
+
+    # ---------------- Style helpers ----------------
+    def _btn_style_3d(self, base: str, dark: str) -> str:
+        # Niente 'filter': Qt StyleSheets non la supportano.
+        base_hover = self._shade(base, 0.08)
+        dark_hover = self._shade(dark, 0.06)
+        base_pressed = self._shade(base, -0.06)
+        dark_pressed = self._shade(dark, -0.08)
         return f"""
             QPushButton {{
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -65,11 +91,14 @@ class ManualePage(QWidget):
                 font-size: {BTN_FONT_PX}px;
             }}
             QPushButton:hover {{
-                filter: brightness(1.08);
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {base_hover}, stop:1 {dark_hover});
+                border-color: {dark_hover};
             }}
             QPushButton:pressed {{
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 {dark}, stop:1 {base});
+                    stop:0 {dark_pressed}, stop:1 {base_pressed});
+                border-color: {dark_pressed};
                 padding-top: 22px; padding-bottom: 14px;
             }}
             QPushButton:disabled {{
@@ -81,7 +110,7 @@ class ManualePage(QWidget):
 
     @staticmethod
     def _frame_style() -> str:
-        # cornice per QUOTA con bordo, raggio e leggera texture/colore
+        # cornice per QUOTA con bordo e raggio
         return """
             QFrame {
                 background: #ecf7ff;
@@ -167,7 +196,6 @@ class ManualePage(QWidget):
 
         self.btn_freno = QPushButton("BLOCCA FRENO")
         self.btn_freno.clicked.connect(self._toggle_freno)
-
         self.btn_frizione = QPushButton("INSERISCI FRIZIONE")
         self.btn_frizione.clicked.connect(self._toggle_frizione)
 
