@@ -33,7 +33,7 @@ class HomePage(QWidget):
             show_home=False
         ))
 
-        # Banner “non azzerata”
+        # Banner “macchina non azzerata”
         self._banner = QFrame()
         self._banner.setStyleSheet(f"QFrame{{background:{BANNER_BG}; border:1px solid {BORDER}; border-radius:8px;}}")
         bl = QVBoxLayout(self._banner)
@@ -43,9 +43,9 @@ class HomePage(QWidget):
         self._banner_lbl.setAlignment(Qt.AlignCenter)
         bl.addWidget(self._banner_lbl)
         root.addWidget(self._banner)
-        self._banner.hide()  # nascosto finché non serve
+        self._banner.hide()  # parte nascosto finché non serve
 
-        # Griglia tile principali
+        # Griglia di tile principali
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
@@ -97,11 +97,11 @@ class HomePage(QWidget):
         # Aggiorna subito il banner alla costruzione
         self._update_banner()
 
-    # ---- banner logic ----
+    # ---- logica banner ----
     def _is_zeroed(self) -> bool:
         m = getattr(self.appwin, "machine", None)
         if not m:
-            return False  # default: NON azzerata per mostrare warning se incerto
+            return False  # trattiamo come NON azzerata, così si vede il warning
         for name in ("is_homed", "homed", "is_zeroed", "zeroed", "azzerata", "home_done", "calibrated", "is_calibrated"):
             if hasattr(m, name):
                 try:
@@ -118,12 +118,12 @@ class HomePage(QWidget):
             if self._banner and not self._banner.isVisible():
                 self._banner.show()
 
-    # ---- header callbacks ----
+    # ---- callback header ----
     def _azzera_home(self):
         try:
             m = self.appwin.machine
-            # Preferisci procedure di homing/azzeramento complete
-            for attr in ("start_homing", "home", "do_zero", "homing_start"):
+            # Metodi tipici di homing/azzeramento completo (più alias coperti)
+            for attr in ("start_homing", "start_home", "begin_homing", "homing_start", "home", "go_home", "do_zero"):
                 if hasattr(m, attr) and callable(getattr(m, attr)):
                     getattr(m, attr)()
                     break
@@ -141,7 +141,7 @@ class HomePage(QWidget):
     def _reset_home(self):
         try:
             m = self.appwin.machine
-            # Varianti comuni di reset EMG/allarmi
+            # Alias comuni per reset EMG/allarmi
             for attr in ("clear_emergency", "reset_emergency", "clear_emg", "emg_reset", "reset_alarm", "reset"):
                 if hasattr(m, attr) and callable(getattr(m, attr)):
                     getattr(m, attr)()
@@ -161,7 +161,7 @@ class HomePage(QWidget):
         self._update_banner()
 
     def showEvent(self, ev: QEvent):
-        # protegge il caso in cui on_show non venga richiamato dal main
+        # protezione nel caso on_show non venisse chiamato
         if self._poll is None:
             self._poll = QTimer(self)
             self._poll.timeout.connect(self._update_banner)
