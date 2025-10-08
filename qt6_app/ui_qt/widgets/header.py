@@ -1,108 +1,353 @@
-from typing import Optional
+from typing import Callable, Optional
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QPushButton, QFrame, QLabel
-from PySide6.QtCore import Qt, QTimer, QEvent
-from ui_qt.theme import THEME
-from ui_qt.widgets.header import Header
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QFrame
 
-BANNER_BG = "#fff3cd"   # giallo chiaro warning
-BANNER_TX = "#856404"   # testo warning
-BORDER = "#ffeeba"
 
-class HomePage(QWidget):
-    def __init__(self, appwin):
-        super().__init__()
+class Header(QWidget):
+    """
+    Header generico:
+    - Titolo centrato e più grande.
+    - Layout pulsanti:
+        * mode='home' con show_home=False: nessun pulsante Home. A sinistra "Azzera" (lampeggia se non azzerata), a destra "Reset".
+        * mode='home' con show_home=True: Home a sinistra; a destra "Azzera" + "Reset".
+        * mode='default': Home a sinistra; a destra "Reset" (poi torna alla Home).
+    Segnali: home_clicked, reset_clicked.
+    """
+    home_clicked = Signal()
+    reset_clicked = Signal()
+
+    def __init__(
+        self,
+        appwin,
+        title: str,
+        mode: str = "default",
+        on_home: Optional[Callable[[], None]] = None,
+        on_reset: Optional[Callable[[], None]] = None,
+        on_azzera: Optional[Callable[[], None]] = None,
+        show_home: bool = True,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
         self.appwin = appwin
-        self._banner: Optional[QFrame] = None
-        self._banner_lbl: Optional[QLabel] = None
-        self._poll: Optional[QTimer] = None
-        self._build()
+        self.mode = mode
+        self.show_home = show_home
+        self._on_home_cb = on_home
+        self._on_reset_cb = on_reset
+        self._on_azzera_cb = on_azzera
 
-    def _build(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(12)
+        self.btn_home: Optional[QPushButton] = None
+        self.btn_reset: Optional[QPushButton] = None
+        self.btn_azzera: Optional[QPushButton] = None
+        self.lbl_title: Optional[QLabel] = None
 
-        # Header 'home' senza pulsante Home: Azzera a sinistra, Reset a destra
-        root.addWidget(Header(
-            self.appwin,
-            "BLITZ 3 - Home",
-            mode="home",
-            on_azzera=self._azzera_home,
-            on_reset=self._reset_home,
-            show_home=False
-        ))
+        self._blink_timer: Optional[QTimer] = None
+        self._blink_on: bool = False
 
-        # Banner “non azzerata”
-        self._banner = QFrame()
-        self._banner.setStyleSheet(f"QFrame{{background:{BANNER_BG}; border:1px solid {BORDER}; border-radius:8px;}}")
-        bl = QVBoxLayout(self._banner)
-        bl.setContentsMargins(10, 8, 10, 8)
-        self._banner_lbl = QLabel("Attenzione: macchina non azzerata")
-        self._banner_lbl.setStyleSheet(f"color:{BANNER_TX}; font-weight:800;")
-        self._banner_lbl.setAlignment(Qt.AlignCenter)
-        bl.addWidget(self._banner_lbl)
-        root.addWidget(self._banner)
-        self._banner.hide()  # nascosto finché non serve
+        self._build(title)
 
-        # Griglia tile principali
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(12)
-        root.addLayout(grid, 1)
+    # ---- utils colori ----
+    @staticmethod
+    def _hex_to_rgb(hex_color: str):
+        h = hex_color.lstrip("#")
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
-        def make_tile(text, key):
-            btn = QPushButton(text)
-            btn.setMinimumSize(220, 120)
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {THEME.TILE_BG};
-                    color: {THEME.TEXT};
-                    border: 1px solid {THEME.OUTLINE};
-                    border-radius: 10px;
-                    font-weight: 700;
-                    font-size: 16px;
-                }}
-                QPushButton:hover {{
-                    border-color: {THEME.ACCENT};
-                }}
-                QPushButton:pressed {{
-                    background: {THEME.PANEL_BG};
-                }}
-            """)
-            btn.clicked.connect(lambda: self.appwin.show_page(key))
-            return btn
+    @staticmethod
+    def _rgb_to_hex(rgb):
+        return "#{:02x}{:02x}{:02x}".format(*rgb)
 
-        tiles = [
-            ("Automatico", "automatico"),
-            ("Semi-Automatico", "semi"),
-            ("Manuale", "manuale"),
-            ("Tipologie", "tipologie"),
-            ("Quote Vani", "quotevani"),
-            ("Utility", "utility"),
-        ]
+    def _shade(self, hex_color: str, delta: float) -> str:
+        r, g, b = self._hex_to_rgb(hex_color)
+        if delta >= 0:
+            r = min(255, int(r + (255 - r) * delta))
+            g = min(255, int(g + (255 - g) * delta))
+            b = min(255, int(b + (255 - b) * delta))
+        else:
+            r = max(0, int(r * (1 + delta)))
+            g = max(0, int(g * (1 + delta)))
+            b = max(0, int(b * (1 + delta)))
+        return self._rgb_to_hex((r, g, b))
 
-        r, c = 0, 0
-        for text, key in tiles:
-            grid.addWidget(make_tile(text, key), r, c)
-            c += 1
-            if c >= 3:
-                c = 0
-                r += 1
+    def _btn_style_3d(self, base: str, dark: str, text_color: str = "white", radius: int = 12, pad_v: int = 8, pad_h: int = 16, font_px: int = 18) -> str:
+        base_hover = self._shade(base, 0.08)
+        dark_hover = self._shade(dark, 0.06)
+        base_pressed = self._shade(base, -0.06)
+        dark_pressed = self._shade(dark, -0.08)
+        return f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {base}, stop:1 {dark});
+                color: {text_color};
+                border: 2px solid {dark};
+                border-radius: {radius}px;
+                padding: {pad_v}px {pad_h}px;
+                font-weight: 700;
+                font-size: {font_px}px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {base_hover}, stop:1 {dark_hover});
+                border-color: {dark_hover};
+            }}
+            QPushButton:pressed {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {dark_pressed}, stop:1 {base_pressed});
+                border-color: {dark_pressed};
+                padding-top: {pad_v + 2}px; padding-bottom: {max(0, pad_v - 2)}px;
+            }}
+            QPushButton:disabled {{
+                background: #95a5a6;
+                border-color: #7f8c8d;
+                color: #ecf0f1;
+            }}
+        """
 
-        spacer = QFrame()
-        spacer.setMinimumHeight(20)
-        root.addWidget(spacer)
+    def _build(self, title: str):
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(8)
 
-        # Aggiorna subito il banner alla costruzione
-        self._update_banner()
+        left_bar = QFrame(self)
+        left_bar_l = QHBoxLayout(left_bar)
+        left_bar_l.setContentsMargins(0, 0, 0, 0)
+        left_bar_l.setSpacing(0)
 
-    # ---- banner logic ----
-    def _is_zeroed(self) -> bool:
+        center = QFrame(self)
+        center_l = QHBoxLayout(center)
+        center_l.setContentsMargins(0, 0, 0, 0)
+        center_l.setSpacing(0)
+
+        right_bar = QFrame(self)
+        right_bar_l = QHBoxLayout(right_bar)
+        right_bar_l.setContentsMargins(0, 0, 0, 0)
+        right_bar_l.setSpacing(8)
+
+        lay.addWidget(left_bar, 0)
+        lay.addWidget(center, 1)
+        lay.addWidget(right_bar, 0)
+
+        # Titolo centrato
+        self.lbl_title = QLabel(title, center)
+        self.lbl_title.setAlignment(Qt.AlignCenter)
+        self.lbl_title.setStyleSheet("font-size: 26px; font-weight: 800;")
+        self.lbl_title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        center_l.addWidget(self.lbl_title, 1, Qt.AlignCenter)
+
+        RESET_BASE = "#e74c3c"
+        RESET_DARK = "#c0392b"
+        HOME_BASE = "#5dade2"
+        HOME_DARK = "#3498db"
+        AZZ_BASE = "#f1c40f"
+        AZZ_DARK = "#d4ac0d"
+
+        if self.mode == "home":
+            if self.show_home:
+                # Home a sinistra
+                self.btn_home = QPushButton("Home", left_bar)
+                self.btn_home.setCursor(Qt.PointingHandCursor)
+                self.btn_home.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                self.btn_home.setStyleSheet(self._btn_style_3d(HOME_BASE, HOME_DARK, font_px=16))
+                self.btn_home.clicked.connect(self._on_home_clicked)
+                left_bar_l.addWidget(self.btn_home)
+
+                # A destra: Azzera + Reset
+                self.btn_azzera = QPushButton("Azzera", right_bar)
+                self.btn_azzera.setCursor(Qt.PointingHandCursor)
+                self.btn_azzera.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                # Stili per lampeggio (base vs alternato ben visibile)
+                self._azzera_style_base = self._btn_style_3d(AZZ_BASE, AZZ_DARK, text_color="black", font_px=16)
+                alt_base = "#f9e79f"   # ambra chiara
+                alt_dark = "#f4d03f"
+                self._azzera_style_blink = self._btn_style_3d(alt_base, alt_dark, text_color="black", font_px=16)
+                self.btn_azzera.setStyleSheet(self._azzera_style_base)
+                self.btn_azzera.clicked.connect(self._on_azzera_clicked)
+                right_bar_l.addWidget(self.btn_azzera)
+
+                self.btn_reset = QPushButton("Reset", right_bar)
+                self.btn_reset.setCursor(Qt.PointingHandCursor)
+                self.btn_reset.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                self.btn_reset.setStyleSheet(self._btn_style_3d(RESET_BASE, RESET_DARK, font_px=16))
+                self.btn_reset.clicked.connect(self._on_reset_clicked_home)
+                right_bar_l.addWidget(self.btn_reset)
+            else:
+                # Niente Home: Azzera a sinistra, Reset a destra
+                self.btn_azzera = QPushButton("Azzera", left_bar)
+                self.btn_azzera.setCursor(Qt.PointingHandCursor)
+                self.btn_azzera.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                self._azzera_style_base = self._btn_style_3d(AZZ_BASE, AZZ_DARK, text_color="black", font_px=16)
+                alt_base = "#f9e79f"
+                alt_dark = "#f4d03f"
+                self._azzera_style_blink = self._btn_style_3d(alt_base, alt_dark, text_color="black", font_px=16)
+                self.btn_azzera.setStyleSheet(self._azzera_style_base)
+                self.btn_azzera.clicked.connect(self._on_azzera_clicked)
+                left_bar_l.addWidget(self.btn_azzera)
+
+                self.btn_reset = QPushButton("Reset", right_bar)
+                self.btn_reset.setCursor(Qt.PointingHandCursor)
+                self.btn_reset.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                self.btn_reset.setStyleSheet(self._btn_style_3d(RESET_BASE, RESET_DARK, font_px=16))
+                self.btn_reset.clicked.connect(self._on_reset_clicked_home)
+                right_bar_l.addWidget(self.btn_reset)
+
+            # Timer lampeggio per “Azzera”
+            self._blink_timer = QTimer(self)
+            self._blink_timer.timeout.connect(self._blink_tick)
+            self._blink_timer.start(600)
+        else:
+            # mode='default': Home a sinistra, Reset a destra
+            self.btn_home = QPushButton("Home", left_bar)
+            self.btn_home.setCursor(Qt.PointingHandCursor)
+            self.btn_home.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self.btn_home.setStyleSheet(self._btn_style_3d(HOME_BASE, HOME_DARK, font_px=16))
+            self.btn_home.clicked.connect(self._on_home_clicked)
+            left_bar_l.addWidget(self.btn_home)
+
+            self.btn_reset = QPushButton("Reset", right_bar)
+            self.btn_reset.setCursor(Qt.PointingHandCursor)
+            self.btn_reset.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self.btn_reset.setStyleSheet(self._btn_style_3d(RESET_BASE, RESET_DARK, font_px=16))
+            self.btn_reset.clicked.connect(self._on_reset_clicked_page)
+            right_bar_l.addWidget(self.btn_reset)
+
+        self._sync_buttons_width()
+
+    def _sync_buttons_width(self):
+        # Simmetria pulsanti laterali (mantiene il titolo centrato)
+        if self.mode == "home" and not self.show_home and self.btn_azzera and self.btn_reset:
+            w = max(self.btn_azzera.sizeHint().width(), self.btn_reset.sizeHint().width())
+            self.btn_azzera.setMinimumWidth(w)
+            self.btn_reset.setMinimumWidth(w)
+        else:
+            if self.btn_reset and self.btn_home:
+                w = max(self.btn_home.sizeHint().width(), self.btn_reset.sizeHint().width())
+                self.btn_home.setMinimumWidth(w)
+                self.btn_reset.setMinimumWidth(w)
+            if self.mode == "home" and self.btn_azzera and self.btn_reset:
+                w = max(self.btn_azzera.sizeHint().width(), self.btn_reset.sizeHint().width())
+                self.btn_azzera.setMinimumWidth(w)
+                self.btn_reset.setMinimumWidth(w)
+
+    def setTitle(self, title: str):
+        self.lbl_title.setText(title)
+
+    # ---- event handlers ----
+    def _navigate_home_fallback(self):
+        # 1) Callback esplicita
+        if callable(self._on_home_cb):
+            try:
+                self._on_home_cb()
+                return True
+            except Exception:
+                pass
+        # 2) show_page('home')
+        if hasattr(self.appwin, "show_page") and callable(getattr(self.appwin, "show_page")):
+            try:
+                self.appwin.show_page("home")
+                return True
+            except Exception:
+                pass
+        # 3) altri alias
+        for attr in ("go_home", "show_home", "navigate_home", "home"):
+            if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
+                try:
+                    getattr(self.appwin, attr)()
+                    return True
+                except Exception:
+                    pass
+        # 4) nav helper
+        if hasattr(self.appwin, "nav") and hasattr(self.appwin.nav, "go_home") and callable(self.appwin.nav.go_home):
+            try:
+                self.appwin.nav.go_home()
+                return True
+            except Exception:
+                pass
+        return False
+
+    def _on_home_clicked(self):
+        if not self._navigate_home_fallback():
+            self.home_clicked.emit()
+
+    def _on_reset_clicked_page(self):
+        # Reset nelle pagine, poi vai Home
+        self.reset_clicked.emit()
+        if callable(self._on_reset_cb):
+            try:
+                self._on_reset_cb()
+            except Exception:
+                pass
+        self._navigate_home_fallback()
+
+    def _on_reset_clicked_home(self):
+        # Reset in Home: resta in Home
+        self.reset_clicked.emit()
+        if callable(self._on_reset_cb):
+            try:
+                self._on_reset_cb()
+                return
+            except Exception:
+                pass
+        # fallback reset su appwin/machine
+        for attr in ("reset_current_page", "reset_all", "reset"):
+            if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
+                try:
+                    getattr(self.appwin, attr)()
+                    return
+                except Exception:
+                    pass
+        if hasattr(self.appwin, "machine"):
+            m = self.appwin.machine
+            for attr in ("clear_emergency", "reset", "reset_emergency", "clear_emg", "emg_reset", "reset_alarm"):
+                if hasattr(m, attr) and callable(getattr(m, attr)):
+                    try:
+                        getattr(m, attr)()
+                        return
+                    except Exception:
+                        pass
+
+    def _on_azzera_clicked(self):
+        # Callback esplicita
+        if callable(self._on_azzera_cb):
+            try:
+                self._on_azzera_cb()
+                return
+            except Exception:
+                pass
+        # fallback su appwin
+        for attr in ("start_homing", "do_zero", "homing", "homing_start", "home", "start_home", "begin_homing", "go_home"):
+            if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
+                try:
+                    getattr(self.appwin, attr)()
+                    return
+                except Exception:
+                    pass
+        # fallback su machine
+        if hasattr(self.appwin, "machine"):
+            m = self.appwin.machine
+            for attr in ("start_homing", "home", "start_home", "homing_start", "do_zero", "azzera", "go_home"):
+                if hasattr(m, attr) and callable(getattr(m, attr)):
+                    try:
+                        getattr(m, attr)()
+                        return
+                    except Exception:
+                        pass
+            # ultimo fallback: azzera quota
+            for attr in ("set_zero", "zero_position", "zero", "set_zero_absolute"):
+                if hasattr(m, attr) and callable(getattr(m, attr)):
+                    try:
+                        getattr(m, attr)()
+                        return
+                    except Exception:
+                        pass
+
+    # ---- blink “Azzera” in Home ----
+    def _is_machine_zeroed(self) -> bool:
         m = getattr(self.appwin, "machine", None)
         if not m:
-            return False  # default: NON azzerata per mostrare warning se incerto
-        for name in ("is_homed", "homed", "is_zeroed", "zeroed", "azzerata", "home_done", "calibrated", "is_calibrated"):
+            return False  # se incerto, considerala non azzerata (così lampeggia e banner appare)
+        for name in (
+            "is_homed", "homed", "is_zeroed", "zeroed", "azzerata",
+            "home_done", "calibrated", "is_calibrated"
+        ):
             if hasattr(m, name):
                 try:
                     return bool(getattr(m, name))
@@ -110,70 +355,14 @@ class HomePage(QWidget):
                     pass
         return False
 
-    def _update_banner(self):
-        if self._is_zeroed():
-            if self._banner and self._banner.isVisible():
-                self._banner.hide()
-        else:
-            if self._banner and not self._banner.isVisible():
-                self._banner.show()
-
-    # ---- header callbacks ----
-    def _azzera_home(self):
-        try:
-            m = self.appwin.machine
-            # Preferisci procedure di homing/azzeramento complete
-            for attr in ("start_homing", "home", "do_zero", "homing_start"):
-                if hasattr(m, attr) and callable(getattr(m, attr)):
-                    getattr(m, attr)()
-                    break
-            else:
-                # fallback su azzeramento quota
-                for attr in ("set_zero", "zero_position", "zero", "set_zero_absolute"):
-                    if hasattr(m, attr) and callable(getattr(m, attr)):
-                        getattr(m, attr)()
-                        break
-            if hasattr(self.appwin, "toast"):
-                self.appwin.toast.show("Azzeramento avviato", "ok", 2000)
-        except Exception:
-            pass
-
-    def _reset_home(self):
-        try:
-            m = self.appwin.machine
-            # Varianti comuni di reset EMG/allarmi
-            for attr in ("clear_emergency", "reset_emergency", "clear_emg", "emg_reset", "reset_alarm", "reset"):
-                if hasattr(m, attr) and callable(getattr(m, attr)):
-                    getattr(m, attr)()
-                    break
-            if hasattr(self.appwin, "toast"):
-                self.appwin.toast.show("Reset eseguito", "ok", 2000)
-        except Exception:
-            pass
-
-    # ---- lifecycle ----
-    def on_show(self):
-        # avvia polling banner
-        if self._poll is None:
-            self._poll = QTimer(self)
-            self._poll.timeout.connect(self._update_banner)
-            self._poll.start(400)
-        self._update_banner()
-
-    def showEvent(self, ev: QEvent):
-        # protegge il caso in cui on_show non venga richiamato dal main
-        if self._poll is None:
-            self._poll = QTimer(self)
-            self._poll.timeout.connect(self._update_banner)
-            self._poll.start(400)
-        self._update_banner()
-        super().showEvent(ev)
-
-    def hideEvent(self, ev):
-        if self._poll is not None:
-            try:
-                self._poll.stop()
-            except Exception:
-                pass
-            self._poll = None
-        super().hideEvent(ev)
+    def _blink_tick(self):
+        if self.mode != "home" or not self.btn_azzera:
+            return
+        if self._is_machine_zeroed():
+            # Ferma lampeggio visivo e rimetti stile base
+            self.btn_azzera.setStyleSheet(self._azzera_style_base)
+            self._blink_on = False
+            return
+        # Non azzerata: alterna i due stili per simulare blink
+        self._blink_on = not self._blink_on
+        self.btn_azzera.setStyleSheet(self._azzera_style_blink if self._blink_on else self._azzera_style_base)
