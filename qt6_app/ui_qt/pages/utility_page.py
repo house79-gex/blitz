@@ -1,13 +1,13 @@
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout, QHBoxLayout, QFrame, QPushButton, QTabWidget,
-    QGridLayout, QLineEdit, QColorDialog, QComboBox, QSpinBox, QMessageBox, QCheckBox
+    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QComboBox, QSpinBox,
+    QTabWidget, QLineEdit, QColorDialog, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QApplication
-from ui_qt.theme import THEME, set_palette_from_dict, apply_global_stylesheet
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
-from ui_qt.utils.settings import read_themes, save_theme_combo
+from ui_qt.theme import THEME, set_palette_from_dict, apply_global_stylesheet
+from ui_qt.utils.theme_store import save_theme_combo, read_themes
+
 
 class UtilityPage(QWidget):
     """
@@ -23,7 +23,7 @@ class UtilityPage(QWidget):
         self.machine = appwin.machine
         self.color_vars = {}
         self.icon_vars = {}
-        self._diag_timer = None
+        self._diag_timer: QTimer | None = None
         self._build()
 
     def _build(self):
@@ -197,7 +197,7 @@ class UtilityPage(QWidget):
             btn.clicked.connect(picker)
             grid.addWidget(edit, i, 1)
             grid.addWidget(btn, i, 2)
-            self.color_vars[key] = edit;
+            self.color_vars[key] = edit
 
         pal_l.addLayout(grid)
 
@@ -281,15 +281,18 @@ class UtilityPage(QWidget):
         self.lbl_diag_right.setText("ATTIVO" if right else "—" if right is not None else "-")
         self.status.refresh()
 
+    # --- Polling diagnostica/StatusPanel ---
     def on_show(self):
-        self.status.refresh()
         if self._diag_timer is None:
             self._diag_timer = QTimer(self)
             self._diag_timer.timeout.connect(self._tick_diag)
-            self._diag_timer.start(200)
+            self._diag_timer.start(300)
 
     def hideEvent(self, ev):
-        if self._diag_timer:
-            self._diag_timer.stop()
+        if self._diag_timer is not None:
+            try:
+                self._diag_timer.stop()
+            except Exception:
+                pass
             self._diag_timer = None
         super().hideEvent(ev)
