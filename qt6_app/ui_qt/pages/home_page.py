@@ -1,7 +1,7 @@
 from typing import Optional
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QPushButton, QFrame, QLabel
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QEvent
 from ui_qt.theme import THEME
 from ui_qt.widgets.header import Header
 
@@ -23,8 +23,15 @@ class HomePage(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
 
-        # Header in modalità 'home' con AZZERA (lampeggiante) e RESET
-        root.addWidget(Header(self.appwin, "BLITZ 3 - Home", mode="home", on_azzera=self._azzera_home, on_reset=self._reset_home))
+        # Header 'home' senza pulsante Home: Azzera a sinistra, Reset a destra
+        root.addWidget(Header(
+            self.appwin,
+            "BLITZ 3 - Home",
+            mode="home",
+            on_azzera=self._azzera_home,
+            on_reset=self._reset_home,
+            show_home=False
+        ))
 
         # Banner “non azzerata”
         self._banner = QFrame()
@@ -87,25 +94,28 @@ class HomePage(QWidget):
         spacer.setMinimumHeight(20)
         root.addWidget(spacer)
 
+        # Aggiorna subito il banner alla costruzione
+        self._update_banner()
+
     # ---- banner logic ----
     def _is_zeroed(self) -> bool:
         m = getattr(self.appwin, "machine", None)
         if not m:
-            return True
-        for name in ("is_homed", "homed", "is_zeroed", "zeroed", "azzerata", "home_done"):
+            return False  # default: NON azzerata per mostrare warning se incerto
+        for name in ("is_homed", "homed", "is_zeroed", "zeroed", "azzerata", "home_done", "calibrated", "is_calibrated"):
             if hasattr(m, name):
                 try:
                     return bool(getattr(m, name))
                 except Exception:
                     pass
-        return True
+        return False
 
     def _update_banner(self):
         if self._is_zeroed():
-            if self._banner:
+            if self._banner and self._banner.isVisible():
                 self._banner.hide()
         else:
-            if self._banner:
+            if self._banner and not self._banner.isVisible():
                 self._banner.show()
 
     # ---- header callbacks ----
@@ -149,6 +159,15 @@ class HomePage(QWidget):
             self._poll.timeout.connect(self._update_banner)
             self._poll.start(400)
         self._update_banner()
+
+    def showEvent(self, ev: QEvent):
+        # protegge il caso in cui on_show non venga richiamato dal main
+        if self._poll is None:
+            self._poll = QTimer(self)
+            self._poll.timeout.connect(self._update_banner)
+            self._poll.start(400)
+        self._update_banner()
+        super().showEvent(ev)
 
     def hideEvent(self, ev):
         if self._poll is not None:
