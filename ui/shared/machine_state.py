@@ -232,6 +232,30 @@ class MachineState:
         return True
 
     # ---------------- Manuale: freno/frizione ----------------
+    def set_brake(self, active: bool) -> bool:
+        """
+        Imposta lo stato del freno rispettando le regole:
+        - Non bloccare il freno se la macchina non è homed.
+        - Vietato modificare durante emergenza o posizionamento.
+        """
+        if self.emergency_active or self.positioning_active:
+            return False
+        if active and not self.machine_homed:
+            return False
+        self.brake_active = bool(active)
+        self._update_cut_enable_output()
+        return True
+
+    def set_clutch(self, active: bool) -> bool:
+        """
+        Imposta lo stato della frizione. In Manuale deve potersi inserire/disinserire.
+        Vietato modificare durante emergenza o posizionamento.
+        """
+        if self.emergency_active or self.positioning_active:
+            return False
+        self.clutch_active = bool(active)
+        return True
+
     def toggle_brake(self) -> bool:
         if self.emergency_active or self.positioning_active:
             return False
