@@ -256,12 +256,35 @@ class Header(QWidget):
             self.home_clicked.emit()
 
     def _on_reset_clicked_page(self):
+        # Reset nelle pagine:
+        # - chiama la callback utente (se c'è)
+        # - esegue SEMPRE i fallback di reset macchina/app
+        # - poi torna in Home
         self.reset_clicked.emit()
         if callable(self._on_reset_cb):
             try:
                 self._on_reset_cb()
             except Exception:
                 pass
+
+        # Fallback su appwin
+        for attr in ("reset_current_page", "reset_all", "reset"):
+            if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
+                try:
+                    getattr(self.appwin, attr)()
+                except Exception:
+                    pass
+
+        # Fallback diretto su macchina
+        if hasattr(self.appwin, "machine"):
+            m = self.appwin.machine
+            for attr in ("reset", "clear_emergency", "reset_emergency"):
+                if hasattr(m, attr) and callable(getattr(m, attr)):
+                    try:
+                        getattr(m, attr)()
+                    except Exception:
+                        pass
+
         self._navigate_home_fallback()
 
     def _on_reset_clicked_home(self):
@@ -329,7 +352,7 @@ class Header(QWidget):
         if not m:
             return False
         for name in (
-            "machine_homed",  # aggiunto
+            "machine_homed",  # preferito
             "is_homed", "homed", "is_zeroed", "zeroed", "azzerata",
             "home_done", "calibrated", "is_calibrated"
         ):
