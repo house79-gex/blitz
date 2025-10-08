@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QPushButton, QLabel, QFrame, QHBoxLayout
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QPushButton, QLabel, QFrame
 from PySide6.QtCore import Qt
 from ui_qt.theme import THEME
 from ui_qt.widgets.header import Header
@@ -14,23 +14,10 @@ class HomePage(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
 
-        root.addWidget(Header(self.appwin, "BLITZ 3 - Home"))
+        # Header in modalità 'home' con pulsante "Azzera" integrato (lampeggiante se non azzerata)
+        root.addWidget(Header(self.appwin, "BLITZ 3 - Home", mode="home", on_azzera=self._azzera_home))
 
-        # Barra comandi rapidi: Azzera + Reset
-        quick = QHBoxLayout()
-        btn_zero = QPushButton("AZZERA")
-        btn_zero.setMinimumHeight(36)
-        btn_zero.clicked.connect(self._zero)
-        quick.addWidget(btn_zero)
-
-        btn_reset = QPushButton("RESET")
-        btn_reset.setMinimumHeight(36)
-        btn_reset.clicked.connect(self._reset)
-        quick.addWidget(btn_reset)
-
-        quick.addStretch(1)
-        root.addLayout(quick)
-
+        # Griglia di tile principali
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
@@ -58,7 +45,6 @@ class HomePage(QWidget):
             btn.clicked.connect(lambda: self.appwin.show_page(key))
             return btn
 
-        # Disposizione pulsanti principali
         tiles = [
             ("Automatico", "automatico"),
             ("Semi-Automatico", "semi"),
@@ -80,25 +66,22 @@ class HomePage(QWidget):
         spacer.setMinimumHeight(20)
         root.addWidget(spacer)
 
-    def _zero(self):
+    def _azzera_home(self):
         try:
             m = self.appwin.machine
-            if hasattr(m, "set_zero"):
-                m.set_zero()
-            elif hasattr(m, "zero_position"):
-                m.zero_position()
+            # Preferisci procedure di homing/azzeramento complete
+            for attr in ("start_homing", "home", "do_zero"):
+                if hasattr(m, attr) and callable(getattr(m, attr)):
+                    getattr(m, attr)()
+                    break
+            else:
+                # fallback su azzeramento quota
+                if hasattr(m, "set_zero"):
+                    m.set_zero()
+                elif hasattr(m, "zero_position"):
+                    m.zero_position()
             if hasattr(self.appwin, "toast"):
-                self.appwin.toast.show("Quota azzerata", "ok", 2000)
-        except Exception:
-            pass
-
-    def _reset(self):
-        try:
-            m = self.appwin.machine
-            if hasattr(m, "clear_emergency"):
-                m.clear_emergency()
-            if hasattr(self.appwin, "toast"):
-                self.appwin.toast.show("Reset (EMG clear) eseguito", "ok", 2000)
+                self.appwin.toast.show("Azzeramento avviato", "ok", 2000)
         except Exception:
             pass
 
