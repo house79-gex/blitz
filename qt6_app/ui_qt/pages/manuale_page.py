@@ -9,16 +9,26 @@ PANEL_H = 220      # altezza StatusPanel
 FQ_H = 100         # altezza riquadro “Fuori Quota” (placeholder in Manuale)
 
 # Dimensioni raddoppiate per quota/pulsanti
-QUOTA_FONT_PX = 168  # valore quota molto grande (raddoppiato rispetto a 84)
-BTN_MIN_H = 192      # altezza pulsanti (raddoppiata rispetto a 96)
-BTN_FONT_PX = 56     # font pulsanti (raddoppiato rispetto a 28)
+QUOTA_FONT_PX = 168  # valore quota molto grande (raddoppiato)
+BTN_MIN_H = 192      # altezza pulsanti (raddoppiata)
+BTN_FONT_PX = 56     # font pulsanti (raddoppiato)
+
+# Colori
+GREEN = "#2ecc71"
+GREEN_DARK = "#27ae60"
+ORANGE = "#f39c12"
+ORANGE_DARK = "#e67e22"
+QUOTA_COLOR = "#00e5ff"   # valore quota molto evidente
+LABEL_COLOR = "#2c3e50"   # etichette “Quota” e “mm”
 
 
 class ManualePage(QWidget):
     """
     Modalità MANUALE:
-    - Visualizza quota encoder (simulata se non disponibile), molto grande, centrata, con 'Quota' a sinistra e 'mm' a destra.
-    - Pulsanti grandi BLOCCA/SBLOCCA FRENO e INSERISCI/DISINSERISCI FRIZIONE, centrati.
+    - Visualizza quota encoder (simulata se non disponibile), molto grande, centrata, con 'Quota' a sinistra e 'mm' a destra in una cornice.
+    - Pulsanti grandi BLOCCA/SBLOCCA FRENO e INSERISCI/DISINSERISCI FRIZIONE, centrati, con stile 3D arrotondato e colore dinamico:
+        * BLOCCO/INSERITA -> verde brillante
+        * SBLOCCO/DISINSERITA -> arancione
     - A destra StatusPanel con dimensioni identiche a Semi-Auto; sotto placeholder 'Fuori Quota' (stesse dimensioni).
     - Abilita lettura del pulsante hardware TESTA solo qui (toggle freno/frizione a impulsi).
     - All'uscita: disabilita TESTA e reinserisce sempre la frizione.
@@ -39,6 +49,71 @@ class ManualePage(QWidget):
 
         self._build()
 
+    # ---------------- Style helpers ----------------
+    @staticmethod
+    def _btn_style_3d(base: str, dark: str) -> str:
+        # stile 3D arrotondato con gradienti e stati hover/pressed
+        return f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {base}, stop:1 {dark});
+                color: white;
+                border: 2px solid {dark};
+                border-radius: 18px;
+                padding: 18px 36px;
+                font-weight: 800;
+                font-size: {BTN_FONT_PX}px;
+            }}
+            QPushButton:hover {{
+                filter: brightness(1.08);
+            }}
+            QPushButton:pressed {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {dark}, stop:1 {base});
+                padding-top: 22px; padding-bottom: 14px;
+            }}
+            QPushButton:disabled {{
+                background: #95a5a6;
+                border-color: #7f8c8d;
+                color: #ecf0f1;
+            }}
+        """
+
+    @staticmethod
+    def _frame_style() -> str:
+        # cornice per QUOTA con bordo, raggio e leggera texture/colore
+        return """
+            QFrame {
+                background: #ecf7ff;
+                border: 2px solid #3498db;
+                border-radius: 16px;
+            }
+        """
+
+    def _style_buttons_by_state(self):
+        # Colora e dà stile 3D in base allo stato attuale
+        brake_on = bool(getattr(self.machine, "brake_active", False))
+        clutch_on = bool(getattr(self.machine, "clutch_active", True))
+
+        if self.btn_freno:
+            if brake_on:
+                self.btn_freno.setText("SBLOCCA FRENO")
+                self.btn_freno.setStyleSheet(self._btn_style_3d(GREEN, GREEN_DARK))
+            else:
+                self.btn_freno.setText("BLOCCA FRENO")
+                self.btn_freno.setStyleSheet(self._btn_style_3d(ORANGE, ORANGE_DARK))
+            self.btn_freno.setMinimumHeight(BTN_MIN_H)
+
+        if self.btn_frizione:
+            if clutch_on:
+                self.btn_frizione.setText("DISINSERISCI FRIZIONE")
+                self.btn_frizione.setStyleSheet(self._btn_style_3d(GREEN, GREEN_DARK))
+            else:
+                self.btn_frizione.setText("INSERISCI FRIZIONE")
+                self.btn_frizione.setStyleSheet(self._btn_style_3d(ORANGE, ORANGE_DARK))
+            self.btn_frizione.setMinimumHeight(BTN_MIN_H)
+
+    # ---------------- Build UI ----------------
     def _build(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -57,32 +132,33 @@ class ManualePage(QWidget):
         ll.setContentsMargins(6, 6, 6, 6)
         ll.setSpacing(16)
 
-        # Riga QUOTA centrata: "Quota" | valore | "mm"
-        quota_box = QFrame()
-        qh = QHBoxLayout(quota_box)
-        qh.setContentsMargins(12, 12, 12, 12)
-        qh.setSpacing(16)
+        # QUOTA in cornice: "Quota" | VALORE | "mm" al centro
+        quota_frame = QFrame()
+        quota_frame.setStyleSheet(self._frame_style())
+        qh = QHBoxLayout(quota_frame)
+        qh.setContentsMargins(18, 18, 18, 18)
+        qh.setSpacing(20)
         qh.setAlignment(Qt.AlignCenter)
 
         lbl_quota = QLabel("Quota")
-        lbl_quota.setStyleSheet(f"font-weight: 800; font-size: {int(QUOTA_FONT_PX*0.35)}px; color: #2c3e50;")
+        lbl_quota.setStyleSheet(f"font-weight: 900; font-size: {int(QUOTA_FONT_PX*0.35)}px; color: {LABEL_COLOR};")
         qh.addWidget(lbl_quota, 0, Qt.AlignVCenter)
 
         self.lbl_quota_val = QLabel("—")
         self.lbl_quota_val.setStyleSheet(
-            f"font-family: Consolas; font-weight: 900; font-size: {QUOTA_FONT_PX}px; color: #16a085;"
+            f"font-family: Consolas; font-weight: 900; font-size: {QUOTA_FONT_PX}px; color: {QUOTA_COLOR};"
         )
         self.lbl_quota_val.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.lbl_quota_val.setAlignment(Qt.AlignCenter)
         qh.addWidget(self.lbl_quota_val, 0, Qt.AlignVCenter)
 
         lbl_mm = QLabel("mm")
-        lbl_mm.setStyleSheet(f"font-weight: 800; font-size: {int(QUOTA_FONT_PX*0.35)}px; color: #2c3e50;")
+        lbl_mm.setStyleSheet(f"font-weight: 900; font-size: {int(QUOTA_FONT_PX*0.35)}px; color: {LABEL_COLOR};")
         qh.addWidget(lbl_mm, 0, Qt.AlignVCenter)
 
-        ll.addWidget(quota_box, 3, alignment=Qt.AlignCenter)
+        ll.addWidget(quota_frame, 3, alignment=Qt.AlignCenter)
 
-        # Pulsanti FRENO / FRIZIONE centrati
+        # Pulsanti FRENO / FRIZIONE centrati, 3D arrotondati
         btn_box = QFrame()
         bl = QHBoxLayout(btn_box)
         bl.setContentsMargins(12, 12, 12, 12)
@@ -91,17 +167,9 @@ class ManualePage(QWidget):
 
         self.btn_freno = QPushButton("BLOCCA FRENO")
         self.btn_freno.clicked.connect(self._toggle_freno)
-        self.btn_freno.setMinimumHeight(BTN_MIN_H)
-        self.btn_freno.setStyleSheet(
-            f"font-size: {BTN_FONT_PX}px; font-weight: 800; padding: 18px 36px;"
-        )
 
         self.btn_frizione = QPushButton("INSERISCI FRIZIONE")
         self.btn_frizione.clicked.connect(self._toggle_frizione)
-        self.btn_frizione.setMinimumHeight(BTN_MIN_H)
-        self.btn_frizione.setStyleSheet(
-            f"font-size: {BTN_FONT_PX}px; font-weight: 800; padding: 18px 36px;"
-        )
 
         bl.addWidget(self.btn_freno, 0, Qt.AlignCenter)
         bl.addWidget(self.btn_frizione, 0, Qt.AlignCenter)
@@ -109,7 +177,7 @@ class ManualePage(QWidget):
 
         # ---------------- Destra: STATUS + FQ placeholder ----------------
         right = QFrame()
-        right.setFixedWidth(PANEL_W + 12)  # stesso ingombro di Semi-Auto
+        right.setFixedWidth(PANEL_W + 12)  # stesso ingombro laterale di Semi-Auto
         body.addWidget(right, 0)
         rl = QVBoxLayout(right)
         rl.setContentsMargins(6, 6, 6, 6)
@@ -132,22 +200,19 @@ class ManualePage(QWidget):
 
         rl.addStretch(1)
 
-        # Testo iniziale pulsanti
-        self._refresh_buttons()
+        # Stile iniziale dei pulsanti in base allo stato corrente
+        self._style_buttons_by_state()
 
     # ---------------- Helpers pulsanti ----------------
-    def _refresh_buttons(self):
-        try:
-            brake_on = bool(getattr(self.machine, "brake_active", False))
-            clutch_on = bool(getattr(self.machine, "clutch_active", True))
-        except Exception:
-            brake_on = False
-            clutch_on = True
+    def _toggle_freno(self):
+        cur = bool(getattr(self.machine, "brake_active", False))
+        self._set_brake(not cur)
+        self._style_buttons_by_state()
 
-        if self.btn_freno:
-            self.btn_freno.setText("SBLOCCA FRENO" if brake_on else "BLOCCA FRENO")
-        if self.btn_frizione:
-            self.btn_frizione.setText("DISINSERISCI FRIZIONE" if clutch_on else "INSERISCI FRIZIONE")
+    def _toggle_frizione(self):
+        cur = bool(getattr(self.machine, "clutch_active", True))
+        self._set_clutch(not cur)
+        self._style_buttons_by_state()
 
     def _set_brake(self, want_active: bool) -> bool:
         m = self.machine
@@ -180,16 +245,6 @@ class ManualePage(QWidget):
         except Exception:
             pass
         return False
-
-    def _toggle_freno(self):
-        cur = bool(getattr(self.machine, "brake_active", False))
-        self._set_brake(not cur)   # fix del refuso: 'not' (non '!')
-        self._refresh_buttons()
-
-    def _toggle_frizione(self):
-        cur = bool(getattr(self.machine, "clutch_active", True))
-        self._set_clutch(not cur)
-        self._refresh_buttons()
 
     # ---------------- Encoder display ----------------
     @staticmethod
@@ -244,14 +299,14 @@ class ManualePage(QWidget):
             self._poll.start(200)
 
         # Sync iniziale UI
-        self._refresh_buttons()
+        self._style_buttons_by_state()
         self._update_quota_label()
         if self.status:
             self.status.refresh()
 
     def _tick(self):
         self._update_quota_label()
-        self._refresh_buttons()
+        self._style_buttons_by_state()
         if self.status:
             self.status.refresh()
 
