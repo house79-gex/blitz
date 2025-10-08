@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QPushButton, QF
 from PySide6.QtCore import Qt, QTimer, QEvent
 from ui_qt.theme import THEME
 from ui_qt.widgets.header import Header
+from ui_qt.logic.homing import start_homing  # NUOVO: simulazione homing
 
 BANNER_BG = "#fff3cd"   # giallo chiaro warning
 BANNER_TX = "#856404"   # testo warning
@@ -14,7 +15,7 @@ class HomePage(QWidget):
         super().__init__()
         self.appwin = appwin
         self._banner: Optional[QFrame] = None
-        self._banner_lbl: Optional[QLabel] = None  # FIX: QLabel (non 'Label')
+        self._banner_lbl: Optional[QLabel] = None
         self._poll: Optional[QTimer] = None
         self._build()
 
@@ -122,17 +123,12 @@ class HomePage(QWidget):
     def _azzera_home(self):
         try:
             m = self.appwin.machine
-            # Preferisci la logica reale: do_homing()
-            for attr in ("do_homing", "start_homing", "start_home", "begin_homing", "homing_start", "home", "go_home", "do_zero"):
-                if hasattr(m, attr) and callable(getattr(m, attr)):
-                    getattr(m, attr)()
-                    break
+            # 1) Preferisci API reale
+            if hasattr(m, "do_homing") and callable(getattr(m, "do_homing")):
+                m.do_homing(callback=lambda **_: QTimer.singleShot(0, self._update_banner))
             else:
-                # fallback: azzeramento quota
-                for attr in ("set_zero", "zero_position", "zero", "set_zero_absolute"):
-                    if hasattr(m, attr) and callable(getattr(m, attr)):
-                        getattr(m, attr)()
-                        break
+                # 2) Simulazione Qt-side se non disponibile
+                start_homing(m, callback=lambda **_: QTimer.singleShot(0, self._update_banner))
             if hasattr(self.appwin, "toast"):
                 self.appwin.toast.show("Azzeramento avviato", "ok", 2000)
         except Exception:
@@ -146,6 +142,12 @@ class HomePage(QWidget):
                 if hasattr(m, attr) and callable(getattr(m, attr)):
                     getattr(m, attr)()
                     break
+            # Dopo il reset, forza banner visibile (non azzerata)
+            try:
+                setattr(m, "machine_homed", False)
+            except Exception:
+                pass
+            self._update_banner()
             if hasattr(self.appwin, "toast"):
                 self.appwin.toast.show("Reset eseguito", "ok", 2000)
         except Exception:
