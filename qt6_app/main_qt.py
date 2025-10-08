@@ -44,6 +44,21 @@ class DummyMachineState:
     def set_head_button_input_enabled(self, enabled: bool):  # compat
         pass
 
+    # API esplicite per coerenza con l’UI
+    def set_brake(self, active: bool) -> bool:
+        if self.emergency_active or self.positioning_active:
+            return False
+        if active and not self.machine_homed:
+            return False
+        self.brake_active = bool(active)
+        return True
+
+    def set_clutch(self, active: bool) -> bool:
+        if self.emergency_active or self.positioning_active:
+            return False
+        self.clutch_active = bool(active)
+        return True
+
     # Simulazione homing: porta a minima, imposta homed=True, freno OFF, frizione ON
     def do_homing(self, callback=None):
         import time, threading
