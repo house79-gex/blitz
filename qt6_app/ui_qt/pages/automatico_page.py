@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QComboBox, QSpinBox, QTreeWidget, QTreeWidgetItem, QTextEdit
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from ui_qt.widgets.header import Header
+from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.utils.settings import read_settings
 from ui_qt.logic.planner import plan_ilp, plan_bfd
 from ui_qt.logic.sequencer import Sequencer
@@ -19,6 +20,7 @@ class AutomaticoPage(QWidget):
         self.seq.step_started.connect(self._on_step_started)
         self.seq.step_finished.connect(self._on_step_finished)
         self.seq.finished.connect(self._on_seq_done)
+        self._poll = None
         self._build()
 
     def _build(self):
@@ -61,6 +63,8 @@ class AutomaticoPage(QWidget):
 
         right = QFrame(); body.addWidget(right, 1)
         rl = QVBoxLayout(right); rl.setContentsMargins(6,6,6,6)
+        self.status = StatusPanel(self.machine, "STATO", right)
+        rl.addWidget(self.status, 0)
         rl.addWidget(QLabel("Log"))
         self.log = QTextEdit(); self.log.setReadOnly(True)
         rl.addWidget(self.log, 1)
@@ -130,4 +134,14 @@ class AutomaticoPage(QWidget):
         self.log.append(s)
 
     def on_show(self):
-        pass
+        self.status.refresh()
+        if self._poll is None:
+            self._poll = QTimer(self); self._poll.timeout.connect(self._tick); self._poll.start(200)
+
+    def _tick(self):
+        self.status.refresh()
+
+    def hideEvent(self, ev):
+        if self._poll:
+            self._poll.stop(); self._poll = None
+        super().hideEvent(ev)
