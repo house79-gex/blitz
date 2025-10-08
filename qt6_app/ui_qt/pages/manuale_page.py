@@ -33,6 +33,7 @@ class ManualePage(QWidget):
         self.lbl_quota_val: Optional[QLabel] = None
         self.btn_freno: Optional[QPushButton] = None
         self.btn_frizione: Optional[QPushButton] = None
+        self.btn_testa: Optional[QPushButton] = None  # NUOVO: pulsante TESTA
 
         self._poll: Optional[QTimer] = None
         self._sim_mm: float = 0.0
@@ -141,6 +142,10 @@ class ManualePage(QWidget):
                 self.btn_frizione.setText("INSERISCI FRIZIONE")
                 self.btn_frizione.setStyleSheet(self._btn_style_3d(ORANGE, ORANGE_DARK))
             self.btn_frizione.setMinimumHeight(BTN_MIN_H)
+        if self.btn_testa:
+            # Il testo resta fisso; colore in base al freno (bloccato=verde, sbloccato=arancio)
+            self.btn_testa.setStyleSheet(self._btn_style_3d(GREEN if brake_on else ORANGE, GREEN_DARK if brake_on else ORANGE_DARK))
+            self.btn_testa.setMinimumHeight(BTN_MIN_H)
 
     # ---------------- Build UI ----------------
     def _build(self):
@@ -172,10 +177,14 @@ class ManualePage(QWidget):
 
         ll.addWidget(quota_frame, 3, alignment=Qt.AlignCenter)
 
+        # Pulsanti: FRENO / FRIZIONE / TESTA
         btn_box = QFrame(); bl = QHBoxLayout(btn_box); bl.setContentsMargins(12,12,12,12); bl.setSpacing(24); bl.setAlignment(Qt.AlignCenter)
         self.btn_freno = QPushButton("BLOCCA FRENO"); self.btn_freno.clicked.connect(self._toggle_freno)
         self.btn_frizione = QPushButton("INSERISCI FRIZIONE"); self.btn_frizione.clicked.connect(self._toggle_frizione)
-        bl.addWidget(self.btn_freno, 0, Qt.AlignCenter); bl.addWidget(self.btn_frizione, 0, Qt.AlignCenter)
+        self.btn_testa = QPushButton("TESTA"); self.btn_testa.clicked.connect(self._press_testa)
+        bl.addWidget(self.btn_freno, 0, Qt.AlignCenter)
+        bl.addWidget(self.btn_frizione, 0, Qt.AlignCenter)
+        bl.addWidget(self.btn_testa, 0, Qt.AlignCenter)
         ll.addWidget(btn_box, 2, alignment=Qt.AlignCenter)
 
         # Destra: Status + placeholder FQ
@@ -217,6 +226,7 @@ class ManualePage(QWidget):
 
     def _toggle_frizione(self):
         want = not bool(getattr(self.machine, "clutch_active", True) or getattr(self.machine, "clutch_on", False) or getattr(self.machine, "frizione_inserita", True))
+        # In Manuale devi poterla inserire/disinserire sempre (salvo emergenza/posizionamento)
         if hasattr(self.machine, "set_clutch") and callable(getattr(self.machine, "set_clutch")):
             try: self.machine.set_clutch(want)
             except Exception: pass
@@ -234,6 +244,31 @@ class ManualePage(QWidget):
         self._style_buttons_by_state()
         if self.status: self.status.refresh()
 
+    def _press_testa(self):
+        """
+        Simula il pulsante hardware TESTA: blocco/sblocco simultaneo freno+frizione.
+        Usa external_head_button_press() se disponibile, altrimenti applica una logica equivalente.
+        """
+        handled = False
+        if hasattr(self.machine, "external_head_button_press") and callable(getattr(self.machine, "external_head_button_press")):
+            try:
+                handled = bool(self.machine.external_head_button_press())
+            except Exception:
+                handled = False
+
+        if not handled:
+            # fallback: alterna insieme freno e frizione
+            brake_on = bool(getattr(self.machine, "brake_active", False))
+            target_locked = not brake_on
+            try:
+                setattr(self.machine, "brake_active", target_locked)
+                setattr(self.machine, "clutch_active", target_locked)
+            except Exception:
+                pass
+
+        self._style_buttons_by_state()
+        if self.status: self.status.refresh()
+
     # ---------------- Encoder display ----------------
     @staticmethod
     def _fmt_mm(v) -> str:
@@ -241,8 +276,7 @@ class ManualePage(QWidget):
         except Exception: return "—"
 
     def _update_quota_label(self):
-        # Preferisci il valore reale se disponibile
-        # 1) encoder_position; 2) position_current; 3) simulazione locale
+        # Preferisci encoder_position, poi position_current, altrimenti sim locale
         for name in ("encoder_position", "position_current"):
             if hasattr(self.machine, name):
                 try:
@@ -253,7 +287,7 @@ class ManualePage(QWidget):
                 except Exception:
                     pass
 
-        # Simulazione locale: muovi solo con freno sbloccato e frizione disinserita
+        # Simulazione locale: solo con freno sbloccato e frizione disinserita
         brake_on = bool(getattr(self.machine, "brake_active", False))
         clutch_on = bool(getattr(self.machine, "clutch_active", True))
         manual_move_ok = (not brake_on) and (not clutch_on)
@@ -268,6 +302,7 @@ class ManualePage(QWidget):
 
     # ---------------- Lifecycle ----------------
     def on_show(self):
+        # Abilita simulazione pulsante TESTA solo in Manuale
         try:
             if hasattr(self.machine, "set_head_button_input_enabled"): self.machine.set_head_button_input_enabled(True)
         except Exception: pass
@@ -281,6 +316,7 @@ class ManualePage(QWidget):
         if self.status: self.status.refresh()
 
     def hideEvent(self, ev):
+        # Disabilita simulazione TESTA e reinserisce frizione in uscita
         try:
             if hasattr(self.machine, "set_head_button_input_enabled"): self.machine.set_head_button_input_enabled(False)
         except Exception: pass
