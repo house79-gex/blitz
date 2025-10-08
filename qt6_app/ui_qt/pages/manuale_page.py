@@ -1,3 +1,5 @@
+from typing import Optional
+
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QSizePolicy
 from PySide6.QtCore import Qt, QTimer
 from ui_qt.widgets.header import Header
@@ -27,12 +29,12 @@ class ManualePage(QWidget):
         self.appwin = appwin
         self.machine = appwin.machine
 
-        self.status: StatusPanel | None = None
-        self.lbl_quota_val: QLabel | None = None
-        self.btn_freno: QPushButton | None = None
-        self.btn_frizione: QPushButton | None = None
+        self.status: Optional[StatusPanel] = None
+        self.lbl_quota_val: Optional[QLabel] = None
+        self.btn_freno: Optional[QPushButton] = None
+        self.btn_frizione: Optional[QPushButton] = None
 
-        self._poll: QTimer | None = None
+        self._poll: Optional[QTimer] = None
         self._sim_mm: float = 0.0
         self._sim_dir: float = +1.0
 
@@ -41,6 +43,12 @@ class ManualePage(QWidget):
     # ---------------- Helpers nav/reset ----------------
     def _nav_home(self) -> bool:
         # Navigazione home robusta; restituisce True se gestito
+        if hasattr(self.appwin, "show_page") and callable(getattr(self.appwin, "show_page")):
+            try:
+                self.appwin.show_page("home")
+                return True
+            except Exception:
+                pass
         for attr in ("go_home", "show_home", "navigate_home", "home"):
             if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
                 try:
@@ -127,8 +135,8 @@ class ManualePage(QWidget):
         """
 
     def _style_buttons_by_state(self):
-        brake_on = bool(getattr(self.machine, "brake_active", False))
-        clutch_on = bool(getattr(self.machine, "clutch_active", True))
+        brake_on = bool(getattr(self.machine, "brake_active", False) or getattr(self.machine, "brake_on", False))
+        clutch_on = bool(getattr(self.machine, "clutch_active", True) or getattr(self.machine, "clutch_on", False))
         if self.btn_freno:
             if brake_on:
                 self.btn_freno.setText("SBLOCCA FRENO")
@@ -151,7 +159,7 @@ class ManualePage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
 
-        # Header con callback: Reset -> normalize + Home; Home -> nav Home
+        # Header con callback: Reset -> normalize; Home -> nav Home (gestito da Header)
         root.addWidget(Header(self.appwin, "MANUALE", mode="default", on_home=self._nav_home, on_reset=self._reset_and_home))
 
         body = QHBoxLayout(); body.setSpacing(8); root.addLayout(body, 1)
@@ -199,12 +207,12 @@ class ManualePage(QWidget):
 
     # ---------------- Button logic ----------------
     def _toggle_freno(self):
-        cur = bool(getattr(self.machine, "brake_active", False))
+        cur = bool(getattr(self.machine, "brake_active", False) or getattr(self.machine, "brake_on", False))
         self._set_brake(not cur)
         self._style_buttons_by_state()
 
     def _toggle_frizione(self):
-        cur = bool(getattr(self.machine, "clutch_active", True))
+        cur = bool(getattr(self.machine, "clutch_active", True) or getattr(self.machine, "clutch_on", False))
         self._set_clutch(not cur)
         self._style_buttons_by_state()
 
@@ -226,6 +234,7 @@ class ManualePage(QWidget):
                 if cur != want_active: m.toggle_brake(); return True
             # Attributo booleano
             if hasattr(m, "brake_active"): setattr(m, "brake_active", bool(want_active)); return True
+            if hasattr(m, "brake_on"): setattr(m, "brake_on", bool(want_active)); return True
         except Exception:
             pass
         return False
@@ -244,6 +253,7 @@ class ManualePage(QWidget):
                 cur = bool(getattr(m, "clutch_active", True))
                 if cur != want_active: m.toggle_clutch(); return True
             if hasattr(m, "clutch_active"): setattr(m, "clutch_active", bool(want_active)); return True
+            if hasattr(m, "clutch_on"): setattr(m, "clutch_on", bool(want_active)); return True
         except Exception:
             pass
         return False
@@ -265,8 +275,8 @@ class ManualePage(QWidget):
             except Exception:
                 pass
         # Simulazione: muove solo con freno sbloccato e frizione disinserita
-        brake_on = bool(getattr(self.machine, "brake_active", False))
-        clutch_on = bool(getattr(self.machine, "clutch_active", True))
+        brake_on = bool(getattr(self.machine, "brake_active", False) or getattr(self.machine, "brake_on", False))
+        clutch_on = bool(getattr(self.machine, "clutch_active", True) or getattr(self.machine, "clutch_on", False))
         manual_move_ok = (not brake_on) and (not clutch_on)
         if manual_move_ok:
             if not (0.0 <= self._sim_mm <= 4000.0):
