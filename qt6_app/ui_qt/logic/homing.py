@@ -94,6 +94,6 @@ def start_homing(machine, callback=None):
                 callback(success=True, msg="HOMING COMPLETATO")
         except Exception:
             if callback:
-                callback(success=False, msg="ERRORE HOMING"))
+                callback(success=False, msg="ERRORE HOMING")
 
     threading.Thread(target=_run, daemon=True).start()
