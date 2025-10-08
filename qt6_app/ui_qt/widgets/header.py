@@ -1,165 +1,131 @@
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QFrame
-from PySide6.QtCore import Qt, QTimer
-from ui_qt.theme import THEME
+from typing import Callable, Optional
 
-class Header(QFrame):
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QFrame
+
+
+class Header(QWidget):
     """
-    Header con titolo + azioni comuni:
-    - Home: ritorna alla pagina Home
-    - AZZERA: clear emergency (se attiva) + homing
-    - Se non azzerata: banner e lampeggio AZZERA
-    Compatibile con chiamata Header(appwin, title).
+    Header generico per le pagine:
+    - Home a sinistra
+    - Titolo centrato e più grande
+    - Reset a destra (sostituisce 'Azzera'); alla pressione effettua il reset (se definito)
+      e torna automaticamente alla Home.
+    - Segnali: home_clicked, reset_clicked
     """
-    def __init__(self, appwin, title: str, show_home: bool = True, show_reset: bool = True):
-        super().__init__(appwin)
+    home_clicked = Signal()
+    reset_clicked = Signal()
+
+    def __init__(self, appwin, title: str, on_reset: Optional[Callable[[], None]] = None, parent: Optional[QWidget] = None):
+        super().__init__(parent)
         self.appwin = appwin
-        self.setObjectName("Header")
-        self.setStyleSheet(f"""
-            QFrame#Header {{
-                background: {THEME.PANEL_BG};
-                border-bottom: 1px solid {THEME.OUTLINE};
-            }}
-            QLabel#HeaderTitle {{
-                font-size: 18px;
-                font-weight: 800;
-            }}
-            QPushButton#HdrBtn {{
-                padding: 6px 10px;
-                border: 1px solid {THEME.OUTLINE};
-                border-radius: 6px;
-                background: {THEME.TILE_BG};
-            }}
-            QPushButton#HdrBtn:hover {{
-                border-color: {THEME.ACCENT};
-            }}
-        """)
+        self._on_reset_cb = on_reset
 
-        self._blink_timer = None
-        self._blink_on = False
+        self._build(title)
 
-        vlay = QVBoxLayout(self)
-        vlay.setContentsMargins(8, 8, 8, 0)
-        vlay.setSpacing(0)
+    def _build(self, title: str):
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(8)
 
-        # Riga superiore: titolo + azioni
-        h = QHBoxLayout()
-        h.setContentsMargins(0, 0, 0, 8)
-        h.setSpacing(8)
-        vlay.addLayout(h)
+        # Contenitori laterali per aiutare il centraggio del titolo
+        left_bar = QFrame(self)
+        left_bar_l = QHBoxLayout(left_bar)
+        left_bar_l.setContentsMargins(0, 0, 0, 0)
+        left_bar_l.setSpacing(0)
 
-        self.lbl = QLabel(title)
-        self.lbl.setObjectName("HeaderTitle")
-        h.addWidget(self.lbl, 0, alignment=Qt.AlignVCenter | Qt.AlignLeft)
-        h.addStretch(1)
+        center = QFrame(self)
+        center_l = QHBoxLayout(center)
+        center_l.setContentsMargins(0, 0, 0, 0)
+        center_l.setSpacing(0)
 
-        if show_home:
-            btn_home = QPushButton("Home")
-            btn_home.setObjectName("HdrBtn")
-            btn_home.clicked.connect(lambda: self.appwin.show_page("home"))
-            h.addWidget(btn_home)
+        right_bar = QFrame(self)
+        right_bar_l = QHBoxLayout(right_bar)
+        right_bar_l.setContentsMargins(0, 0, 0, 0)
+        right_bar_l.setSpacing(0)
 
-        if show_reset:
-            self.btn_reset = QPushButton("AZZERA")
-            self.btn_reset.setObjectName("HdrBtn")
-            self.btn_reset.clicked.connect(self._do_reset)
-            h.addWidget(self.btn_reset)
+        lay.addWidget(left_bar, 0)
+        lay.addWidget(center, 1)  # il centro prende lo stretch
+        lay.addWidget(right_bar, 0)
 
-        # Banner “non azzerata”
-        self.warn_banner = QLabel("Macchina non azzerata: premi AZZERA")
-        self.warn_banner.setVisible(False)
-        self.warn_banner.setStyleSheet(f"""
-            QLabel {{
-                background: {THEME.WARN}22;
-                color: {THEME.WARN};
-                border-top: 1px solid {THEME.OUTLINE_SOFT};
-                border-bottom: 1px solid {THEME.OUTLINE_SOFT};
-                padding: 6px 10px;
-            }}
-        """)
-        vlay.addWidget(self.warn_banner, 0, alignment=Qt.AlignLeft)
+        # Pulsante Home (sinistra)
+        self.btn_home = QPushButton("Home", left_bar)
+        self.btn_home.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_home.clicked.connect(self._go_home)
+        left_bar_l.addWidget(self.btn_home)
 
-        # Timer di monitor per banner + lampeggio
-        self._start_monitor()
+        # Titolo centrato e più grande
+        self.lbl_title = QLabel(title, center)
+        self.lbl_title.setAlignment(Qt.AlignCenter)
+        # "un po' più grande": aumentiamo il font con peso
+        self.lbl_title.setStyleSheet("font-size: 26px; font-weight: 800;")
+        self.lbl_title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        center_l.addWidget(self.lbl_title, 1, Qt.AlignCenter)
 
-    def _start_monitor(self):
-        self._mon = QTimer(self)
-        self._mon.setInterval(250)
-        self._mon.timeout.connect(self._tick_monitor)
-        self._mon.start()
+        # Pulsante Reset (destra) — sostituisce "Azzera"
+        self.btn_reset = QPushButton("Reset", right_bar)
+        self.btn_reset.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_reset.clicked.connect(self._do_reset_and_home)
+        right_bar_l.addWidget(self.btn_reset)
 
-    def _tick_monitor(self):
-        try:
-            m = self.appwin.machine
-            not_homed = not bool(getattr(m, "machine_homed", False))
-            emg = bool(getattr(m, "emergency_active", False))
-        except Exception:
-            not_homed = True
-            emg = False
+        # Per mantenere il titolo perfettamente centrato, rendiamo i due bottoni simmetrici
+        # forzando la stessa larghezza minima (basata sulla più ampia tra le due etichette)
+        self._sync_buttons_width()
 
-        # Banner visibile se non azzerata o EMG
-        self.warn_banner.setVisible(not_homed or emg)
+    def _sync_buttons_width(self):
+        # Determina la larghezza suggerita e imposta una larghezza minima comune
+        w = max(self.btn_home.sizeHint().width(), self.btn_reset.sizeHint().width())
+        self.btn_home.setMinimumWidth(w)
+        self.btn_reset.setMinimumWidth(w)
 
-        # Lampeggio AZZERA se non azzerata
-        if hasattr(self, "btn_reset"):
-            if not_homed or emg:
-                if self._blink_timer is None:
-                    self._blink_timer = QTimer(self)
-                    self._blink_timer.setInterval(500)
-                    self._blink_timer.timeout.connect(self._blink_tick)
-                    self._blink_timer.start()
-            else:
-                # stop blink
-                if self._blink_timer:
-                    self._blink_timer.stop()
-                    self._blink_timer = None
-                self._blink_on = False
-                self.btn_reset.setStyleSheet("")  # reset stile
-                self.btn_reset.repaint()
+    def setTitle(self, title: str):
+        self.lbl_title.setText(title)
 
-    def _blink_tick(self):
-        if not hasattr(self, "btn_reset"):
-            return
-        self._blink_on = not self._blink_on
-        if self._blink_on:
-            self.btn_reset.setStyleSheet("background:#d35400; color:white;")  # arancio
-        else:
-            self.btn_reset.setStyleSheet("")
-
-    def _do_reset(self):
-        try:
-            m = self.appwin.machine
-
-            # Se emergenza attiva, prova a cancellarla
-            if getattr(m, "emergency_active", False) and hasattr(m, "clear_emergency"):
-                m.clear_emergency()
-
-            # Avvia homing
-            if hasattr(m, "do_homing"):
+    # Navigazione Home robusta
+    def _go_home(self):
+        handled = False
+        # Tenta metodi comuni nel MainWindow/app
+        for attr in ("go_home", "show_home", "navigate_home", "home"):
+            if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
                 try:
-                    self.btn_reset.setEnabled(False)
+                    getattr(self.appwin, attr)()
+                    handled = True
+                    break
                 except Exception:
                     pass
+        # Tenta un oggetto nav con go_home
+        if not handled and hasattr(self.appwin, "nav"):
+            nav = getattr(self.appwin, "nav")
+            if hasattr(nav, "go_home") and callable(nav.go_home):
+                try:
+                    nav.go_home()
+                    handled = True
+                except Exception:
+                    pass
+        # Se nessun handler, emetti segnale
+        if not handled:
+            self.home_clicked.emit()
 
-                def cb(success: bool, msg: str):
-                    # feedback utente (se c'è un toast)
-                    try:
-                        if hasattr(self.appwin, "toast") and self.appwin.toast:
-                            self.appwin.toast.show(f"AZZERA: {msg}", "ok" if success else "warn", 2500)
-                    except Exception:
-                        pass
-                    try:
-                        self.btn_reset.setEnabled(True)
-                    except Exception:
-                        pass
+    def _do_reset_and_home(self):
+        # Emette comunque il segnale (utile per page-specific listeners)
+        self.reset_clicked.emit()
 
-                m.do_homing(callback=cb)
-            else:
-                # Fallback: stato base per consentire test
-                setattr(m, "machine_homed", True)
-                setattr(m, "brake_active", False)
-                setattr(m, "clutch_active", True)
+        # Invoca callback reset (se fornita)
+        try:
+            if callable(self._on_reset_cb):
+                self._on_reset_cb()
         except Exception:
-            try:
-                self.btn_reset.setEnabled(True)
-            except Exception:
-                pass
+            pass
+
+        # In assenza di callback, prova metodi noti sull'app
+        if self._on_reset_cb is None:
+            for attr in ("reset_current_page", "reset_page", "reset_all", "reset"):
+                if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
+                    try:
+                        getattr(self.appwin, attr)()
+                        break
+                    except Exception:
+                        pass
+
+        # Dopo il reset, vai sempre alla Home
+        self._go_home()
