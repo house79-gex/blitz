@@ -1,6 +1,6 @@
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QFrame
 
 class Header(QWidget):
@@ -8,16 +8,40 @@ class Header(QWidget):
     Header generico per le pagine:
     - Home a sinistra (azzurro chiaro)
     - Titolo centrato e più grande
-    - Reset a destra (rosso); alla pressione effettua il reset (se definito) e torna alla Home
+    - Pulsante destro contestuale:
+        * mode='default' (pagine): Reset rosso -> chiama on_reset (se fornito) e poi Home
+        * mode='home' (solo Home): Azzera -> chiama on_azzera (se fornito) e NON cambia pagina
+          (lampeggia se la macchina non è azzerata)
     - Segnali: home_clicked, reset_clicked
     """
     home_clicked = Signal()
     reset_clicked = Signal()
 
-    def __init__(self, appwin, title: str, on_reset: Optional[Callable[[], None]] = None, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        appwin,
+        title: str,
+        mode: str = "default",
+        on_home: Optional[Callable[[], None]] = None,
+        on_reset: Optional[Callable[[], None]] = None,
+        on_azzera: Optional[Callable[[], None]] = None,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self.appwin = appwin
+        self.mode = mode
+        self._on_home_cb = on_home
         self._on_reset_cb = on_reset
+        self._on_azzera_cb = on_azzera
+
+        self.btn_home: Optional[QPushButton] = None
+        self.btn_right: Optional[QPushButton] = None  # Reset o Azzera
+        self.lbl_title: Optional[QLabel] = None
+
+        # Lampeggio per Azzera in Home
+        self._blink_timer: Optional[QTimer] = None
+        self._blink_on: bool = False
+
         self._build(title)
 
     # ---------------- Color helpers ----------------
@@ -104,11 +128,9 @@ class Header(QWidget):
 
         # Pulsante Home (azzurro chiaro) a sinistra
         self.btn_home = QPushButton("Home", left_bar)
-        self.btn_home.setObjectName("btn_home")
         self.btn_home.setCursor(Qt.PointingHandCursor)
         self.btn_home.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.btn_home.clicked.connect(self._go_home)
-        # Colori Home
+        self.btn_home.clicked.connect(self._on_home_clicked)
         HOME_BASE = "#5dade2"   # azzurro chiaro
         HOME_DARK = "#3498db"
         self.btn_home.setStyleSheet(self._btn_style_3d(HOME_BASE, HOME_DARK, font_px=16))
@@ -121,74 +143,138 @@ class Header(QWidget):
         self.lbl_title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         center_l.addWidget(self.lbl_title, 1, Qt.AlignCenter)
 
-        # Pulsante Reset (rosso) a destra
-        self.btn_reset = QPushButton("Reset", right_bar)
-        self.btn_reset.setObjectName("btn_reset")
-        self.btn_reset.setCursor(Qt.PointingHandCursor)
-        self.btn_reset.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.btn_reset.clicked.connect(self._do_reset_and_home)
-        # Colori Reset
-        RESET_BASE = "#e74c3c"  # rosso
-        RESET_DARK = "#c0392b"
-        self.btn_reset.setStyleSheet(self._btn_style_3d(RESET_BASE, RESET_DARK, font_px=16))
-        right_bar_l.addWidget(self.btn_reset)
+        # Pulsante destro: Reset (default) o Azzera (home)
+        if self.mode == "home":
+            self.btn_right = QPushButton("Azzera", right_bar)
+            self.btn_right.setCursor(Qt.PointingHandCursor)
+            self.btn_right.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self.btn_right.clicked.connect(self._on_azzera_clicked)
+            # Giallo/ambra per attenzione
+            AZZ_BASE = "#f1c40f"
+            AZZ_DARK = "#d4ac0d"
+            self._azzera_style_base = self._btn_style_3d(AZZ_BASE, AZZ_DARK, font_px=16)
+            # Variante più chiara per lampeggio
+            AZZ_BASE_L = self._shade(AZZ_BASE, 0.18)
+            AZZ_DARK_L = self._shade(AZZ_DARK, 0.12)
+            self._azzera_style_blink = self._btn_style_3d(AZZ_BASE_L, AZZ_DARK_L, font_px=16)
+            self.btn_right.setStyleSheet(self._azzera_style_base)
+            right_bar_l.addWidget(self.btn_right)
 
-        # Rendi Home/Reset simmetrici in larghezza per mantenere il titolo centrato
+            # Timer per lampeggio
+            self._blink_timer = QTimer(self)
+            self._blink_timer.timeout.connect(self._blink_tick)
+            self._blink_timer.start(600)
+        else:
+            self.btn_right = QPushButton("Reset", right_bar)
+            self.btn_right.setCursor(Qt.PointingHandCursor)
+            self.btn_right.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self.btn_right.clicked.connect(self._on_reset_clicked)
+            RESET_BASE = "#e74c3c"  # rosso
+            RESET_DARK = "#c0392b"
+            self.btn_right.setStyleSheet(self._btn_style_3d(RESET_BASE, RESET_DARK, font_px=16))
+            right_bar_l.addWidget(self.btn_right)
+
+        # Simmetria Home/Right per centraggio perfetto del titolo
         self._sync_buttons_width()
 
     def _sync_buttons_width(self):
-        w = max(self.btn_home.sizeHint().width(), self.btn_reset.sizeHint().width())
+        if not (self.btn_home and self.btn_right):
+            return
+        w = max(self.btn_home.sizeHint().width(), self.btn_right.sizeHint().width())
         self.btn_home.setMinimumWidth(w)
-        self.btn_reset.setMinimumWidth(w)
+        self.btn_right.setMinimumWidth(w)
 
     def setTitle(self, title: str):
         self.lbl_title.setText(title)
 
-    # Navigazione Home robusta
-    def _go_home(self):
-        handled = False
-        # Tenta metodi comuni nel MainWindow/app
+    # ---------------- Event handlers ----------------
+    def _on_home_clicked(self):
+        # Callback esplicita se fornita, altrimenti segnala
+        if callable(self._on_home_cb):
+            try:
+                self._on_home_cb()
+                return
+            except Exception:
+                pass
+        # fallback: prova metodi comuni sull'app
         for attr in ("go_home", "show_home", "navigate_home", "home"):
             if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
                 try:
                     getattr(self.appwin, attr)()
-                    handled = True
-                    break
+                    return
                 except Exception:
                     pass
-        # Tenta un oggetto nav con go_home
-        if not handled and hasattr(self.appwin, "nav"):
-            nav = getattr(self.appwin, "nav")
-            if hasattr(nav, "go_home") and callable(nav.go_home):
-                try:
-                    nav.go_home()
-                    handled = True
-                except Exception:
-                    pass
-        # Se nessun handler, emetti segnale (il chiamante può gestirlo)
-        if not handled:
-            self.home_clicked.emit()
+        if hasattr(self.appwin, "nav") and hasattr(self.appwin.nav, "go_home") and callable(self.appwin.nav.go_home):
+            try:
+                self.appwin.nav.go_home()
+                return
+            except Exception:
+                pass
+        # Se nessun handler ha funzionato, emette segnale
+        self.home_clicked.emit()
 
-    def _do_reset_and_home(self):
-        # Emetti segnale per listener esterni
+    def _on_reset_clicked(self):
         self.reset_clicked.emit()
-
-        # Invoca callback reset (se fornita)
-        try:
-            if callable(self._on_reset_cb):
+        if callable(self._on_reset_cb):
+            try:
                 self._on_reset_cb()
-        except Exception:
-            pass
+            except Exception:
+                pass
+        # Dopo reset, torna alla Home
+        self._on_home_clicked()
 
-        # In assenza di callback, prova metodi noti sull'app
-        if self._on_reset_cb is None:
-            for attr in ("reset_current_page", "reset_page", "reset_all", "reset"):
-                if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
+    def _on_azzera_clicked(self):
+        if callable(self._on_azzera_cb):
+            try:
+                self._on_azzera_cb()
+                return
+            except Exception:
+                pass
+        # fallback su metodi noti di appwin o machine
+        for attr in ("start_homing", "do_zero", "azzeramento", "homing"):
+            if hasattr(self.appwin, attr) and callable(getattr(self.appwin, attr)):
+                try:
+                    getattr(self.appwin, attr)()
+                    return
+                except Exception:
+                    pass
+        if hasattr(self.appwin, "machine"):
+            m = self.appwin.machine
+            for attr in ("start_homing", "home", "do_zero", "azzera"):
+                if hasattr(m, attr) and callable(getattr(m, attr)):
                     try:
-                        getattr(self.appwin, attr)()
-                        break
+                        getattr(m, attr)()
+                        return
                     except Exception:
                         pass
+        # Se non c'è handler, non cambia pagina (rimane in Home)
 
-        # Dopo il reset, vai sempre alla Home
-        self._go_home()
+    # ---------------- Blink (solo per Azzera in Home) ----------------
+    def _is_machine_zeroed(self) -> bool:
+        # Prova attributi comuni
+        m = getattr(self.appwin, "machine", None)
+        if not m:
+            return True
+        for name in ("is_zeroed", "zeroed", "is_homed", "homed", "is_azzerata", "azzerata"):
+            if hasattr(m, name):
+                try:
+                    return bool(getattr(m, name))
+                except Exception:
+                    pass
+        # di default consideriamo azzerata per evitare lampeggi spurii
+        return True
+
+    def _blink_tick(self):
+        if self.mode != "home" or not self.btn_right:
+            return
+        zeroed = self._is_machine_zeroed()
+        if zeroed:
+            # Stile fisso quando azzerata
+            if hasattr(self, "_azzera_style_base"):
+                self.btn_right.setStyleSheet(self._azzera_style_base)
+            self._blink_on = False
+            return
+        # Non azzerata: lampeggia
+        self._blink_on = not self._blink_on
+        style = self._azzera_style_blink if self._blink_on else self._azzera_style_base
+        self.btn_right.setStyleSheet(style)
