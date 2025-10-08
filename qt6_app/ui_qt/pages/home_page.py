@@ -1,3 +1,5 @@
+from typing import Optional
+
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QPushButton, QFrame, QLabel
 from PySide6.QtCore import Qt, QTimer
 from ui_qt.theme import THEME
@@ -11,9 +13,9 @@ class HomePage(QWidget):
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
-        self._banner: QFrame | None = None
-        self._banner_lbl: QLabel | None = None
-        self._poll: QTimer | None = None
+        self._banner: Optional[QFrame] = None
+        self._banner_lbl: Optional[QLabel] = None
+        self._poll: Optional[QTimer] = None
         self._build()
 
     def _build(self):
@@ -100,9 +102,11 @@ class HomePage(QWidget):
 
     def _update_banner(self):
         if self._is_zeroed():
-            self._banner.hide()
+            if self._banner:
+                self._banner.hide()
         else:
-            self._banner.show()
+            if self._banner:
+                self._banner.show()
 
     # ---- header callbacks ----
     def _azzera_home(self):
@@ -113,8 +117,10 @@ class HomePage(QWidget):
                     getattr(m, attr)()
                     break
             else:
-                if hasattr(m, "set_zero"): m.set_zero()
-                elif hasattr(m, "zero_position"): m.zero_position()
+                if hasattr(m, "set_zero"):
+                    m.set_zero()
+                elif hasattr(m, "zero_position"):
+                    m.zero_position()
             if hasattr(self.appwin, "toast"):
                 self.appwin.toast.show("Azzeramento avviato", "ok", 2000)
         except Exception:
