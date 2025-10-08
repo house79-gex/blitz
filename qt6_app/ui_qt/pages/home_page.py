@@ -92,7 +92,7 @@ class HomePage(QWidget):
         m = getattr(self.appwin, "machine", None)
         if not m:
             return True
-        for name in ("is_homed", "homed", "is_zeroed", "zeroed", "azzerata"):
+        for name in ("is_homed", "homed", "is_zeroed", "zeroed", "azzerata", "home_done"):
             if hasattr(m, name):
                 try:
                     return bool(getattr(m, name))
@@ -112,15 +112,17 @@ class HomePage(QWidget):
     def _azzera_home(self):
         try:
             m = self.appwin.machine
-            for attr in ("start_homing", "home", "do_zero"):
+            # Preferisci procedure di homing/azzeramento complete
+            for attr in ("start_homing", "home", "do_zero", "homing_start"):
                 if hasattr(m, attr) and callable(getattr(m, attr)):
                     getattr(m, attr)()
                     break
             else:
-                if hasattr(m, "set_zero"):
-                    m.set_zero()
-                elif hasattr(m, "zero_position"):
-                    m.zero_position()
+                # fallback su azzeramento quota
+                for attr in ("set_zero", "zero_position", "zero", "set_zero_absolute"):
+                    if hasattr(m, attr) and callable(getattr(m, attr)):
+                        getattr(m, attr)()
+                        break
             if hasattr(self.appwin, "toast"):
                 self.appwin.toast.show("Azzeramento avviato", "ok", 2000)
         except Exception:
@@ -129,10 +131,11 @@ class HomePage(QWidget):
     def _reset_home(self):
         try:
             m = self.appwin.machine
-            if hasattr(m, "clear_emergency") and callable(m.clear_emergency):
-                m.clear_emergency()
-            elif hasattr(m, "reset") and callable(m.reset):
-                m.reset()
+            # Varianti comuni di reset EMG/allarmi
+            for attr in ("clear_emergency", "reset_emergency", "clear_emg", "emg_reset", "reset_alarm", "reset"):
+                if hasattr(m, attr) and callable(getattr(m, attr)):
+                    getattr(m, attr)()
+                    break
             if hasattr(self.appwin, "toast"):
                 self.appwin.toast.show("Reset eseguito", "ok", 2000)
         except Exception:
