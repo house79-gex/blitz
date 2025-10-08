@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QPushButton, QF
 from PySide6.QtCore import Qt, QTimer, QEvent
 from ui_qt.theme import THEME
 from ui_qt.widgets.header import Header
-from ui_qt.logic.homing import start_homing  # NUOVO: simulazione homing
+from ui_qt.logic.homing import start_homing  # simulazione homing
 
 BANNER_BG = "#fff3cd"   # giallo chiaro warning
 BANNER_TX = "#856404"   # testo warning
