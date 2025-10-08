@@ -22,10 +22,10 @@ def _pill(text: str, color: str, bold: bool = True) -> QLabel:
 
 class StatusPanel(QWidget):
     """
-    Pannello stato compatto e leggibile (ripristinato):
+    Pannello stato compatto e leggibile:
     - EMG (rosso/verde)
     - HOMED (verde/giallo)
-    - FRENO (BLOCCATO=verde / SBLOCCATO=arancio) ben evidente
+    - FRENO (BLOCCATO=verde / SBLOCCATO=arancio)
     - FRIZIONE (INSERITA=verde / DISINSERITA=arancio)
     - QUOTA (mm) se disponibile
     """
@@ -103,21 +103,21 @@ class StatusPanel(QWidget):
         )
 
         # HOMED
-        homed = self._b("is_homed", "homed", "is_zeroed", "zeroed", "azzerata")
+        homed = self._b("is_homed", "homed", "is_zeroed", "zeroed", "azzerata", "home_done")
         self.w_homed.setText("HOMED" if homed else "NO")
         self.w_homed.setStyleSheet(
             f"font-weight:900; color:white; background:{OK if homed else WARN}; border-radius:10px; padding:3px 8px;"
         )
 
-        # FRENO
-        brake = self._b("brake_active", "freno_attivo")
+        # FRENO (aggiunte più varianti attributo)
+        brake = self._b("brake_active", "brake_on", "freno_attivo", "freno_bloccato")
         self.w_brake.setText("BLOCCATO" if brake else "SBLOCCATO")
         self.w_brake.setStyleSheet(
             f"font-weight:900; color:white; background:{OK if brake else WARN}; border-radius:10px; padding:3px 8px;"
         )
 
         # FRIZIONE
-        clutch = self._b("clutch_active", "frizione_inserita", default=True)
+        clutch = self._b("clutch_active", "frizione_inserita", "clutch_on", default=True)
         self.w_clutch.setText("INSERITA" if clutch else "DISINSERITA")
         self.w_clutch.setStyleSheet(
             f"font-weight:900; color:white; background:{OK if clutch else WARN}; border-radius:10px; padding:3px 8px;"
