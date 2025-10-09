@@ -2,7 +2,7 @@ import sys
 from typing import Optional
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QStackedWidget, QStatusBar, QSizePolicy
+    QApplication, QMainWindow, QStatusBar, QSizePolicy
 )
 from PySide6.QtCore import Qt
 
@@ -11,6 +11,9 @@ try:
     from ui_qt.theme import apply_global_stylesheet
 except Exception:
     apply_global_stylesheet = lambda app: None  # fallback no-op
+
+# Stack che non impone minime eccessive
+from ui_qt.widgets.min_stack import MinimalStacked
 
 
 # --- Fallback DummyMachineState (usato solo se la reale non è importabile) ---
@@ -140,8 +143,8 @@ class MainWindow(QMainWindow):
         # Istanza MachineState reale, se disponibile; altrimenti Dummy
         self.machine = self._make_machine()
 
-        # Stack pagine
-        self.stack = QStackedWidget(self)
+        # Stack pagine: MinimalStacked non propaga minime eccessive
+        self.stack = MinimalStacked(self)
         self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.stack.setMinimumSize(0, 0)
         self.setCentralWidget(self.stack)
@@ -180,7 +183,6 @@ class MainWindow(QMainWindow):
             return DummyMachineState()
 
     def add_page(self, key: str, widget):
-        # Aggiunge direttamente il widget (NO scroll area, come richiesto)
         idx = self.stack.addWidget(widget)
         self._pages[key] = (widget, idx)
 
@@ -237,7 +239,7 @@ def main():
         pass
 
     win = MainWindow()
-    # Apertura massimizzata (niente setGeometry manuale; niente scroll area)
+    # Apertura massimizzata (niente setGeometry manuale)
     win.showMaximized()
     sys.exit(app.exec())
 
