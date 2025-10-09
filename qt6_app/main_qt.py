@@ -59,7 +59,7 @@ class DummyMachineState:
         self.clutch_active = bool(active)
         return True
 
-    # Simulazione homing: porta a minima, imposta homed=True, freno OFF, frizione ON
+    # Simulazione homing
     def do_homing(self, callback=None):
         import time, threading
 
@@ -83,7 +83,6 @@ class DummyMachineState:
         threading.Thread(target=seq, daemon=True).start()
 
     def move_to_length_and_angles(self, length_mm: float, ang_sx: float, ang_dx: float, done_cb=None):
-        # simulazione posizionamento
         self.brake_active = False
         self.positioning_active = True
         self.left_head_angle = float(ang_sx)
@@ -132,7 +131,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BLITZ 3")
-        self.resize(1280, 800)
+        # Rimuoviamo dimensione fissa: l'app si aprirà massimizzata (vedi main())
 
         # Status bar per messaggi/toast
         self.setStatusBar(QStatusBar())
@@ -173,7 +172,6 @@ class MainWindow(QMainWindow):
 
     def _make_machine(self):
         try:
-            # MachineState reale con logica completa (do_homing, toggle_brake, ecc.)
             from ui.shared.machine_state import MachineState as RealMachineState
             return RealMachineState()
         except Exception:
@@ -214,9 +212,8 @@ class MainWindow(QMainWindow):
     def navigate_home(self): self.show_page("home")
     def home(self): self.show_page("home")
 
-    # Reset “globale” (usato dai fallback dell’Header)
+    # Reset “globale”
     def reset_current_page(self):
-        # se la macchina espone reset(), usala
         if hasattr(self.machine, "reset") and callable(getattr(self.machine, "reset")):
             try:
                 self.machine.reset()
@@ -236,7 +233,8 @@ def main():
     except Exception:
         pass
     win = MainWindow()
-    win.show()
+    # Apertura massimizzata (Qt non supera i limiti dello schermo)
+    win.showMaximized()
     sys.exit(app.exec())
 
 
