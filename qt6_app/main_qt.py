@@ -2,7 +2,7 @@ import sys
 from typing import Optional
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QStackedWidget, QStatusBar, QScrollArea, QSizePolicy
+    QApplication, QMainWindow, QStackedWidget, QStatusBar, QSizePolicy
 )
 from PySide6.QtCore import Qt
 
@@ -180,14 +180,8 @@ class MainWindow(QMainWindow):
             return DummyMachineState()
 
     def add_page(self, key: str, widget):
-        # WRAP in scroll area per evitare che le min-size dei contenuti impongano minime eccessive alla finestra
-        area = QScrollArea()
-        area.setWidget(widget)
-        area.setWidgetResizable(True)
-        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        idx = self.stack.addWidget(area)
-        # Manteniamo il riferimento al widget originale per on_show
+        # Aggiunge direttamente il widget (NO scroll area, come richiesto)
+        idx = self.stack.addWidget(widget)
         self._pages[key] = (widget, idx)
 
     def _try_add_page(self, key: str, mod_name: str, cls_name: str):
@@ -243,7 +237,7 @@ def main():
         pass
 
     win = MainWindow()
-    # Apertura massimizzata: niente setGeometry manuale, lascia gestire al WM
+    # Apertura massimizzata (niente setGeometry manuale; niente scroll area)
     win.showMaximized()
     sys.exit(app.exec())
 
