@@ -213,10 +213,10 @@ class ManualePage(QWidget):
                 self.btn_freno.setStyleSheet(self._btn_style_3d(ORANGE, ORANGE_DARK, btn_px))
         if self.btn_frizione:
             if clutch_on:
-                self.btn_frizione.setText("DISINSERISCI FRIZIONE")
+                self.btn_frizione.setText("FRIZIONE OFF")
                 self.btn_frizione.setStyleSheet(self._btn_style_3d(GREEN, GREEN_DARK, btn_px))
             else:
-                self.btn_frizione.setText("INSERISCI FRIZIONE")
+                self.btn_frizione.setText("FRIZIONE ON")
                 self.btn_frizione.setStyleSheet(self._btn_style_3d(ORANGE, ORANGE_DARK, btn_px))
         if self.btn_testa:
             self.btn_testa.setText("TESTA")
@@ -255,7 +255,7 @@ class ManualePage(QWidget):
         # Pulsanti: FRENO / FRIZIONE / TESTA (nessuna min-height rigida)
         btn_box = QFrame(); bl = QHBoxLayout(btn_box); bl.setContentsMargins(12,12,12,12); bl.setSpacing(24); bl.setAlignment(Qt.AlignCenter)
         self.btn_freno = QPushButton("BLOCCA FRENO"); self.btn_freno.clicked.connect(self._toggle_freno)
-        self.btn_frizione = QPushButton("INSERISCI FRIZIONE"); self.btn_frizione.clicked.connect(self._toggle_frizione)
+        self.btn_frizione = QPushButton("FRIZIONE ON"); self.btn_frizione.clicked.connect(self._toggle_frizione)
         self.btn_testa = QPushButton("TESTA"); self.btn_testa.clicked.connect(self._press_testa)
         bl.addWidget(self.btn_freno, 0, Qt.AlignCenter)
         bl.addWidget(self.btn_frizione, 0, Qt.AlignCenter)
@@ -328,7 +328,7 @@ class ManualePage(QWidget):
 
         # Sincronizza alias in base a 'clutch_active' se presente, altrimenti usa 'want'
         new_val = getattr(m, "clutch_active", want)
-        self._sync_aliases("clutch_active", new_val, ["clutch_on", "frizione_inserita"])
+        self._sync_aliases("clutch_active", new_val, ["clutch_on", "frizione_ON"])
 
         # Aggiorna subito UI
         self._style_buttons_by_state()
@@ -349,7 +349,7 @@ class ManualePage(QWidget):
                 setattr(self.machine, "brake_active", target_locked)
                 setattr(self.machine, "clutch_active", target_locked)
                 self._sync_aliases("brake_active", target_locked, ["brake_on", "freno_bloccato"])
-                self._sync_aliases("clutch_active", target_locked, ["clutch_on", "frizione_inserita"])
+                self._sync_aliases("clutch_active", target_locked, ["clutch_on", "frizione_ON"])
             except Exception:
                 pass
 
@@ -374,7 +374,7 @@ class ManualePage(QWidget):
                     pass
         # Simulazione locale
         brake_on = self._get_flag(["brake_active", "brake_on", "freno_bloccato"], default=False)
-        clutch_on = self._get_flag(["clutch_active", "clutch_on", "frizione_inserita"], default=True)
+        clutch_on = self._get_flag(["clutch_active", "clutch_on", "frizione_ON"], default=True)
         manual_move_ok = (not brake_on) and (not clutch_on)
         if manual_move_ok:
             if not (0.0 <= self._sim_mm <= 4000.0):
