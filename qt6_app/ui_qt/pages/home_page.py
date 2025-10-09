@@ -48,21 +48,26 @@ class HomePage(QWidget):
 
         # Griglia di tile principali: 2 colonne x 3 righe
         grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(12)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
+        # Distribuzione uniforme delle colonne
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
         root.addLayout(grid, 1)
 
         def make_tile(text, key):
             btn = QPushButton(text)
-            btn.setMinimumSize(220, 120)
+            # Ingranditi
+            btn.setMinimumSize(280, 160)
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background: {THEME.TILE_BG};
                     color: {THEME.TEXT};
                     border: 1px solid {THEME.OUTLINE};
-                    border-radius: 10px;
-                    font-weight: 700;
-                    font-size: 16px;
+                    border-radius: 12px;
+                    font-weight: 800;
+                    font-size: 20px;
+                    padding: 10px 16px;
                 }}
                 QPushButton:hover {{
                     border-color: {THEME.ACCENT};
