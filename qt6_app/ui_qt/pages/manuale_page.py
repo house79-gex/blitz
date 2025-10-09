@@ -2,6 +2,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QSizePolicy
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFontMetrics
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 
@@ -12,6 +13,13 @@ BTN_FONT_PX_BASE = 56
 PANEL_W = 420
 PANEL_H = 220
 FQ_H = 100
+
+# Testi pulsanti (uniformati e stabili)
+BTN_TESTA = "TESTA"
+BTN_FRENO_ON = "BLOCCA FRENO"
+BTN_FRENO_OFF = "SBLOCCA FRENO"
+BTN_FRIZ_ON = "Frizione ON (inserita)"
+BTN_FRIZ_OFF = "Frizione OFF (disinserita)"
 
 # Colori
 GREEN = "#2ecc71"
@@ -154,6 +162,43 @@ class ManualePage(QWidget):
             }
         """
 
+    # ---------------- Larghezza pulsanti stabile ----------------
+    def _compute_text_width(self, btn: QPushButton, text: str) -> int:
+        fm = QFontMetrics(btn.font())
+        return fm.horizontalAdvance(text)
+
+    def _sync_button_widths(self):
+        """
+        Imposta la stessa larghezza minima per FRENO, FRIZIONE e TESTA, basata
+        sul testo più lungo (considerando entrambi gli stati).
+        Evita 'salti' quando cambia il testo.
+        """
+        if not (self.btn_freno and self.btn_frizione and self.btn_testa):
+            return
+
+        # Testi possibili per ogni pulsante
+        texts = [
+            BTN_FRENO_ON, BTN_FRENO_OFF,
+            BTN_FRIZ_ON, BTN_FRIZ_OFF,
+            BTN_TESTA
+        ]
+
+        # Misura tutte le alternative con l'attuale font (già scalato via stylesheet)
+        widths = []
+        for t in texts:
+            # usa il font del pulsante frizione (stesso stile) come riferimento
+            ref_btn = self.btn_frizione
+            widths.append(self._compute_text_width(ref_btn, t))
+
+        # Aggiungi padding orizzontale del nostro stile: 36px per lato + bordi (2px per lato)
+        padding_x = 36 * 2 + 2 * 2
+        base_w = max(widths) + padding_x
+
+        # Imposta la minima uguale per tutti (stessa dimensione visiva, niente salti)
+        for b in (self.btn_freno, self.btn_frizione, self.btn_testa):
+            b.setMinimumWidth(base_w)
+
+    # ---------------- Scaling dinamico ----------------
     def _apply_scaling(self):
         """
         Riduce/ingrandisce dinamicamente i font per stare nello schermo,
@@ -197,6 +242,8 @@ class ManualePage(QWidget):
         except Exception:
             pass
 
+        # Reimposta larghezze minime coerenti dopo lo scaling
+        self._sync_button_widths()
         self._style_buttons_by_state()
 
     def _style_buttons_by_state(self):
@@ -206,21 +253,24 @@ class ManualePage(QWidget):
 
         if self.btn_freno:
             if brake_on:
-                self.btn_freno.setText("SBLOCCA FRENO")
+                self.btn_freno.setText(BTN_FRENO_OFF)
                 self.btn_freno.setStyleSheet(self._btn_style_3d(GREEN, GREEN_DARK, btn_px))
             else:
-                self.btn_freno.setText("BLOCCA FRENO")
+                self.btn_freno.setText(BTN_FRENO_ON)
                 self.btn_freno.setStyleSheet(self._btn_style_3d(ORANGE, ORANGE_DARK, btn_px))
         if self.btn_frizione:
             if clutch_on:
-                self.btn_frizione.setText("FRIZIONE OFF")
+                self.btn_frizione.setText(BTN_FRIZ_ON)
                 self.btn_frizione.setStyleSheet(self._btn_style_3d(GREEN, GREEN_DARK, btn_px))
             else:
-                self.btn_frizione.setText("FRIZIONE ON")
+                self.btn_frizione.setText(BTN_FRIZ_OFF)
                 self.btn_frizione.setStyleSheet(self._btn_style_3d(ORANGE, ORANGE_DARK, btn_px))
         if self.btn_testa:
-            self.btn_testa.setText("TESTA")
+            self.btn_testa.setText(BTN_TESTA)
             self.btn_testa.setStyleSheet(self._btn_style_3d(GREEN if brake_on else ORANGE, GREEN_DARK if brake_on else ORANGE_DARK, btn_px))
+
+        # Garantisce larghezze stabili anche dopo cambi testo/stato
+        self._sync_button_widths()
 
     # ---------------- Build UI ----------------
     def _build(self):
@@ -254,9 +304,9 @@ class ManualePage(QWidget):
 
         # Pulsanti: FRENO / FRIZIONE / TESTA (nessuna min-height rigida)
         btn_box = QFrame(); bl = QHBoxLayout(btn_box); bl.setContentsMargins(12,12,12,12); bl.setSpacing(24); bl.setAlignment(Qt.AlignCenter)
-        self.btn_freno = QPushButton("BLOCCA FRENO"); self.btn_freno.clicked.connect(self._toggle_freno)
-        self.btn_frizione = QPushButton("FRIZIONE ON"); self.btn_frizione.clicked.connect(self._toggle_frizione)
-        self.btn_testa = QPushButton("TESTA"); self.btn_testa.clicked.connect(self._press_testa)
+        self.btn_freno = QPushButton(BTN_FRENO_ON); self.btn_freno.clicked.connect(self._toggle_freno)
+        self.btn_frizione = QPushButton(BTN_FRIZ_ON); self.btn_frizione.clicked.connect(self._toggle_frizione)
+        self.btn_testa = QPushButton(BTN_TESTA); self.btn_testa.clicked.connect(self._press_testa)
         bl.addWidget(self.btn_freno, 0, Qt.AlignCenter)
         bl.addWidget(self.btn_frizione, 0, Qt.AlignCenter)
         bl.addWidget(self.btn_testa, 0, Qt.AlignCenter)
@@ -275,11 +325,13 @@ class ManualePage(QWidget):
         fq_placeholder = QFrame()
         fq_placeholder.setFixedWidth(PANEL_W)
         fq_placeholder.setFrameShape(QFrame.StyledPanel)
-        fq_placeholder.setFixedHeight(FQ_H)  # altezza moderata
+        fq_placeholder.setFixedHeight(FQ_H)
         rl.addWidget(fq_placeholder, 0, alignment=Qt.AlignLeft)
         rl.addStretch(1)
 
+        # Stile iniziale, larghezze stabili
         self._style_buttons_by_state()
+        self._sync_button_widths()
 
     # ---------------- Button logic ----------------
     def _toggle_freno(self):
@@ -306,7 +358,6 @@ class ManualePage(QWidget):
         if self.status: self.status.refresh()
 
     def _toggle_frizione(self):
-        # Usa primo attributo disponibile, non OR fra alias
         cur = self._get_flag(["clutch_active", "clutch_on", "frizione_inserita"], default=True)
         want = not cur
         m = self.machine
@@ -326,11 +377,9 @@ class ManualePage(QWidget):
                     except Exception: pass
             ok = True
 
-        # Sincronizza alias in base a 'clutch_active' se presente, altrimenti usa 'want'
         new_val = getattr(m, "clutch_active", want)
-        self._sync_aliases("clutch_active", new_val, ["clutch_on", "frizione_ON"])
+        self._sync_aliases("clutch_active", new_val, ["clutch_on", "frizione_inserita"])
 
-        # Aggiorna subito UI
         self._style_buttons_by_state()
         if self.status: self.status.refresh()
 
@@ -349,7 +398,7 @@ class ManualePage(QWidget):
                 setattr(self.machine, "brake_active", target_locked)
                 setattr(self.machine, "clutch_active", target_locked)
                 self._sync_aliases("brake_active", target_locked, ["brake_on", "freno_bloccato"])
-                self._sync_aliases("clutch_active", target_locked, ["clutch_on", "frizione_ON"])
+                self._sync_aliases("clutch_active", target_locked, ["clutch_on", "frizione_inserita"])
             except Exception:
                 pass
 
@@ -374,7 +423,7 @@ class ManualePage(QWidget):
                     pass
         # Simulazione locale
         brake_on = self._get_flag(["brake_active", "brake_on", "freno_bloccato"], default=False)
-        clutch_on = self._get_flag(["clutch_active", "clutch_on", "frizione_ON"], default=True)
+        clutch_on = self._get_flag(["clutch_active", "clutch_on", "frizione_inserita"], default=True)
         manual_move_ok = (not brake_on) and (not clutch_on)
         if manual_move_ok:
             if not (0.0 <= self._sim_mm <= 4000.0):
