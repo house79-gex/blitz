@@ -9,15 +9,15 @@ from ui_qt.widgets.status_panel import StatusPanel
 # Dimensioni base (verranno scalate dinamicamente)
 BASE_HEIGHT = 900.0
 QUOTA_FONT_PX_BASE = 168
-BTN_FONT_PX_BASE = 56
+BTN_FONT_PX_BASE = 52
 PANEL_W = 420
 PANEL_H = 220
 FQ_H = 100
 
 # Testi pulsanti
 BTN_TESTA = "TESTA"
-BTN_FRENO_ON = "BLOCCA FRENO"
-BTN_FRENO_OFF = "SBLOCCA FRENO"  # etichetta più lunga -> riferimento larghezza fissa
+BTN_FRENO_ON = "Blocca Freno"
+BTN_FRENO_OFF = "Sblocca Freno"  # etichetta più lunga -> riferimento larghezza fissa
 BTN_FRIZ_ON = "Frizione ON"
 BTN_FRIZ_OFF = "Frizione OFF"
 
@@ -50,7 +50,7 @@ class ManualePage(QWidget):
         self._sim_dir: float = +1.0
 
         self._scale: float = 1.0
-        self._btn_main_min_w: int = 0   # larghezza fissa FRENO/FRIZIONE (da “SBLOCCA FRENO”)
+        self._btn_main_min_w: int = 0   # larghezza fissa FRENO/FRIZIONE (da “Sblocca Freno”)
         self._btn_testa_min_w: int = 0  # larghezza pulsante TESTA (1/3)
 
         self._build()
@@ -177,12 +177,12 @@ class ManualePage(QWidget):
 
     def _compute_button_widths(self):
         """
-        Larghezza fissa dei 2 pulsanti centrali = larghezza di 'SBLOCCA FRENO' (etichetta più lunga).
+        Larghezza fissa dei 2 pulsanti centrali = larghezza di 'Sblocca Freno' (etichetta più lunga).
         TESTA = 1/3 dei principali, ma non meno della sua larghezza testo.
         """
         base_px = int(BTN_FONT_PX_BASE * self._scale)
 
-        # Fisso su SBLOCCA FRENO
+        # Fisso su Sblocca Feno
         w_main_text = self._text_width_for_px(BTN_FRENO_OFF, base_px)
         w_main = w_main_text + BTN_PADDING_X_TOTAL
         self._btn_main_min_w = w_main
