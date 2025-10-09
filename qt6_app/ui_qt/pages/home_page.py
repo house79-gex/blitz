@@ -1,19 +1,23 @@
 from typing import Optional
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QPushButton, QFrame, QLabel
-from PySide6.QtCore import Qt, QTimer, QEvent
+from PySide6.QtCore import Qt, QTimer, QEvent, QSize
+from PySide6.QtGui import QIcon
 from ui_qt.theme import THEME
 from ui_qt.widgets.header import Header
 from ui_qt.logic.homing import start_homing  # simulazione homing
+from ui_qt.utils.theme_store import get_active_theme  # icone/palette attive
 
 BANNER_BG = "#fff3cd"   # giallo chiaro warning
 BANNER_TX = "#856404"   # testo warning
 BORDER = "#ffeeba"
+BANNER_SLOT_H = 56      # altezza fissa slot banner (evita salti layout)
 
 class HomePage(QWidget):
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
+        self._banner_slot: Optional[QFrame] = None
         self._banner: Optional[QFrame] = None
         self._banner_lbl: Optional[QLabel] = None
         self._poll: Optional[QTimer] = None
@@ -34,7 +38,14 @@ class HomePage(QWidget):
             show_home=False
         ))
 
-        # Banner “macchina non azzerata”
+        # Slot fisso per il banner (evita che i pulsanti saltino)
+        self._banner_slot = QFrame()
+        self._banner_slot.setFixedHeight(BANNER_SLOT_H)
+        slot_l = QVBoxLayout(self._banner_slot)
+        slot_l.setContentsMargins(0, 0, 0, 0)
+        slot_l.setSpacing(0)
+
+        # Banner “macchina non azzerata” (inserito nello slot fisso)
         self._banner = QFrame()
         self._banner.setStyleSheet(f"QFrame{{background:{BANNER_BG}; border:1px solid {BORDER}; border-radius:8px;}}")
         bl = QVBoxLayout(self._banner)
@@ -43,39 +54,53 @@ class HomePage(QWidget):
         self._banner_lbl.setStyleSheet(f"color:{BANNER_TX}; font-weight:800;")
         self._banner_lbl.setAlignment(Qt.AlignCenter)
         bl.addWidget(self._banner_lbl)
-        root.addWidget(self._banner)
-        self._banner.hide()  # parte nascosto finché non serve
+        slot_l.addWidget(self._banner, 0, Qt.AlignVCenter)
+        root.addWidget(self._banner_slot)
+        self._banner.hide()  # parte nascosto, ma lo slot resta
 
         # Griglia di tile principali: 2 colonne x 3 righe
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(14)
-        # Distribuzione uniforme delle colonne
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         root.addLayout(grid, 1)
 
+        # Carica icone attive dai temi
+        active = get_active_theme()
+        icons_map = (active.get("icons") if isinstance(active, dict) else {}) or {}
+
         def make_tile(text, key):
             btn = QPushButton(text)
-            # Ingranditi
+            # Dimensioni maggiorate
             btn.setMinimumSize(280, 160)
+            # Bordo colorato e hover
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background: {THEME.TILE_BG};
                     color: {THEME.TEXT};
-                    border: 1px solid {THEME.OUTLINE};
+                    border: 2px solid {THEME.ACCENT};
                     border-radius: 12px;
                     font-weight: 800;
                     font-size: 20px;
-                    padding: 10px 16px;
+                    padding: 12px 18px;
+                    text-align: center;
                 }}
                 QPushButton:hover {{
-                    border-color: {THEME.ACCENT};
+                    border-color: {THEME.ACCENT_2};
                 }}
                 QPushButton:pressed {{
                     background: {THEME.PANEL_BG};
                 }}
             """)
+            # Icona, se configurata
+            icon_path = str(icons_map.get(key, "")).strip()
+            if icon_path:
+                try:
+                    btn.setIcon(QIcon(icon_path))
+                    btn.setIconSize(QSize(36, 36))
+                except Exception:
+                    pass
             btn.clicked.connect(lambda: self.appwin.show_page(key))
             return btn
 
