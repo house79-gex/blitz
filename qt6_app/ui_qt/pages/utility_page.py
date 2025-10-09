@@ -1,14 +1,25 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QComboBox, QSpinBox,
-    QTabWidget, QLineEdit, QColorDialog, QMessageBox, QGridLayout, QCheckBox
+    QTabWidget, QLineEdit, QColorDialog, QMessageBox, QGridLayout, QCheckBox, QFileDialog
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.theme import THEME, set_palette_from_dict, apply_global_stylesheet
-from ui_qt.utils.theme_store import save_theme_combo, read_themes
+from ui_qt.utils.theme_store import (
+    read_themes, save_theme_combo, get_current_theme_name, set_current_theme_name,
+    get_active_theme
+)
 
+MENU_KEYS = [
+    ("automatico", "Automatico"),
+    ("semi", "Semi-Automatico"),
+    ("manuale", "Manuale"),
+    ("tipologie", "Tipologie"),
+    ("quotevani", "Quote Vani"),
+    ("utility", "Utility"),
+]
 
 class UtilityPage(QWidget):
     """
@@ -124,12 +135,38 @@ class UtilityPage(QWidget):
 
     def _build_theme_tab(self):
         pg = QFrame()
-        lay = QVBoxLayout(pg)
+        lay = QVBoxLayout(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(8)
 
+        # Preset temi (Light, Dark, Classic + salvati)
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Tema:"))
+        self.cb_theme_presets = QComboBox()
+        # Carica elenco da theme_store (combina preset + salvati)
+        themes = read_themes()
+        names = list(themes.keys())
+        if "Light" not in names: names.insert(0, "Light")
+        if "Dark" not in names: names.insert(0, "Dark")
+        if "Classic" not in names: names.insert(0, "Classic")
+        # Rimuovi duplicati mantenendo ordine
+        seen = set(); ordered = []
+        for n in names:
+            if n not in seen:
+                seen.add(n); ordered.append(n)
+        self.cb_theme_presets.addItems(ordered)
+        # Seleziona tema corrente
+        cur = get_current_theme_name() or "Dark"
+        if cur in ordered:
+            self.cb_theme_presets.setCurrentText(cur)
+        preset_row.addWidget(self.cb_theme_presets)
+        btn_set_active = QPushButton("Imposta attivo")
+        btn_set_active.clicked.connect(self._set_active_theme)
+        preset_row.addWidget(btn_set_active); preset_row.addStretch(1)
+        lay.addLayout(preset_row)
+
+        # Palette colori
         pal_box = QFrame()
         pal_l = QVBoxLayout(pal_box)
         pal_l.addWidget(QLabel("Palette Tema"))
-
         grid = QGridLayout()
         fields = [
             ("APP_BG", "Sfondo app"), ("SURFACE_BG", "Superficie"), ("PANEL_BG", "Pannello"),
@@ -140,10 +177,12 @@ class UtilityPage(QWidget):
             ("OUTLINE", "Bordo1"), ("OUTLINE_SOFT", "Bordo2"),
             ("HEADER_BG", "Header BG"), ("HEADER_FG", "Header FG"),
         ]
+        # Precompila con il tema attivo
+        active = get_active_theme(); pal_active = (active.get("palette") if isinstance(active, dict) else {}) or {}
         for i, (key, lbl) in enumerate(fields):
             grid.addWidget(QLabel(lbl), i, 0)
             default_value = getattr(THEME, "SURFACE_BG")
-            value = str(getattr(THEME, key, default_value))
+            value = str(pal_active.get(key, getattr(THEME, key, default_value)))
             edit = QLineEdit(value); edit.setFixedWidth(120)
             btn = QPushButton("Scegli…"); btn.setFixedWidth(90)
 
@@ -161,15 +200,37 @@ class UtilityPage(QWidget):
         actions = QHBoxLayout()
         btn_apply = QPushButton("Applica ora"); btn_apply.clicked.connect(self._apply_theme_now)
         btn_save = QPushButton("Salva combinazione"); btn_save.clicked.connect(self._save_theme_combo)
-        btn_load = QPushButton("Carica combinazione…"); btn_load.clicked.connect(self._load_theme_combo)
-        actions.addWidget(btn_apply); actions.addWidget(btn_save); actions.addWidget(btn_load); actions.addStretch(1)
+        actions.addWidget(btn_apply); actions.addWidget(btn_save); actions.addStretch(1)
         pal_l.addLayout(actions)
+        lay.addWidget(pal_box)
 
-        lay.addWidget(pal_box); lay.addStretch(1)
+        # Icone per i pulsanti Home
+        icon_box = QFrame()
+        icon_l = QVBoxLayout(icon_box)
+        icon_l.addWidget(QLabel("Icone Menu Home (percorso file)"))
+        grid_i = QGridLayout()
+        icons_active = (active.get("icons") if isinstance(active, dict) else {}) or {}
+        for i, (key, label) in enumerate(MENU_KEYS):
+            grid_i.addWidget(QLabel(label), i, 0)
+            edit = QLineEdit(str(icons_active.get(key, ""))); edit.setFixedWidth(260)
+            btn = QPushButton("Sfoglia…"); btn.setFixedWidth(90)
+
+            def pick_file(e=edit):
+                fn, _ = QFileDialog.getOpenFileName(self, "Seleziona icona", "", "Immagini (*.png *.jpg *.jpeg *.bmp *.ico);;Tutti i file (*)")
+                if fn:
+                    e.setText(fn)
+
+            btn.clicked.connect(pick_file)
+            grid_i.addWidget(edit, i, 1); grid_i.addWidget(btn, i, 2)
+            self.icon_vars[key] = edit
+        lay.addWidget(icon_box)
+        lay.addStretch(1)
+
         return pg
 
     def _apply_theme_now(self):
         pal = {k: e.text().strip() for k, e in self.color_vars.items()}
+        # Aggiorna THEME e riapplica stylesheet
         set_palette_from_dict(pal)
         apply_global_stylesheet(QApplication.instance())
         QMessageBox.information(self, "Tema", "Tema applicato (live).")
@@ -177,17 +238,23 @@ class UtilityPage(QWidget):
     def _save_theme_combo(self):
         pal = {k: e.text().strip() for k, e in self.color_vars.items()}
         icons = {k: e.text().strip() for k, e in self.icon_vars.items()} if self.icon_vars else {}
-        save_theme_combo("Custom", pal, icons)
-        QMessageBox.information(self, "Tema", "Combinazione salvata come 'Custom' in data/themes.json.")
+        name = self.cb_theme_presets.currentText().strip() or "Custom"
+        save_theme_combo(name, pal, icons)
+        set_current_theme_name(name)
+        QMessageBox.information(self, "Tema", f"Combinazione '{name}' salvata e impostata attiva.")
 
-    def _load_theme_combo(self):
-        data = read_themes(); names = list(data.keys())
-        if not names:
-            QMessageBox.information(self, "Tema", "Nessuna combinazione salvata."); return
-        name = names[0]; combo = data.get(name, {}); pal = combo.get("palette", {})
-        for k, e in self.color_vars.items():
-            if k in pal: e.setText(str(pal[k]))
-        QMessageBox.information(self, "Tema", f"Combinazione '{name}' caricata (non applicata).")
+    def _set_active_theme(self):
+        name = self.cb_theme_presets.currentText().strip()
+        if not name:
+            QMessageBox.warning(self, "Tema", "Seleziona un tema.")
+            return
+        set_current_theme_name(name)
+        # Applica palette del tema selezionato
+        active = get_active_theme(); pal = (active.get("palette") if isinstance(active, dict) else {}) or {}
+        if pal:
+            set_palette_from_dict(pal)
+            apply_global_stylesheet(QApplication.instance())
+        QMessageBox.information(self, "Tema", f"Tema '{name}' impostato come attivo.")
 
     def _save_counter_settings(self):
         try:
