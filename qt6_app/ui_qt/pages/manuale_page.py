@@ -17,7 +17,7 @@ FQ_H = 100
 # Testi pulsanti
 BTN_TESTA = "TESTA"
 BTN_FRENO_ON = "BLOCCA FRENO"
-BTN_FRENO_OFF = "SBLOCCA FRENO"
+BTN_FRENO_OFF = "SBLOCCA FRENO"  # etichetta più lunga -> riferimento larghezza fissa
 BTN_FRIZ_ON = "Frizione ON"
 BTN_FRIZ_OFF = "Frizione OFF"
 
@@ -50,8 +50,8 @@ class ManualePage(QWidget):
         self._sim_dir: float = +1.0
 
         self._scale: float = 1.0
-        self._btn_main_min_w: int = 0   # larghezza minima FRENO/FRIZIONE
-        self._btn_testa_min_w: int = 0  # larghezza minima TESTA (1/3)
+        self._btn_main_min_w: int = 0   # larghezza fissa FRENO/FRIZIONE (da “SBLOCCA FRENO”)
+        self._btn_testa_min_w: int = 0  # larghezza pulsante TESTA (1/3)
 
         self._build()
 
@@ -161,7 +161,7 @@ class ManualePage(QWidget):
             }
         """
 
-    # ---------------- Larghezze minime e adattamento font ----------------
+    # ---------------- Larghezze fisse e adattamento font ----------------
     def _text_width_for_px(self, text: str, pixel_size: int) -> int:
         f = QFont()
         f.setPixelSize(pixel_size)
@@ -169,26 +169,32 @@ class ManualePage(QWidget):
         return fm.horizontalAdvance(text)
 
     def _fit_font_px_for_text(self, text: str, base_px: int, avail_w: int) -> int:
+        # Riduci il font finché il testo entra nella larghezza disponibile
         px = base_px
         while px > 10 and self._text_width_for_px(text, px) + BTN_PADDING_X_TOTAL > avail_w:
             px -= 1
         return px
 
     def _compute_button_widths(self):
-        # calcolo min width pulsanti principali (FRENO/FRIZIONE)
-        texts_main = [BTN_FRENO_ON, BTN_FRENO_OFF, BTN_FRIZ_ON, BTN_FRIZ_OFF]
+        """
+        Larghezza fissa dei 2 pulsanti centrali = larghezza di 'SBLOCCA FRENO' (etichetta più lunga).
+        TESTA = 1/3 dei principali, ma non meno della sua larghezza testo.
+        """
         base_px = int(BTN_FONT_PX_BASE * self._scale)
-        w_main = max(self._text_width_for_px(t, base_px) for t in texts_main) + BTN_PADDING_X_TOTAL
+
+        # Fisso su SBLOCCA FRENO
+        w_main_text = self._text_width_for_px(BTN_FRENO_OFF, base_px)
+        w_main = w_main_text + BTN_PADDING_X_TOTAL
         self._btn_main_min_w = w_main
 
-        # TESTA = 1/3 dei principali, ma non meno dello spazio richiesto dal suo testo
+        # TESTA
         w_testa_text = self._text_width_for_px(BTN_TESTA, base_px) + BTN_PADDING_X_TOTAL
         self._btn_testa_min_w = max(w_main // 3, w_testa_text)
 
-        # applica min width
-        if self.btn_freno: self.btn_freno.setMinimumWidth(self._btn_main_min_w)
-        if self.btn_frizione: self.btn_frizione.setMinimumWidth(self._btn_main_min_w)
-        if self.btn_testa: self.btn_testa.setMinimumWidth(self._btn_testa_min_w)
+        # Applica larghezze fisse
+        if self.btn_freno: self.btn_freno.setFixedWidth(self._btn_main_min_w)
+        if self.btn_frizione: self.btn_frizione.setFixedWidth(self._btn_main_min_w)
+        if self.btn_testa: self.btn_testa.setFixedWidth(self._btn_testa_min_w)
 
     # ---------------- Scaling dinamico ----------------
     def _apply_scaling(self):
@@ -219,7 +225,7 @@ class ManualePage(QWidget):
         except Exception:
             pass
 
-        # recalcola larghezze minime coerenti e re-stila
+        # Recalcola larghezze fisse e re-stila
         self._compute_button_widths()
         self._style_buttons_by_state()
 
@@ -280,11 +286,11 @@ class ManualePage(QWidget):
 
         ll.addWidget(quota_frame, 3, alignment=Qt.AlignCenter)
 
-        # Pulsanti centrali: FRENO + FRIZIONE (centrati, più staccati)
+        # Pulsanti centrali: FRENO + FRIZIONE (centrati, distanziati)
         center_btns = QFrame()
         cb_lay = QHBoxLayout(center_btns)
         cb_lay.setContentsMargins(12, 12, 12, 12)
-        cb_lay.setSpacing(48)  # più spazio tra i due
+        cb_lay.setSpacing(48)
         cb_lay.setAlignment(Qt.AlignCenter)
 
         self.btn_freno = QPushButton(BTN_FRENO_ON); self.btn_freno.clicked.connect(self._toggle_freno)
