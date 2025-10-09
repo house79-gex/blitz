@@ -2,7 +2,7 @@ import sys
 from typing import Optional
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QStatusBar, QSizePolicy, QStackedWidget
+    QApplication, QMainWindow, QStatusBar, QSizePolicy
 )
 from PySide6.QtCore import Qt
 
@@ -11,6 +11,10 @@ try:
     from ui_qt.theme import apply_global_stylesheet
 except Exception:
     apply_global_stylesheet = lambda app: None  # fallback no-op
+
+# Stack che non impone minime eccessive e wrapper che ignora min-size
+from ui_qt.widgets.min_stack import MinimalStacked
+from ui_qt.widgets.size_ignorer import SizeIgnorer
 
 
 # --- Fallback DummyMachineState (sviluppo) con movimento/encoder simulati ---
@@ -148,11 +152,13 @@ class MainWindow(QMainWindow):
 
         self.machine = self._make_machine()
 
-        self.stack = QStackedWidget(self)
+        # Stack che NON impone minime in alto
+        self.stack = MinimalStacked(self)
         self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.stack.setMinimumSize(0, 0)
         self.setCentralWidget(self.stack)
-        self._pages: dict[str, tuple[object, int]] = {}
+        # mappa: key -> (wrapped_widget, idx, original_page)
+        self._pages: dict[str, tuple[object, int, object]] = {}
 
         from ui_qt.pages.home_page import HomePage
         self.add_page("home", HomePage(self))
@@ -180,8 +186,10 @@ class MainWindow(QMainWindow):
             return DummyMachineState()
 
     def add_page(self, key: str, widget):
-        idx = self.stack.addWidget(widget)
-        self._pages[key] = (widget, idx)
+        # Wrappa la pagina in un contenitore che ignora min-size
+        wrapper = SizeIgnorer(widget)
+        idx = self.stack.addWidget(wrapper)
+        self._pages[key] = (wrapper, idx, widget)
 
     def _try_add_page(self, key: str, mod_name: str, cls_name: str):
         try:
@@ -198,11 +206,12 @@ class MainWindow(QMainWindow):
             if hasattr(self, "toast"):
                 self.toast.show(f"Pagina '{key}' non disponibile", "warn", 2000)
             return
-        widget, idx = rec
+        wrapper, idx, page = rec
         self.stack.setCurrentIndex(idx)
-        if hasattr(widget, "on_show") and callable(getattr(widget, "on_show")):
+        # callback della pagina originale (non del wrapper)
+        if hasattr(page, "on_show") and callable(getattr(page, "on_show")):
             try:
-                widget.on_show()
+                page.on_show()
             except Exception:
                 pass
 
@@ -231,6 +240,7 @@ def main():
     except Exception:
         pass
     win = MainWindow()
+    # Apertura massimizzata (nessuna setGeometry manuale)
     win.showMaximized()
     sys.exit(app.exec())
 
