@@ -4,6 +4,8 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QStackedWidget, QStatusBar
 )
+from PySide6.QtGui import QGuiApplication, QCursor
+from PySide6.QtCore import Qt, QTimer
 
 # Tema/stili
 try:
@@ -131,7 +133,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BLITZ 3")
-        # Rimuoviamo dimensione fissa: l'app si aprirà massimizzata (vedi main())
+        # Niente resize fisso: gestiamo lo stato nel main()
 
         # Status bar per messaggi/toast
         self.setStatusBar(QStatusBar())
@@ -232,9 +234,24 @@ def main():
         apply_global_stylesheet(app)
     except Exception:
         pass
+
     win = MainWindow()
-    # Apertura massimizzata (Qt non supera i limiti dello schermo)
-    win.showMaximized()
+
+    # Seleziona lo schermo dove si trova il cursore (fallback: primario)
+    screens = QGuiApplication.screens()
+    cursor_pos = QCursor.pos()
+    target_screen = next((s for s in screens if s.geometry().contains(cursor_pos)), QGuiApplication.primaryScreen())
+
+    # Adatta la finestra all'area disponibile dello schermo (sotto la taskbar)
+    avail = target_screen.availableGeometry()
+    win.setGeometry(avail)
+
+    # Mostra e forza massimizzazione
+    win.show()
+    win.setWindowState(Qt.WindowMaximized)
+    # In alcuni WM è utile ribadire dopo lo show
+    QTimer.singleShot(0, lambda: win.setWindowState(Qt.WindowMaximized))
+
     sys.exit(app.exec())
 
 
