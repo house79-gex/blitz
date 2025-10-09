@@ -2,7 +2,7 @@ import sys
 from typing import Optional
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QStatusBar, QSizePolicy
+    QApplication, QMainWindow, QStatusBar, QSizePolicy, QStackedWidget
 )
 from PySide6.QtCore import Qt
 
@@ -12,11 +12,8 @@ try:
 except Exception:
     apply_global_stylesheet = lambda app: None  # fallback no-op
 
-# Stack che non impone minime eccessive
-from ui_qt.widgets.min_stack import MinimalStacked
 
-
-# --- Fallback DummyMachineState (usato solo se la reale non è importabile) ---
+# --- Fallback DummyMachineState (sviluppo) con movimento/encoder simulati ---
 class DummyMachineState:
     def __init__(self):
         self.machine_homed = False
@@ -27,6 +24,7 @@ class DummyMachineState:
         self.min_distance = 250.0
         self.max_cut_length = 4000.0
         self.position_current = self.min_distance
+        self.encoder_position = self.position_current
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
         self.count_active_on_closed = True
@@ -48,7 +46,6 @@ class DummyMachineState:
     def set_head_button_input_enabled(self, enabled: bool):  # compat
         pass
 
-    # API esplicite per coerenza con l’UI
     def set_brake(self, active: bool) -> bool:
         if self.emergency_active or self.positioning_active:
             return False
@@ -63,45 +60,55 @@ class DummyMachineState:
         self.clutch_active = bool(active)
         return True
 
-    # Simulazione homing
     def do_homing(self, callback=None):
         import time, threading
-
         def seq():
             if self.emergency_active:
-                if callback:
-                    callback(success=False, msg="EMERGENZA")
+                if callback: callback(success=False, msg="EMERGENZA")
                 return
             if self.machine_homed:
-                if callback:
-                    callback(success=True, msg="GIÀ HOMED")
+                if callback: callback(success=True, msg="GIÀ HOMED")
                 return
-            time.sleep(1.0)
+            time.sleep(0.6)
             self.position_current = self.min_distance
+            self.encoder_position = self.min_distance
             self.brake_active = False
             self.clutch_active = True
             self.machine_homed = True
-            if callback:
-                callback(success=True, msg="HOMING OK")
-
+            if callback: callback(success=True, msg="HOMING OK")
         threading.Thread(target=seq, daemon=True).start()
 
     def move_to_length_and_angles(self, length_mm: float, ang_sx: float, ang_dx: float, done_cb=None):
+        # Simulazione movimento graduale con encoder live
+        import time, threading
+        if self.emergency_active or not self.machine_homed:
+            if done_cb: done_cb(False, "BLOCCO/NO HOMING")
+            return
         self.brake_active = False
         self.positioning_active = True
         self.left_head_angle = float(ang_sx)
         self.right_head_angle = float(ang_dx)
-        from threading import Thread
-        import time
+        target = max(self.min_distance, min(float(length_mm), self.max_cut_length))
+        start = float(self.position_current)
 
         def run():
-            time.sleep(0.8)
+            steps = 80
+            dt = 0.02
+            for i in range(steps + 1):
+                if self.emergency_active or not self.positioning_active:
+                    break
+                f = i / steps
+                self.position_current = start + (target - start) * f
+                self.encoder_position = self.position_current
+                time.sleep(dt)
+            if not self.emergency_active:
+                self.position_current = target
+                self.encoder_position = target
             self.positioning_active = False
             self.brake_active = True
             if done_cb:
-                done_cb(True, "OK")
-
-        Thread(target=run, daemon=True).start()
+                done_cb(not self.emergency_active, "OK" if not self.emergency_active else "EMG")
+        threading.Thread(target=run, daemon=True).start()
 
     def reset(self):
         self.machine_homed = False
@@ -110,6 +117,7 @@ class DummyMachineState:
         self.clutch_active = True
         self.positioning_active = False
         self.position_current = self.min_distance
+        self.encoder_position = self.position_current
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
         self.semi_auto_target_pieces = 0
@@ -122,7 +130,6 @@ class DummyMachineState:
 class _Toast:
     def __init__(self, win: QMainWindow):
         self._win = win
-
     def show(self, msg: str, level: str = "info", ms: int = 2000):
         try:
             self._win.statusBar().showMessage(msg, ms)
@@ -136,25 +143,19 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("BLITZ 3")
 
-        # Status bar per messaggi/toast
         self.setStatusBar(QStatusBar())
         self.toast = _Toast(self)
 
-        # Istanza MachineState reale, se disponibile; altrimenti Dummy
         self.machine = self._make_machine()
 
-        # Stack pagine: MinimalStacked non propaga minime eccessive
-        self.stack = MinimalStacked(self)
+        self.stack = QStackedWidget(self)
         self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.stack.setMinimumSize(0, 0)
         self.setCentralWidget(self.stack)
         self._pages: dict[str, tuple[object, int]] = {}
 
-        # Registra pagine (Home è obbligatoria; le altre best-effort)
         from ui_qt.pages.home_page import HomePage
         self.add_page("home", HomePage(self))
-
-        # Import "tolleranti" per le altre, così l'app parte comunque
         self._try_add_page("manuale", "ui_qt.pages.manuale_page", "ManualePage")
         self._try_add_page("automatico", "ui_qt.pages.automatico_page", "AutomaticoPage")
         self._try_add_page("semi", "ui_qt.pages.semi_auto_page", "SemiAutoPage")
@@ -162,17 +163,13 @@ class MainWindow(QMainWindow):
         self._try_add_page("quotevani", "ui_qt.pages.quotevani_page", "QuoteVaniPage")
         self._try_add_page("utility", "ui_qt.pages.utility_page", "UtilityPage")
 
-        # Navigazione iniziale
         self.show_page("home")
 
-        # Espone nav compatibile (alcuni callback cercano appwin.nav.go_home)
         class _Nav:
             def __init__(nav_self, mw: "MainWindow"):
                 nav_self._mw = mw
-
             def go_home(nav_self):
                 nav_self._mw.show_page("home")
-
         self.nav = _Nav(self)
 
     def _make_machine(self):
@@ -193,7 +190,6 @@ class MainWindow(QMainWindow):
             cls = getattr(mod, cls_name)
             self.add_page(key, cls(self))
         except Exception:
-            # la pagina è facoltativa: se manca, l’app continua a funzionare
             pass
 
     def show_page(self, key: str):
@@ -204,20 +200,17 @@ class MainWindow(QMainWindow):
             return
         widget, idx = rec
         self.stack.setCurrentIndex(idx)
-        # callback pagina
         if hasattr(widget, "on_show") and callable(getattr(widget, "on_show")):
             try:
                 widget.on_show()
             except Exception:
                 pass
 
-    # Alias di navigazione per compatibilità
     def go_home(self): self.show_page("home")
     def show_home(self): self.show_page("home")
     def navigate_home(self): self.show_page("home")
     def home(self): self.show_page("home")
 
-    # Reset “globale”
     def reset_current_page(self):
         if hasattr(self.machine, "reset") and callable(getattr(self.machine, "reset")):
             try:
@@ -237,9 +230,7 @@ def main():
         apply_global_stylesheet(app)
     except Exception:
         pass
-
     win = MainWindow()
-    # Apertura massimizzata (niente setGeometry manuale)
     win.showMaximized()
     sys.exit(app.exec())
 
