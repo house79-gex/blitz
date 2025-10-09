@@ -77,7 +77,7 @@ class ManualePage(QWidget):
     def _get_flag(self, names: list[str], default=False) -> bool:
         """
         Ritorna il primo attributo disponibile in ordine di priorità.
-        Evita 'OR' fra alias che generano stati incoerenti.
+        Evita OR fra alias che generano stati incoerenti.
         """
         for n in names:
             if hasattr(self.machine, n):
@@ -172,19 +172,17 @@ class ManualePage(QWidget):
         if self.lbl_quota_val:
             self.lbl_quota_val.setStyleSheet(f"font-family:Consolas; font-weight:900; font-size:{quota_px}px; color:{QUOTA_COLOR};")
 
-        # Aggiorna stili pulsanti mantenendo il colore (in base allo stato li rimetteremo)
+        # Aggiorna stili pulsanti (colore in base allo stato)
+        brake_on = self._get_flag(["brake_active", "brake_on", "freno_bloccato"], default=False)
+        clutch_on = self._get_flag(["clutch_active", "clutch_on", "frizione_inserita"], default=True)
         if self.btn_freno:
-            brake_on = self._get_flag(["brake_active", "brake_on", "freno_bloccato"], default=False)
             self.btn_freno.setStyleSheet(self._btn_style_3d(GREEN if brake_on else ORANGE, GREEN_DARK if brake_on else ORANGE_DARK, btn_px))
         if self.btn_frizione:
-            clutch_on = self._get_flag(["clutch_active", "clutch_on", "frizione_inserita"], default=True)
             self.btn_frizione.setStyleSheet(self._btn_style_3d(GREEN if clutch_on else ORANGE, GREEN_DARK if clutch_on else ORANGE_DARK, btn_px))
         if self.btn_testa:
-            brake_on = self._get_flag(["brake_active", "brake_on", "freno_bloccato"], default=False)
             self.btn_testa.setStyleSheet(self._btn_style_3d(GREEN if brake_on else ORANGE, GREEN_DARK if brake_on else ORANGE_DARK, btn_px))
 
         # Aggiorna label “Quota” e “mm”
-        # Le troviamo nel layout padre del valore
         try:
             quota_frame = self.lbl_quota_val.parentWidget().parentWidget()
             if quota_frame:
@@ -268,12 +266,16 @@ class ManualePage(QWidget):
         right = QFrame(); right.setFixedWidth(PANEL_W + 12); body.addWidget(right, 0)
         rl = QVBoxLayout(right); rl.setContentsMargins(6,6,6,6); rl.setSpacing(8)
 
-        status_wrap = QFrame(); status_wrap.setFixedSize(PANEL_W, PANEL_H)
+        status_wrap = QFrame()
+        status_wrap.setFixedWidth(PANEL_W)   # solo larghezza fissa, niente altezza fissa
         swl = QVBoxLayout(status_wrap); swl.setContentsMargins(0,0,0,0)
         self.status = StatusPanel(self.machine, "STATO", status_wrap); swl.addWidget(self.status)
         rl.addWidget(status_wrap, 0, alignment=Qt.AlignLeft | Qt.AlignTop)
 
-        fq_placeholder = QFrame(); fq_placeholder.setFixedSize(PANEL_W, FQ_H); fq_placeholder.setFrameShape(QFrame.StyledPanel)
+        fq_placeholder = QFrame()
+        fq_placeholder.setFixedWidth(PANEL_W)
+        fq_placeholder.setFrameShape(QFrame.StyledPanel)
+        fq_placeholder.setFixedHeight(FQ_H)  # altezza moderata
         rl.addWidget(fq_placeholder, 0, alignment=Qt.AlignLeft)
         rl.addStretch(1)
 
@@ -293,7 +295,6 @@ class ManualePage(QWidget):
                 if cur != want: ok = bool(m.toggle_brake())
             except Exception: ok = False
         if not ok:
-            # Fallback: forza tutti gli alias conosciuti
             for a in ("brake_active", "brake_on", "freno_bloccato"):
                 if hasattr(m, a):
                     try: setattr(m, a, bool(want))
@@ -315,20 +316,21 @@ class ManualePage(QWidget):
             except Exception: ok = False
         if not ok and hasattr(m, "toggle_clutch") and callable(getattr(m, "toggle_clutch")):
             try:
-                # toggle solo se serve
                 if cur != want:
                     ok = bool(m.toggle_clutch())
             except Exception: ok = False
         if not ok:
-            # Fallback: forza attributi noti
             for a in ("clutch_active", "clutch_on", "frizione_inserita"):
                 if hasattr(m, a):
                     try: setattr(m, a, bool(want))
                     except Exception: pass
             ok = True
+
         # Sincronizza alias in base a 'clutch_active' se presente, altrimenti usa 'want'
         new_val = getattr(m, "clutch_active", want)
         self._sync_aliases("clutch_active", new_val, ["clutch_on", "frizione_inserita"])
+
+        # Aggiorna subito UI
         self._style_buttons_by_state()
         if self.status: self.status.refresh()
 
