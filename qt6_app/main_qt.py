@@ -2,10 +2,9 @@ import sys
 from typing import Optional
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QStackedWidget, QStatusBar
+    QApplication, QMainWindow, QStackedWidget, QStatusBar, QScrollArea, QSizePolicy
 )
-from PySide6.QtGui import QGuiApplication, QCursor
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 
 # Tema/stili
 try:
@@ -133,7 +132,6 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BLITZ 3")
-        # Niente resize fisso: gestiamo lo stato nel main()
 
         # Status bar per messaggi/toast
         self.setStatusBar(QStatusBar())
@@ -144,6 +142,8 @@ class MainWindow(QMainWindow):
 
         # Stack pagine
         self.stack = QStackedWidget(self)
+        self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.stack.setMinimumSize(0, 0)
         self.setCentralWidget(self.stack)
         self._pages: dict[str, tuple[object, int]] = {}
 
@@ -180,7 +180,14 @@ class MainWindow(QMainWindow):
             return DummyMachineState()
 
     def add_page(self, key: str, widget):
-        idx = self.stack.addWidget(widget)
+        # WRAP in scroll area per evitare che le min-size dei contenuti impongano minime eccessive alla finestra
+        area = QScrollArea()
+        area.setWidget(widget)
+        area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        idx = self.stack.addWidget(area)
+        # Manteniamo il riferimento al widget originale per on_show
         self._pages[key] = (widget, idx)
 
     def _try_add_page(self, key: str, mod_name: str, cls_name: str):
@@ -236,22 +243,8 @@ def main():
         pass
 
     win = MainWindow()
-
-    # Seleziona lo schermo dove si trova il cursore (fallback: primario)
-    screens = QGuiApplication.screens()
-    cursor_pos = QCursor.pos()
-    target_screen = next((s for s in screens if s.geometry().contains(cursor_pos)), QGuiApplication.primaryScreen())
-
-    # Adatta la finestra all'area disponibile dello schermo (sotto la taskbar)
-    avail = target_screen.availableGeometry()
-    win.setGeometry(avail)
-
-    # Mostra e forza massimizzazione
-    win.show()
-    win.setWindowState(Qt.WindowMaximized)
-    # In alcuni WM è utile ribadire dopo lo show
-    QTimer.singleShot(0, lambda: win.setWindowState(Qt.WindowMaximized))
-
+    # Apertura massimizzata: niente setGeometry manuale, lascia gestire al WM
+    win.showMaximized()
     sys.exit(app.exec())
 
 
