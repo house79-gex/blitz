@@ -46,7 +46,7 @@ class HomePage(QWidget):
         root.addWidget(self._banner)
         self._banner.hide()  # parte nascosto finché non serve
 
-        # Griglia di tile principali
+        # Griglia di tile principali: 2 colonne x 3 righe
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
@@ -87,9 +87,9 @@ class HomePage(QWidget):
         for text, key in tiles:
             grid.addWidget(make_tile(text, key), r, c)
             c += 1
-            if c >= 3:
+            if c >= 2:  # 2 colonne
                 c = 0
-                r += 1
+                r += 1  # 3 righe totali (6 elementi)
 
         spacer = QFrame()
         spacer.setMinimumHeight(20)
