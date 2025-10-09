@@ -21,12 +21,18 @@ except Exception:
 SX_COLOR = "#2980b9"
 DX_COLOR = "#9b59b6"
 
+# UI sizing tweaks
+STATUS_W = 260            # StatusPanel più largo (prima 180)
+FQ_W = 260                # Box Fuori Quota più largo (prima 180)
+FQ_H = 240                # Box Fuori Quota più alto (prima 200)
+COUNTER_SIZE = 260        # Contapezzi più grande (prima 190)
+
 
 class SemiAutoPage(QWidget):
     """
     Semi-Automatico: layout a due colonne.
     - Sinistra (expanding): contapezzi + grafica; profilo/spessore + inclinazioni; misura; comandi BLOCCA/SBLOCCA, START e Quota live con dettagli Fuori Quota.
-    - Destra (fissa 180px): StatusPanel + Fuori Quota (offset) + pulsante INTESTATURA (one-shot).
+    - Destra (fissa STATUS_W): StatusPanel + Fuori Quota (offset) + pulsante INTESTATURA (one-shot).
 
     Funzioni chiave
     - Fuori Quota (FQ): mostra Pezzo reale e Pos. testa (quota+offset). In FQ la lama DX (mobile) è SEMPRE inibita.
@@ -114,16 +120,16 @@ class SemiAutoPage(QWidget):
         top_left.setSpacing(8)
         top_left.setContentsMargins(0, 0, 0, 0)
 
-        # Contapezzi 190x190
+        # Contapezzi ingrandito
         cnt_container = QFrame()
-        cnt_container.setFixedSize(QSize(190, 190))
+        cnt_container.setFixedSize(QSize(COUNTER_SIZE, COUNTER_SIZE))
         cnt_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         cnt_container.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         cnt = QGridLayout(cnt_container)
-        cnt.setHorizontalSpacing(6)
-        cnt.setVerticalSpacing(4)
+        cnt.setHorizontalSpacing(8)
+        cnt.setVerticalSpacing(6)
         title_cnt = QLabel("CONTAPEZZI")
-        title_cnt.setStyleSheet("font-weight:600;")
+        title_cnt.setStyleSheet("font-weight:800;")
         cnt.addWidget(title_cnt, 0, 0, 1, 2, alignment=Qt.AlignLeft)
         cnt.addWidget(QLabel("Target:"), 1, 0)
         self.spin_target = QSpinBox()
@@ -305,22 +311,22 @@ class SemiAutoPage(QWidget):
         # Sidebar destra: Status + Fuori Quota + INTESTATURA
         right_container = QFrame()
         right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        right_container.setFixedWidth(180)
+        right_container.setFixedWidth(STATUS_W)
         right_col = QVBoxLayout(right_container)
         right_col.setContentsMargins(0, 0, 0, 0)
         right_col.setSpacing(6)
 
         self.status_panel = StatusPanel(self.machine, title="STATO")
-        self.status_panel.setFixedWidth(180)
+        self.status_panel.setFixedWidth(STATUS_W)
         self.status_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         right_col.addWidget(self.status_panel, 1)
 
         fq_box = QFrame()
-        fq_box.setFixedSize(QSize(180, 200))
+        fq_box.setFixedSize(QSize(FQ_W, FQ_H))
         fq_box.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius:6px; }")
         fq = QGridLayout(fq_box)
-        fq.setHorizontalSpacing(6)
-        fq.setVerticalSpacing(4)
+        fq.setHorizontalSpacing(8)
+        fq.setVerticalSpacing(6)
 
         self.chk_fuori_quota = QCheckBox("Fuori quota")
         self.chk_fuori_quota.toggled.connect(self._on_fuori_quota_toggle)
@@ -462,6 +468,7 @@ class SemiAutoPage(QWidget):
         sx = self._parse_float(self.spin_sx.text(), 0.0)
         dx = self._parse_float(self.spin_dx.text(), 0.0)
         if ext <= 0:
+            self._show_warn("Inserisci una misura esterna valida (mm).", auto_hide_ms=2500)
             raise ValueError("MISURA ESTERNA NON VALIDA")
 
         det_sx = th * math.tan(math.radians(sx)) if sx > 0 and th > 0 else 0.0
@@ -474,14 +481,14 @@ class SemiAutoPage(QWidget):
         min_with_offset = max(0.0, min_q - offset)
 
         if internal < min_with_offset:
-            self._show_warn(f"Quota troppo piccola: {internal:.1f} < {min_with_offset:.1f} mm (min {min_q:.0f} − offset {offset:.0f})")
+            self._show_warn(f"Quota troppo piccola: {internal:.1f} < {min_with_offset:.1f} mm (min {min_q:.0f} − offset {offset:.0f})", auto_hide_ms=3000)
             self._last_internal = None
             self._last_target = None
             self.lbl_fq_details.setVisible(False)
             raise ValueError("Quota troppo piccola")
 
         if internal < min_q and not self.chk_fuori_quota.isChecked():
-            self._show_warn(f"Quota {internal:.1f} sotto minima ({min_q:.1f}). Abilita FUORI QUOTA.")
+            self._show_warn(f"Quota {internal:.1f} sotto minima ({min_q:.1f}). Abilita FUORI QUOTA.", auto_hide_ms=3000)
             self._last_internal = None
             self._last_target = None
             self.lbl_fq_details.setVisible(False)
@@ -504,6 +511,7 @@ class SemiAutoPage(QWidget):
 
         if target > max_q:
             self.lbl_fq_details.setVisible(False)
+            self._show_warn(f"Quota oltre massima: {target:.1f} > {max_q:.1f} mm")
             raise ValueError(f"QUOTA MAX {int(max_q)}MM")
 
         return target, sx, dx
@@ -552,8 +560,12 @@ class SemiAutoPage(QWidget):
             pass
 
         # Sblocca freno per muovere
-        if getattr(self.machine, "brake_active", False) and hasattr(self.machine, "toggle_brake"):
-            self.machine.toggle_brake()
+        if getattr(self.machine, "brake_active", False):
+            if hasattr(self.machine, "toggle_brake"):
+                self.machine.toggle_brake()
+            else:
+                try: setattr(self.machine, "brake_active", False)
+                except Exception: pass
 
         # Muovi a minima; dopo movimento, blocca freno e attendi input “uscita lama DX”
         def _after_move_ui():
@@ -561,6 +573,9 @@ class SemiAutoPage(QWidget):
             if hasattr(self.machine, "toggle_brake"):
                 if not getattr(self.machine, "brake_active", False):
                     self.machine.toggle_brake()
+            else:
+                try: setattr(self.machine, "brake_active", True)
+                except Exception: pass
             # inizializza monitor uscita lama DX
             self._last_dx_blade_out = self._get_dx_blade_out()
             self._show_info("Intestatura pronta: DX @45° alla minima. SX INIBITA, DX ABILITATA. Premi F5 per simulare 'uscita lama' (tieni premuto durante il taglio).")
@@ -603,8 +618,12 @@ class SemiAutoPage(QWidget):
         # Riposiziona a quota+offset se disponibile
         if fq and self._last_target is not None:
             # Sblocca freno per muovere
-            if getattr(self.machine, "brake_active", False) and hasattr(self.machine, "toggle_brake"):
-                self.machine.toggle_brake()
+            if getattr(self.machine, "brake_active", False):
+                if hasattr(self.machine, "toggle_brake"):
+                    self.machine.toggle_brake()
+                else:
+                    try: setattr(self.machine, "brake_active", False)
+                    except Exception: pass
             if hasattr(self.machine, "move_to_length_and_angles"):
                 self.machine.move_to_length_and_angles(
                     length_mm=float(self._last_target),
@@ -662,15 +681,45 @@ class SemiAutoPage(QWidget):
         except Exception:
             return
 
-        # Sblocca freno se attivo
-        if getattr(self.machine, "brake_active", False) and hasattr(self.machine, "toggle_brake"):
-            self.machine.toggle_brake()
+        # Assicura modalità e stati corretti per il movimento
+        if hasattr(self.machine, "set_active_mode"):
+            try: self.machine.set_active_mode("semi")
+            except Exception: pass
 
+        # Rilascia freno se bloccato (fallback anche senza toggle)
+        if getattr(self.machine, "brake_active", False):
+            if hasattr(self.machine, "toggle_brake"):
+                self.machine.toggle_brake()
+            else:
+                try: setattr(self.machine, "brake_active", False)
+                except Exception: pass
+
+        # Inserisci frizione se disinserita
+        if hasattr(self.machine, "set_clutch"):
+            try: self.machine.set_clutch(True)
+            except Exception: pass
+        else:
+            try:
+                if hasattr(self.machine, "clutch_active"):
+                    setattr(self.machine, "clutch_active", True)
+            except Exception:
+                pass
+
+        # Muovi
         if hasattr(self.machine, "move_to_length_and_angles"):
             self.machine.move_to_length_and_angles(
                 length_mm=float(target), ang_sx=float(sx), ang_dx=float(dx),
                 done_cb=lambda ok, msg: None
             )
+        else:
+            # Fallback simulazione minima
+            try:
+                setattr(self.machine, "position_current", float(target))
+                setattr(self.machine, "left_head_angle", float(sx))
+                setattr(self.machine, "right_head_angle", float(dx))
+                setattr(self.machine, "brake_active", True)
+            except Exception:
+                pass
         self._update_buttons()
 
     def _toggle_brake(self):
@@ -678,6 +727,13 @@ class SemiAutoPage(QWidget):
             ok = self.machine.toggle_brake()
             if not ok:
                 self._show_warn("Operazione non consentita")
+        else:
+            # fallback
+            try:
+                cur = bool(getattr(self.machine, "brake_active", False))
+                setattr(self.machine, "brake_active", not cur)
+            except Exception:
+                pass
         self._update_buttons()
 
     # ---------- Poll ----------
@@ -796,3 +852,10 @@ class SemiAutoPage(QWidget):
             event.accept()
             return
         super().keyReleaseEvent(event)
+
+    # --- lifecycle hook: setta la modalità ---
+    def on_show(self):
+        # Modalità Semi-Automatico per coerenza logica (cut_enable, ecc.)
+        if hasattr(self.machine, "set_active_mode"):
+            try: self.machine.set_active_mode("semi")
+            except Exception: pass
