@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Iterable
 from math import hypot
 from pathlib import Path
 
@@ -32,6 +32,7 @@ class DxfViewerWidget(QWidget):
     Viewer DXF semplificato per sezioni profilo:
     - Rendering robusto: LINE, LWPOLYLINE (bulge via virtual_entities), POLYLINE, ARC, CIRCLE, ELLIPSE, SPLINE,
       HATCH (boundary) e INSERT (blocchi) via virtual_entities, con flatten/approx accurato.
+    - Conversione OCS→WCS per curve/archi/hatch/spline: niente elementi mancanti su piani inclinati.
     - Pan (tasto centrale), Zoom (rotellina) centrato sul mouse.
     - Misura:
         - Distanza: 2 click; anteprima live tra primo click e cursore. Shift = vincolo ortogonale (orizz/vert).
@@ -48,7 +49,7 @@ class DxfViewerWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Geometria in world (coordinate DXF)
+        # Geometria in world (coordinate DXF, WCS)
         self._segments: List[Tuple[QPointF, QPointF]] = []
         self._bounds: Optional[QRectF] = None
 
@@ -114,14 +115,16 @@ class DxfViewerWidget(QWidget):
 
     def load_dxf(self, path: str):
         """
-        Carica il DXF e produce una lista di segmenti world.
+        Carica il DXF e produce una lista di segmenti world (WCS).
         Gestisce anche i blocchi (INSERT) espandendoli in primitive via virtual_entities.
+        Applica conversione OCS→WCS a tutti i flatten/approx.
         """
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(path)
         try:
             import ezdxf  # type: ignore
+            from ezdxf.math import OCS, Vec3  # type: ignore
         except Exception as e:
             raise ImportError("Installa 'ezdxf' (pip install ezdxf)") from e
 
@@ -131,80 +134,110 @@ class DxfViewerWidget(QWidget):
         segs: List[Tuple[QPointF, QPointF]] = []
         bounds: Optional[QRectF] = None
 
-        def add_seg(x1, y1, x2, y2):
-            a = QPointF(float(x1), float(y1))
-            b = QPointF(float(x2), float(y2))
+        def add_seg_wcs(p1: Vec3, p2: Vec3):
+            a = QPointF(float(p1.x), float(p1.y))
+            b = QPointF(float(p2.x), float(p2.y))
             segs.append((a, b))
             nonlocal bounds
             r = QRectF(a, b).normalized()
             bounds = r if bounds is None else bounds.united(r)
 
-        def add_poly_pts(pts):
-            pts = list(pts) if pts is not None else []
-            if len(pts) < 2:
-                return
-            for i in range(len(pts) - 1):
-                a = pts[i]
-                b = pts[i + 1]
-                add_seg(a[0], a[1], b[0], b[1])
-
-        def add_entity_generic(e):
-            # fallback generico: tenta flattening/approx
+        def to_wcs_pts(entity, pts: Iterable):
+            # Converte una lista di (x,y[,z]) dall'OCS dell'entità al WCS.
+            # elevation per entità 2D in OCS
             try:
-                if hasattr(e, "flattening"):
-                    pts = list(e.flattening(distance=0.25))
-                    add_poly_pts(pts)
-                elif hasattr(e, "approximate"):
-                    pts = list(e.approximate(240))
-                    add_poly_pts(pts)
+                extr = entity.dxf.extrusion  # Vec3-like
+            except Exception:
+                extr = (0, 0, 1)
+            ocs = OCS(extr)
+            elevation = 0.0
+            try:
+                elevation = float(getattr(entity.dxf, "elevation", 0.0) or 0.0)
             except Exception:
                 pass
+            out = []
+            for pt in pts:
+                try:
+                    x = float(pt[0]); y = float(pt[1])
+                    v = ocs.to_wcs((x, y, elevation))
+                    out.append(v if isinstance(v, Vec3) else Vec3(v[0], v[1], v[2]))
+                except Exception:
+                    continue
+            return out
 
-        def add_virtual(e):
-            # Espandi entità complesse (bulge, hatch edges, blocchi) in primitive
+        def add_poly_from_pts_wcs(pts_wcs: List):
+            if len(pts_wcs) < 2:
+                return
+            for i in range(len(pts_wcs) - 1):
+                add_seg_wcs(pts_wcs[i], pts_wcs[i + 1])
+
+        def flatten_entity(entity):
+            # Tenta flatten/approx e converte OCS->WCS
+            pts_wcs: List = []
             try:
-                for sub in e.virtual_entities():
+                if hasattr(entity, "flattening"):
+                    pts = list(entity.flattening(distance=0.25))
+                    pts_wcs = to_wcs_pts(entity, pts)
+                elif hasattr(entity, "approximate"):
+                    pts = list(entity.approximate(240))
+                    # approximate spesso è già in WCS, ma normalizziamo comunque via OCS
+                    pts_wcs = to_wcs_pts(entity, pts)
+            except Exception:
+                pts_wcs = []
+            if pts_wcs:
+                add_poly_from_pts_wcs(pts_wcs)
+
+        def add_virtual(entity):
+            # Espande virtual_entities e processa ricorsivamente
+            try:
+                for sub in entity.virtual_entities():
                     dxft = sub.dxftype()
                     if dxft == "LINE":
-                        add_seg(sub.dxf.start.x, sub.dxf.start.y, sub.dxf.end.x, sub.dxf.end.y)
-                    elif dxft in ("ARC", "CIRCLE", "ELLIPSE"):
-                        add_entity_generic(sub)
-                    elif dxft in ("LWPOLYLINE", "POLYLINE", "SPLINE"):
-                        add_entity_generic(sub)
+                        try:
+                            # LINE in WCS, ma gestiamo OCS per sicurezza
+                            pts_w = to_wcs_pts(sub, [(sub.dxf.start.x, sub.dxf.start.y),
+                                                     (sub.dxf.end.x, sub.dxf.end.y)])
+                            if len(pts_w) >= 2:
+                                add_seg_wcs(pts_w[0], pts_w[1])
+                        except Exception:
+                            pass
                     else:
-                        add_entity_generic(sub)
+                        flatten_entity(sub)
             except Exception:
                 pass
 
-        # Passo 1: entità principali
         # LINE
         for e in msp.query("LINE"):
             try:
-                add_seg(e.dxf.start.x, e.dxf.start.y, e.dxf.end.x, e.dxf.end.y)
+                pts_w = to_wcs_pts(e, [(e.dxf.start.x, e.dxf.start.y),
+                                       (e.dxf.end.x, e.dxf.end.y)])
+                if len(pts_w) >= 2:
+                    add_seg_wcs(pts_w[0], pts_w[1])
             except Exception:
                 pass
 
-        # LWPOLYLINE/POLYLINE via virtual_entities (copre bulge)
+        # LWPOLYLINE / POLYLINE via virtual_entities (copre bulge archi)
         for e in msp.query("LWPOLYLINE"):
             add_virtual(e)
         for e in msp.query("POLYLINE"):
             add_virtual(e)
 
-        # Curvilinee
+        # ARC / CIRCLE / ELLIPSE / SPLINE
         for e in msp.query("ARC"):
-            add_entity_generic(e)
+            flatten_entity(e)
         for e in msp.query("CIRCLE"):
             try:
                 pts = list(e.flattening(distance=0.25))
-                if pts:
-                    pts.append(pts[0])
-                add_poly_pts(pts)
+                pts_w = to_wcs_pts(e, pts)
+                if pts_w:
+                    pts_w.append(pts_w[0])
+                add_poly_from_pts_wcs(pts_w)
             except Exception:
                 pass
         for e in msp.query("ELLIPSE"):
-            add_entity_generic(e)
+            flatten_entity(e)
         for e in msp.query("SPLINE"):
-            add_entity_generic(e)
+            flatten_entity(e)
 
         # HATCH boundary
         for h in msp.query("HATCH"):
@@ -217,19 +250,23 @@ class DxfViewerWidget(QWidget):
                             continue
                         try:
                             if et == "LineEdge":
-                                add_seg(edge.start[0], edge.start[1], edge.end[0], edge.end[1])
+                                pts_w = to_wcs_pts(h, [edge.start, edge.end])
+                                if len(pts_w) >= 2:
+                                    add_seg_wcs(pts_w[0], pts_w[1])
                             elif et in ("ArcEdge", "EllipseEdge"):
                                 pts = list(edge.flattening(distance=0.25))
-                                add_poly_pts(pts)
+                                pts_w = to_wcs_pts(h, pts)
+                                add_poly_from_pts_wcs(pts_w)
                             elif et == "SplineEdge":
                                 pts = list(edge.approximate(240))
-                                add_poly_pts(pts)
+                                pts_w = to_wcs_pts(h, pts)
+                                add_poly_from_pts_wcs(pts_w)
                         except Exception:
                             pass
             except Exception:
                 pass
 
-        # INSERT (blocchi) espansi
+        # INSERT (blocchi) espansi ricorsivamente
         for ins in msp.query("INSERT"):
             add_virtual(ins)
 
@@ -482,7 +519,7 @@ class DxfViewerWidget(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
 
         if not self._segments or not self._bounds:
-            self._draw_hint_text(p, "Carica un DXF (mouse: pan=centrale, zoom=rotellina | R/E=rotazione | A=allinea | P=perpendicolare | Dx=reset misura)")
+            self._draw_hint_text(p, "Carica un DXF (pan=centrale, zoom=rotellina | R/E=rotazione | A=allinea | P=perpendicolare | Dx=reset misura)")
             return
 
         # segmenti
