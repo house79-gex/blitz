@@ -3,8 +3,8 @@ from PySide6.QtWidgets import (
     QSpinBox, QGridLayout, QDoubleSpinBox, QLineEdit, QComboBox,
     QSizePolicy, QCheckBox, QAbstractSpinBox, QToolButton, QStyle, QApplication
 )
-from PySide6.QtCore import Qt, QTimer, QSize, QLocale
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import Qt, QTimer, QSize, QLocale, QRect
+from PySide6.QtGui import QKeyEvent, QGuiApplication
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.widgets.heads_view import HeadsView
@@ -36,9 +36,8 @@ class SemiAutoPage(QWidget):
     Semi-Automatico: layout a due colonne.
     - Sinistra: contapezzi + grafica; profilo/spessore + inclinazioni; misura; comandi BLOCCA/SBLOCCA, START e Quota live con dettagli Fuori Quota.
     - Destra: StatusPanel + Fuori Quota (offset) + INTESTATURA.
-    - Anteprima sezione profilo: popup in alto-sinistra del frame grafico (se esiste DXF).
-      Mostrata su selezione e anche in hover della tendina profili (quando il popup del combo è aperto).
-      La preview si chiude automaticamente quando premi START.
+    - Anteprima sezione (solo popup): in alto-sinistra del frame grafico, dimensionata alla sezione (non più grande).
+      Mostrata solo durante l'hover della tendina profili (lista aperta). La preview si chiude automaticamente su START.
     """
     def __init__(self, appwin):
         super().__init__()
@@ -86,6 +85,7 @@ class SemiAutoPage(QWidget):
         self.cb_profilo.clear()
         for name in sorted(self._profiles.keys()):
             self.cb_profilo.addItem(name)
+        # Mantieni selezione corrente se disponibile, altrimenti seleziona nuova
         if select and select in self._profiles:
             self.cb_profilo.setCurrentText(select)
         elif cur in self._profiles:
@@ -93,7 +93,8 @@ class SemiAutoPage(QWidget):
         else:
             self.cb_profilo.setCurrentText(next(iter(self._profiles.keys())))
         self.cb_profilo.blockSignals(False)
-        # sincronizza spessore e anteprima
+        # Nota: niente preview su selezione; preview solo in hover (lista aperta)
+        # Aggiorna spessore visualizzato
         self._on_profile_changed(self.cb_profilo.currentText())
 
     # ---------- UI ----------
@@ -189,17 +190,17 @@ class SemiAutoPage(QWidget):
         for name in sorted(self._profiles.keys()):
             self.cb_profilo.addItem(name)
         self.cb_profilo.setCurrentText(next(iter(self._profiles.keys())))
-        self.cb_profilo.currentTextChanged.connect(self._on_profile_changed)
-        # anteprima in hover sulla tendina (voce evidenziata)
+        # preview SOLO in hover (tendina aperta), non su selezione
         try:
             self.cb_profilo.highlighted[str].connect(self._hover_profile_highlighted)
         except Exception:
             pass
-        # fallback: overload int (alcune build emettono solo indice)
         try:
             self.cb_profilo.highlighted.connect(self._hover_profile_highlighted_index)
         except Exception:
             pass
+        # selezione: aggiorna solo spessore, non la preview
+        self.cb_profilo.currentTextChanged.connect(self._on_profile_changed)
         prof.addWidget(self.cb_profilo, 1, 1, 1, 3)
 
         self.btn_save_profile = QToolButton()
@@ -369,8 +370,7 @@ class SemiAutoPage(QWidget):
         root.addWidget(right_container, 0)
 
         self._start_poll()
-        # anteprima popup iniziale
-        self._update_section_preview(self.cb_profilo.currentText().strip())
+        # Niente preview all'avvio; verrà mostrata solo in hover della lista combo profili
 
     # ---------- Banner helpers ----------
     def _style_banner_info(self):
@@ -400,22 +400,22 @@ class SemiAutoPage(QWidget):
             if new_s != s:
                 spinbox.lineEdit().setText(new_s)
 
+    # Hover combo: mostra solo in evidenziazione voce (tendina aperta)
     def _hover_profile_highlighted(self, name: str):
-        # mostra popup in hover sulla voce evidenziata della combo (popup del combo aperto)
         name = (name or "").strip()
         if name:
-            self._update_section_preview(name)
+            self._show_profile_preview(name)
 
     def _hover_profile_highlighted_index(self, index: int):
-        # fallback overload: indice della voce evidenziata
         try:
             if index is not None and index >= 0:
                 name = (self.cb_profilo.itemText(index) or "").strip()
                 if name:
-                    self._update_section_preview(name)
+                    self._show_profile_preview(name)
         except Exception:
             pass
 
+    # Su selezione aggiorniamo solo lo spessore, non la preview
     def _on_profile_changed(self, name: str):
         name = (name or "").strip()
         try:
@@ -424,9 +424,8 @@ class SemiAutoPage(QWidget):
         except Exception:
             pass
         self._recalc_displays()
-        self._update_section_preview(name)
 
-    def _update_section_preview(self, profile_name: str):
+    def _show_profile_preview(self, profile_name: str):
         if not (SectionPreviewPopup and self.profiles_store and self.graph_frame):
             if self._section_popup:
                 self._section_popup.close()
@@ -437,7 +436,26 @@ class SemiAutoPage(QWidget):
             if shape and shape.get("dxf_path"):
                 if self._section_popup is None:
                     self._section_popup = SectionPreviewPopup(self.appwin, "Sezione profilo")
+                # carica
                 self._section_popup.load_path(shape["dxf_path"])
+                # dimensiona popup alla sezione (non più grande):
+                bw = float(shape.get("bbox_w") or 0.0)
+                bh = float(shape.get("bbox_h") or 0.0)
+                if bw > 0.0 and bh > 0.0:
+                    # 1 unità DXF ~ 1 px, ma limita alle dimensioni dello schermo e non ingrandire oltre la sezione
+                    screen = QGuiApplication.primaryScreen()
+                    scr_rect: QRect = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+                    max_w = int(scr_rect.width() * 0.35)   # evita popup giganteschi
+                    max_h = int(scr_rect.height() * 0.35)
+                    # non ingrandire oltre la sezione: desired = min(bbox, max)
+                    desired_w = int(min(bw, max_w))
+                    desired_h = int(min(bh, max_h))
+                    desired_w = max(180, desired_w)  # minimo ragionevole
+                    desired_h = max(140, desired_h)
+                    try:
+                        self._section_popup.resize(desired_w, desired_h)
+                    except Exception:
+                        pass
                 # posiziona in alto-sinistra del frame grafico
                 try:
                     self._section_popup.show_top_left_of(self.graph_frame)
@@ -581,7 +599,7 @@ class SemiAutoPage(QWidget):
             setattr(self.machine, "right_blade_inhibit", bool(on))
         self.lbl_fq_details.setVisible(False)
         self._last_internal = None
-        self._last_target = None
+               self._last_target = None
 
     # ---------- Intestatura (one-shot) ----------
     def _do_intestatura(self):
@@ -930,7 +948,7 @@ class SemiAutoPage(QWidget):
                 self.machine.set_active_mode("semi")
             except Exception:
                 pass
-        # ricarica profili per essere subito aggiornato a eventuali salvataggi da Utility
+        # ricarica profili (aggiornati da Utility)
         self.refresh_profiles_external(select=self.cb_profilo.currentText().strip())
 
     def hideEvent(self, ev):
