@@ -37,18 +37,58 @@ class SectionPreviewWidget(QWidget):
             r = QRectF(a, b).normalized()
             bounds = r if bounds is None else bounds.united(r)
 
+        # LINE
         for e in msp.query("LINE"):
             try: add_seg(e.dxf.start.x, e.dxf.start.y, e.dxf.end.x, e.dxf.end.y)
             except Exception: pass
+
+        # LWPOLYLINE / POLYLINE
         for e in list(msp.query("LWPOLYLINE")) + list(msp.query("POLYLINE")):
             pts = []
             try:
-                pts = [(pt[0], pt[1]) for pt in e.get_points()] if hasattr(e, "get_points") else []
-                if not pts and hasattr(e, "vertices"):
+                if hasattr(e, "get_points"):
+                    pts = [(pt[0], pt[1]) for pt in e.get_points()]
+                elif hasattr(e, "vertices"):
                     pts = [(v.dxf.location.x, v.dxf.location.y) for v in e.vertices]
-            except Exception: pts = []
+            except Exception:
+                pts = []
             for i in range(len(pts)-1):
                 add_seg(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1])
+            try:
+                closed = bool(getattr(e.dxf, "flags", 0) & 1)
+            except Exception:
+                closed = False
+            if closed and len(pts) >= 2:
+                add_seg(pts[-1][0], pts[-1][1], pts[0][0], pts[0][1])
+
+        # ARC/CIRCLE/ELLIPSE/SPLINE/HATCH semplificati: rimando al viewer per precisione
+        # Per anteprima basta un contorno base: tentativo con flattening dove possibile
+        for e in msp.query("CIRCLE"):
+            try:
+                c = e.dxf.center; r = float(e.dxf.radius)
+                # 36 segmenti
+                import math
+                prevx = c.x + r; prevy = c.y
+                for i in range(1, 37):
+                    a = 2*math.pi*i/36.0
+                    x = c.x + r*math.cos(a); y = c.y + r*math.sin(a)
+                    add_seg(prevx, prevy, x, y); prevx, prevy = x, y
+            except Exception: pass
+
+        for e in msp.query("ARC"):
+            try:
+                import math
+                c = e.dxf.center; r = float(e.dxf.radius)
+                a0 = math.radians(float(e.dxf.start_angle))
+                a1 = math.radians(float(e.dxf.end_angle))
+                steps = 24
+                prevx = c.x + r*math.cos(a0); prevy = c.y + r*math.sin(a0)
+                for i in range(1, steps+1):
+                    t = a0 + (a1-a0)*i/steps
+                    x = c.x + r*math.cos(t); y = c.y + r*math.sin(t)
+                    add_seg(prevx, prevy, x, y); prevx, prevy = x, y
+            except Exception: pass
+
         self._segments = segs
         self._bounds = bounds
         self.update()
