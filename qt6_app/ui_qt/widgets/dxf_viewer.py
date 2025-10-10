@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Tuple, Optional, Iterable
+from typing import List, Tuple, Optional, Iterable, Dict, Any
 from math import hypot
 from pathlib import Path
 
@@ -29,26 +29,32 @@ def _dist_point_to_segment(px: float, py: float, ax: float, ay: float, bx: float
 
 class DxfViewerWidget(QWidget):
     """
-    Viewer DXF per sezioni profilo:
-    - Import robusto (OCS→WCS) di LINE, LWPOLYLINE (bulge via virtual_entities), POLYLINE, ARC, CIRCLE, ELLIPSE,
-      SPLINE, HATCH (boundary) e INSERT (blocchi) con flatten/approx accurato.
-    - Pan (tasto centrale), zoom sul mouse (rotellina).
+    Viewer DXF avanzato per sezioni profilo:
+    - Import DXF robusto:
+        - LINE, LWPOLYLINE (bulge), POLYLINE, ARC, CIRCLE, ELLIPSE, SPLINE, HATCH (boundary), INSERT (blocchi)
+        - virtual_entities ricorsivo per bulge e blocchi
+        - fallback con ezdxf.path.from_entity() per curve/archi/ellissi/spline
+        - conversione OCS→WCS per ogni set di punti generato
+    - Interazione:
+        - Pan (tasto centrale), Zoom (rotellina) centrato sul mouse
+        - Rotazione vista integrata (R/E = ±5°, A = allinea verticale al segmento sotto il mouse)
+        - Salvataggio/recupero stato vista (rotazione, scala, offset)
     - Misura:
-        - Distanza: 2 click; anteprima live tra primo click e cursore. Shift = vincolo ortogonale.
-        - Perpendicolare (P): 1° click seleziona segmento base, 2° click definisce punto; anteprima live.
-    - Snap: solo marker (endpoint/midpoint del segmento più vicino) sotto il mouse.
-    - Quota (mm) disegnata vicino alla misura.
-    - Rotazione (R/E ±5°), allineamento verticale (A: sul segmento sotto il mouse).
-    - Tasto destro: reset misura corrente.
+        - Distanza: due click, anteprima live; Shift = vincolo ortogonale (orizz/vert)
+        - Perpendicolare (P): 1° click segmento base, 2° click punto; anteprima live
+        - Testo quota (mm) sempre visibile sulla misura
+    - Snap: marker singolo solo sotto il mouse (endpoint/midpoint del segmento più vicino)
+    - Tasto destro: reset misura corrente
     """
-    measurementChanged = Signal(float)  # mm
+    measurementChanged = Signal(float)      # mm
+    viewStateChanged = Signal(dict)         # {rotation_deg, scale, offset_x, offset_y}
 
     MODE_DISTANCE = 0
     MODE_PERP = 1
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Geometria world (WCS)
+        # Geometria in world (coordinate DXF, WCS)
         self._segments: List[Tuple[QPointF, QPointF]] = []
         self._bounds: Optional[QRectF] = None
 
@@ -93,10 +99,12 @@ class DxfViewerWidget(QWidget):
     def rotate_by(self, deg: float):
         self._rotation_deg = (self._rotation_deg + deg) % 360.0
         self.update()
+        self._emit_view_state()
 
     def set_rotation(self, deg: float):
         self._rotation_deg = float(deg) % 360.0
         self.update()
+        self._emit_view_state()
 
     def align_segment_vertical(self, seg_index: Optional[int]):
         idx = seg_index if seg_index is not None else self._hover_seg_index
@@ -106,18 +114,42 @@ class DxfViewerWidget(QWidget):
         dx = b.x() - a.x()
         dy = b.y() - a.y()
         import math
-        # Per avere il segmento verticale in vista (asse Y), ruotiamo di atan2(dx, dy)
-        angle = math.degrees(math.atan2(dx, dy))
+        angle = math.degrees(math.atan2(dx, dy))  # rende il segmento verticale in vista (Y-up)
         self.set_rotation(angle)
 
     def last_measure_mm(self) -> float:
         return float(self._meas_mm)
 
+    def save_view_state(self) -> Dict[str, Any]:
+        return {
+            "rotation_deg": float(self._rotation_deg),
+            "scale": float(self._scale),
+            "offset_x": float(self._offset.x()),
+            "offset_y": float(self._offset.y()),
+        }
+
+    def restore_view_state(self, state: Dict[str, Any]):
+        try:
+            self._rotation_deg = float(state.get("rotation_deg", 0.0))
+            self._scale = max(1e-6, float(state.get("scale", 1.0)))
+            ox = float(state.get("offset_x", 0.0))
+            oy = float(state.get("offset_y", 0.0))
+            self._offset = QPointF(ox, oy)
+            self.update()
+            self._emit_view_state()
+        except Exception:
+            pass
+
+    def _emit_view_state(self):
+        self.viewStateChanged.emit(self.save_view_state())
+
     def load_dxf(self, path: str):
         """
-        Carica DXF e produce una lista di segmenti world (WCS).
-        Gestisce blocchi (INSERT) via virtual_entities.
-        Converte OCS→WCS per tutte le coordinate flatten/approx per evitare elementi mancanti/specchiati.
+        Carica il DXF e produce una lista di segmenti world (WCS).
+        Implementa pipeline robusta:
+          1) virtual_entities per bulge e blocchi (INSERT) – trasformazioni applicate
+          2) ezdxf.path.from_entity per curve/archi/ellissi/spline – flattening a densità fine
+          3) conversione OCS→WCS per tutti i set di punti ottenuti
         """
         p = Path(path)
         if not p.exists():
@@ -125,6 +157,7 @@ class DxfViewerWidget(QWidget):
         try:
             import ezdxf  # type: ignore
             from ezdxf.math import OCS, Vec3  # type: ignore
+            from ezdxf import path as ezpath  # type: ignore
         except Exception as e:
             raise ImportError("Installa 'ezdxf' (pip install ezdxf)") from e
 
@@ -143,9 +176,9 @@ class DxfViewerWidget(QWidget):
             bounds = r if bounds is None else bounds.united(r)
 
         def to_wcs_pts(entity, pts: Iterable):
-            # Converte (x,y[,z]) dall'OCS dell'entità al WCS
+            # Converte una lista di (x,y[,z]) dall'OCS dell'entità al WCS.
             try:
-                extr = entity.dxf.extrusion
+                extr = entity.dxf.extrusion  # Vec3-like
             except Exception:
                 extr = (0, 0, 1)
             ocs = OCS(extr)
@@ -170,15 +203,32 @@ class DxfViewerWidget(QWidget):
             for i in range(len(pts_wcs) - 1):
                 add_seg_wcs(pts_wcs[i], pts_wcs[i + 1])
 
+        def flatten_by_path(entity) -> bool:
+            # Prova ezdxf.path.from_entity: restituisce uno o più Path.
+            try:
+                path = ezpath.from_entity(entity, segments=0)  # 0 = autodensità
+                if path:
+                    pts = list(path.flattening(distance=0.25))
+                    pts_w = to_wcs_pts(entity, pts)
+                    add_poly_from_pts_wcs(pts_w)
+                    return True
+            except Exception:
+                pass
+            # Alcune entità (HATCH, ecc.) non supportano from_entity direttamente
+            return False
+
         def flatten_entity(entity):
-            # Tenta flatten/approx e converte OCS->WCS
+            # Pipeline: prima path, poi flattening/approx nativi
+            if flatten_by_path(entity):
+                return
+            # fallback nativo
             pts_wcs: List[Vec3] = []
             try:
                 if hasattr(entity, "flattening"):
                     pts = list(entity.flattening(distance=0.25))
                     pts_wcs = to_wcs_pts(entity, pts)
                 elif hasattr(entity, "approximate"):
-                    pts = list(entity.approximate(240))
+                    pts = list(entity.approximate(360))  # più denso per spline
                     pts_wcs = to_wcs_pts(entity, pts)
             except Exception:
                 pts_wcs = []
@@ -186,7 +236,7 @@ class DxfViewerWidget(QWidget):
                 add_poly_from_pts_wcs(pts_wcs)
 
         def add_virtual(entity):
-            # Espande virtual_entities e processa sub-entità
+            # Espande virtual_entities e processa ricorsivamente
             try:
                 for sub in entity.virtual_entities():
                     dxft = sub.dxftype()
@@ -199,7 +249,9 @@ class DxfViewerWidget(QWidget):
                         except Exception:
                             pass
                     else:
-                        flatten_entity(sub)
+                        # prova via path, poi fallback flatten/approx
+                        if not flatten_by_path(sub):
+                            flatten_entity(sub)
             except Exception:
                 pass
 
@@ -213,7 +265,7 @@ class DxfViewerWidget(QWidget):
             except Exception:
                 pass
 
-        # LWPOLYLINE/POLYLINE via virtual_entities (copre bulge)
+        # LWPOLYLINE / POLYLINE via virtual_entities (copre bulge archi)
         for e in msp.query("LWPOLYLINE"):
             add_virtual(e)
         for e in msp.query("POLYLINE"):
@@ -221,20 +273,24 @@ class DxfViewerWidget(QWidget):
 
         # ARC / CIRCLE / ELLIPSE / SPLINE
         for e in msp.query("ARC"):
-            flatten_entity(e)
+            if not flatten_by_path(e):
+                flatten_entity(e)
         for e in msp.query("CIRCLE"):
-            try:
-                pts = list(e.flattening(distance=0.25))
-                pts_w = to_wcs_pts(e, pts)
-                if pts_w:
-                    pts_w.append(pts_w[0])
-                add_poly_from_pts_wcs(pts_w)
-            except Exception:
-                pass
+            if not flatten_by_path(e):
+                try:
+                    pts = list(e.flattening(distance=0.25))
+                    pts_w = to_wcs_pts(e, pts)
+                    if pts_w:
+                        pts_w.append(pts_w[0])  # chiudi
+                    add_poly_from_pts_wcs(pts_w)
+                except Exception:
+                    pass
         for e in msp.query("ELLIPSE"):
-            flatten_entity(e)
+            if not flatten_by_path(e):
+                flatten_entity(e)
         for e in msp.query("SPLINE"):
-            flatten_entity(e)
+            if not flatten_by_path(e):
+                flatten_entity(e)
 
         # HATCH boundary
         for h in msp.query("HATCH"):
@@ -251,11 +307,15 @@ class DxfViewerWidget(QWidget):
                                 if len(pts_w) >= 2:
                                     add_seg_wcs(pts_w[0], pts_w[1])
                             elif et in ("ArcEdge", "EllipseEdge"):
-                                pts = list(edge.flattening(distance=0.25))
-                                pts_w = to_wcs_pts(h, pts)
-                                add_poly_from_pts_wcs(pts_w)
+                                # prova path-like se disponibile, altrimenti flatten
+                                try:
+                                    pts = list(edge.flattening(distance=0.25))
+                                    pts_w = to_wcs_pts(h, pts)
+                                    add_poly_from_pts_wcs(pts_w)
+                                except Exception:
+                                    pass
                             elif et == "SplineEdge":
-                                pts = list(edge.approximate(240))
+                                pts = list(edge.approximate(360))
                                 pts_w = to_wcs_pts(h, pts)
                                 add_poly_from_pts_wcs(pts_w)
                         except Exception:
@@ -272,6 +332,7 @@ class DxfViewerWidget(QWidget):
         self._normalize_view()
         self._reset_measure()
         self.update()
+        self._emit_view_state()
 
     # ---------------- Trasformazioni vista ----------------
     def _normalize_view(self):
@@ -295,6 +356,7 @@ class DxfViewerWidget(QWidget):
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._normalize_view()
+        self._emit_view_state()
 
     def _rotate_world_point(self, pt: QPointF, deg: float) -> QPointF:
         if not self._bounds or abs(deg) < 1e-9:
@@ -333,6 +395,7 @@ class DxfViewerWidget(QWidget):
         delta_w = after_w - before_w
         self._offset -= QPointF(delta_w.x() * self._scale, -delta_w.y() * self._scale)
         self.update()
+        self._emit_view_state()
 
     def mousePressEvent(self, e: QMouseEvent):
         if e.button() == Qt.RightButton:
@@ -380,6 +443,7 @@ class DxfViewerWidget(QWidget):
             self._offset += delta
             self._last_mouse_view = cur
             self.update()
+            self._emit_view_state()
             return
 
         v = QPointF(e.position().x(), e.position().y())
