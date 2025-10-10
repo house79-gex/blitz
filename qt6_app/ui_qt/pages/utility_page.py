@@ -1,25 +1,17 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QComboBox, QSpinBox,
-    QTabWidget, QLineEdit, QColorDialog, QMessageBox, QGridLayout, QCheckBox, QFileDialog
+    QTabWidget, QLineEdit, QColorDialog, QMessageBox, QGridLayout, QCheckBox, QFileDialog, QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtWidgets import QApplication
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.theme import THEME, set_palette_from_dict, apply_global_stylesheet
-from ui_qt.utils.theme_store import (
-    read_themes, save_theme_combo, get_current_theme_name, set_current_theme_name,
-    get_active_theme
-)
-
-MENU_KEYS = [
-    ("automatico", "Automatico"),
-    ("semi", "Semi-Automatico"),
-    ("manuale", "Manuale"),
-    ("tipologie", "Tipologie"),
-    ("quotevani", "Quote Vani"),
-    ("utility", "Utility"),
-]
+from ui_qt.utils.theme_store import save_theme_combo, read_themes
+from ui_qt.utils.app_settings import get_bool as settings_get_bool, set_bool as settings_set_bool
+from ui_qt.services.profiles_store import ProfilesStore
+from ui_qt.services.dxf_importer import analyze_dxf
+from ui_qt.services.probe_service import ProbeService
 
 class UtilityPage(QWidget):
     """
@@ -32,6 +24,16 @@ class UtilityPage(QWidget):
         self.color_vars = {}
         self.icon_vars = {}
         self._diag_timer: QTimer | None = None
+
+        # servizi
+        self.profiles = ProfilesStore()
+        self.probe = ProbeService(self.machine)
+
+        # cache UI handle
+        self.lst_profiles: QListWidget | None = None
+        self.edit_prof_name: QLineEdit | None = None
+        self.edit_prof_th: QLineEdit | None = None
+
         self._build()
 
     def _build(self):
@@ -48,7 +50,7 @@ class UtilityPage(QWidget):
         self._theme_tab = self._build_theme_tab()
         tabs.addTab(self._conf_tab, "Configurazione")
         tabs.addTab(self._backup_tab, "Backup")
-        tabs.addTab(self._dxf_tab, "DXF Import")
+        tabs.addTab(self._dxf_tab, "Profili / DXF")
         tabs.addTab(self._theme_tab, "Tema")
 
         # Stato a destra
@@ -58,58 +60,23 @@ class UtilityPage(QWidget):
         side_l.addWidget(self.status)
 
     def _build_conf_tab(self):
+        from PySide6.QtWidgets import QVBoxLayout as VB, QHBoxLayout as HB
         pg = QFrame()
-        lay = QVBoxLayout(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(8)
+        lay = VB(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(8)
 
-        form = QGridLayout(); form.setHorizontalSpacing(10); form.setVerticalSpacing(6)
+        # Tastatore profili (sperimentale, disabilitato di default)
+        row_probe = HB()
+        chk_probe = QCheckBox("Abilita tastatore profili (sperimentale)")
+        chk_probe.setChecked(settings_get_bool("probe_profiles_enabled", False))
+        def on_probe_toggle(checked: bool):
+            settings_set_bool("probe_profiles_enabled", bool(checked))
+            QMessageBox.information(self, "Tastatore profili", ("Abilitato" if checked else "Disabilitato") + ".")
+        chk_probe.toggled.connect(on_probe_toggle)
+        row_probe.addWidget(chk_probe)
+        row_probe.addStretch(1)
+        lay.addLayout(row_probe)
 
-        # Stato attivo su contatto chiuso/aperto
-        form.addWidget(QLabel("Contatto attivo su:"), 0, 0)
-        self.cb_active_state = QComboBox()
-        self.cb_active_state.addItems(["chiuso", "aperto"])
-        cur_state = "chiuso" if getattr(self.machine, "count_active_on_closed", True) else "aperto"
-        self.cb_active_state.setCurrentText(cur_state)
-        form.addWidget(self.cb_active_state, 0, 1)
-
-        # Inversione sensori
-        self.chk_invert_left = QCheckBox("Inverti sensore sinistro")
-        self.chk_invert_right = QCheckBox("Inverti sensore destro")
-        self.chk_invert_left.setChecked(bool(getattr(self.machine, "invert_left_switch", False)))
-        self.chk_invert_right.setChecked(bool(getattr(self.machine, "invert_right_switch", False)))
-        form.addWidget(self.chk_invert_left, 1, 0, 1, 2)
-        form.addWidget(self.chk_invert_right, 2, 0, 1, 2)
-
-        # Debounce e raggruppamento impulsi
-        form.addWidget(QLabel("Debounce impulso (ms):"), 3, 0)
-        self.spin_debounce = QSpinBox(); self.spin_debounce.setRange(0, 2000)
-        self.spin_debounce.setValue(int(getattr(self.machine, "cut_pulse_debounce_ms", 50)))
-        form.addWidget(self.spin_debounce, 3, 1)
-
-        form.addWidget(QLabel("Raggruppamento impulsi (ms):"), 4, 0)
-        self.spin_group = QSpinBox(); self.spin_group.setRange(0, 5000)
-        self.spin_group.setValue(int(getattr(self.machine, "cut_pulse_group_ms", 300)))
-        form.addWidget(self.spin_group, 4, 1)
-
-        lay.addLayout(form)
-
-        # Azioni
-        actions = QHBoxLayout()
-        btn_save = QPushButton("Salva parametri"); btn_save.clicked.connect(self._save_counter_settings)
-        actions.addWidget(btn_save); actions.addStretch(1)
-        lay.addLayout(actions)
-
-        # Diagnostica I/O
-        diag_box = QFrame()
-        diag_l = QGridLayout(diag_box); diag_l.setHorizontalSpacing(10); diag_l.setVerticalSpacing(6)
-        diag_l.addWidget(QLabel("Diagnostica I/O"), 0, 0, 1, 2, alignment=Qt.AlignLeft)
-
-        diag_l.addWidget(QLabel("Sensore sinistro:"), 1, 0)
-        self.lbl_diag_left = QLabel("-"); diag_l.addWidget(self.lbl_diag_left, 1, 1)
-
-        diag_l.addWidget(QLabel("Sensore destro:"), 2, 0)
-        self.lbl_diag_right = QLabel("-"); diag_l.addWidget(self.lbl_diag_right, 2, 1)
-
-        lay.addWidget(diag_box); lay.addStretch(1)
+        lay.addStretch(1)
         return pg
 
     def _build_backup_tab(self):
@@ -125,45 +92,216 @@ class UtilityPage(QWidget):
         return pg
 
     def _build_dxf_tab(self):
+        """
+        Sezione profili:
+        - Import DXF con analisi bbox e salvataggio in DB (name/thickness + metadata opzionali).
+        - Archivio profili: elenco, modifica spessore, elimina.
+        - Tastatore profili: pulsante test visibile solo se abilitato in Configurazione.
+        """
+        from PySide6.QtWidgets import QVBoxLayout as VB, QHBoxLayout as HB, QGroupBox, QFormLayout
         pg = QFrame()
-        lay = QVBoxLayout(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(8)
-        lay.addWidget(QLabel("Importazione DXF"), 0, alignment=Qt.AlignLeft)
-        btn = QPushButton("Importa DXF…"); btn.clicked.connect(self._import_dxf)
-        lay.addWidget(btn, 0, alignment=Qt.AlignLeft)
-        lay.addStretch(1)
+        lay = VB(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(10)
+
+        # --- Import DXF ---
+        grp_import = QGroupBox("Importa profilo da DXF")
+        f = QFormLayout(grp_import); f.setLabelAlignment(Qt.AlignRight)
+        edit_path = QLineEdit(); edit_path.setPlaceholderText("Seleziona un file DXF…")
+        btn_browse = QPushButton("Sfoglia…")
+        def pick_file():
+            fn, _ = QFileDialog.getOpenFileName(self, "Seleziona DXF", "", "Disegni DXF (*.dxf);;Tutti i file (*)")
+            if fn:
+                edit_path.setText(fn)
+        btn_browse.clicked.connect(pick_file)
+
+        row1 = HB(); row1.addWidget(edit_path, 1); row1.addWidget(btn_browse)
+        f.addRow("File DXF:", row1)
+
+        edit_name = QLineEdit(); edit_name.setPlaceholderText("Nome profilo (es. Alluminio 50)")
+        f.addRow("Nome profilo:", edit_name)
+
+        edit_th = QLineEdit(); edit_th.setPlaceholderText("Spessore (mm) — opzionale")
+        f.addRow("Spessore (mm):", edit_th)
+
+        lbl_meta = QLabel("—"); lbl_meta.setWordWrap(True)
+        f.addRow("Analisi:", lbl_meta)
+
+        btn_analyze = QPushButton("Analizza DXF")
+        btn_save = QPushButton("Salva in archivio")
+        btn_save.setEnabled(False)
+
+        def analyze_now():
+            p = (edit_path.text() or "").strip()
+            if not p:
+                QMessageBox.warning(self, "DXF", "Seleziona un file DXF.")
+                return
+            try:
+                info = analyze_dxf(p)
+                # aggiorna UI
+                if not (edit_name.text() or "").strip():
+                    edit_name.setText(info.get("name_suggestion", ""))
+                lbl_meta.setText(f"Entità: {info['entities']} | BBox: {info['bbox_w']:.1f} x {info['bbox_h']:.1f} mm")
+                # abilita salvataggio
+                btn_save.setEnabled(True)
+                # stash info in widget
+                btn_save._last_info = info  # type: ignore
+            except ImportError as e:
+                QMessageBox.warning(self, "DXF", str(e))
+            except Exception as e:
+                QMessageBox.warning(self, "DXF", f"Errore analisi: {e!s}")
+
+        def save_now():
+            name = (edit_name.text() or "").strip()
+            if not name:
+                QMessageBox.warning(self, "Profili", "Inserisci un nome profilo.")
+                return
+            try:
+                th = float((edit_th.text() or "0").replace(",", "."))
+            except Exception:
+                th = 0.0
+            info = getattr(btn_save, "_last_info", None)
+            try:
+                # salva spessore
+                self.profiles.upsert_profile(name, th)
+                # salva metadata shape (opzionale)
+                if info:
+                    self.profiles.upsert_profile_shape(
+                        name=name,
+                        dxf_path=info.get("path"),
+                        bbox_w=info.get("bbox_w"),
+                        bbox_h=info.get("bbox_h"),
+                        meta=info
+                    )
+                QMessageBox.information(self, "Profili", f"Profilo '{name}' salvato.")
+                self._refresh_profiles_list()
+            except Exception as e:
+                QMessageBox.warning(self, "Profili", f"Errore salvataggio: {e!s}")
+
+        btn_analyze.clicked.connect(analyze_now)
+        btn_save.clicked.connect(save_now)
+
+        row_btns = HB(); row_btns.addStretch(1); row_btns.addWidget(btn_analyze); row_btns.addWidget(btn_save)
+        lay.addWidget(grp_import)
+        lay.addLayout(row_btns)
+
+        # --- Archivio profili ---
+        grp_arch = QGroupBox("Archivio profili")
+        arch_l = QHBoxLayout(grp_arch)
+        self.lst_profiles = QListWidget()
+        self.lst_profiles.setMinimumSize(QSize(240, 220))
+        arch_l.addWidget(self.lst_profiles, 1)
+
+        edit_box = QFrame(); eb_l = QFormLayout(edit_box)
+        self.edit_prof_name = QLineEdit(); self.edit_prof_name.setReadOnly(True)
+        self.edit_prof_th = QLineEdit()
+        eb_l.addRow("Nome:", self.edit_prof_name)
+        eb_l.addRow("Spessore (mm):", self.edit_prof_th)
+
+        btns_box = QHBoxLayout()
+        btn_update = QPushButton("Aggiorna spessore")
+        btn_delete = QPushButton("Elimina profilo")
+        btns_box.addWidget(btn_delete); btns_box.addStretch(1); btns_box.addWidget(btn_update)
+        eb_l.addRow(btns_box)
+        arch_l.addWidget(edit_box, 0)
+
+        def on_select():
+            it = self.lst_profiles.currentItem()
+            if not it: return
+            name = it.text()
+            rec = self.profiles.get_profile(name)
+            if not rec: return
+            self.edit_prof_name.setText(rec["name"])
+            self.edit_prof_th.setText(str(rec["thickness"]))
+        self.lst_profiles.currentItemChanged.connect(lambda cur, prev: on_select())
+
+        def do_update():
+            name = (self.edit_prof_name.text() or "").strip()
+            if not name:
+                return
+            try:
+                th = float((self.edit_prof_th.text() or "0").replace(",", "."))
+            except Exception:
+                QMessageBox.warning(self, "Profili", "Spessore non valido.")
+                return
+            try:
+                self.profiles.upsert_profile(name, th)
+                QMessageBox.information(self, "Profili", "Spessore aggiornato.")
+                self._refresh_profiles_list(select=name)
+            except Exception as e:
+                QMessageBox.warning(self, "Profili", f"Errore aggiornamento: {e!s}")
+
+        def do_delete():
+            it = self.lst_profiles.currentItem()
+            if not it: return
+            name = it.text()
+            if QMessageBox.question(self, "Conferma", f"Eliminare il profilo '{name}'?") != QMessageBox.Yes:
+                return
+            try:
+                if self.profiles.delete_profile(name):
+                    self._refresh_profiles_list()
+                    self.edit_prof_name.setText("")
+                    self.edit_prof_th.setText("")
+                    QMessageBox.information(self, "Profili", "Profilo eliminato.")
+            except Exception as e:
+                QMessageBox.warning(self, "Profili", f"Errore eliminazione: {e!s}")
+
+        btn_update.clicked.connect(do_update)
+        btn_delete.clicked.connect(do_delete)
+
+        lay.addWidget(grp_arch)
+
+        # --- Tastatore profili (sperimentale) ---
+        grp_probe = QGroupBox("Tastatore profili (test)")
+        grp_probe.setVisible(settings_get_bool("probe_profiles_enabled", False))
+        pr_l = QHBoxLayout(grp_probe)
+        btn_probe = QPushButton("Misura spessore (test)")
+        lbl_probe = QLabel("—")
+        pr_l.addWidget(btn_probe); pr_l.addWidget(lbl_probe, 1, alignment=Qt.AlignLeft)
+
+        def do_probe():
+            if self.probe.is_busy():
+                QMessageBox.information(self, "Tastatore", "Misura in corso…")
+                return
+            btn_probe.setEnabled(False); lbl_probe.setText("Misuro…")
+            def done(ok: bool, value: float | None, msg: str):
+                btn_probe.setEnabled(True)
+                if ok and value is not None:
+                    lbl_probe.setText(f"Spessore: {value:.1f} mm")
+                    # opzionale: applica al campo spessore se selezionato un profilo
+                    cur = self.lst_profiles.currentItem() if self.lst_profiles else None
+                    if cur and self.edit_prof_name:
+                        self.edit_prof_th.setText(f"{value:.1f}")
+                else:
+                    lbl_probe.setText(f"Errore: {msg}")
+            self.probe.measure_thickness_async(done_cb=done)
+
+        btn_probe.clicked.connect(do_probe)
+        lay.addWidget(grp_probe)
+
+        # popolamento iniziale
+        self._refresh_profiles_list()
+
         return pg
 
+    def _refresh_profiles_list(self, select: str | None = None):
+        if not self.lst_profiles:
+            return
+        self.lst_profiles.clear()
+        try:
+            rows = self.profiles.list_profiles()
+            for r in rows:
+                self.lst_profiles.addItem(QListWidgetItem(str(r["name"])))
+            # seleziona
+            if select:
+                items = self.lst_profiles.findItems(select, Qt.MatchExactly)
+                if items:
+                    self.lst_profiles.setCurrentItem(items[0])
+        except Exception:
+            pass
+
     def _build_theme_tab(self):
+        # (rimane come da tua versione precedente — palette e icone tema)
         pg = QFrame()
-        lay = QVBoxLayout(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(8)
-
-        # Preset temi (Light, Dark, Classic + salvati)
-        preset_row = QHBoxLayout()
-        preset_row.addWidget(QLabel("Tema:"))
-        self.cb_theme_presets = QComboBox()
-        # Carica elenco da theme_store (combina preset + salvati)
-        themes = read_themes()
-        names = list(themes.keys())
-        if "Light" not in names: names.insert(0, "Light")
-        if "Dark" not in names: names.insert(0, "Dark")
-        if "Classic" not in names: names.insert(0, "Classic")
-        # Rimuovi duplicati mantenendo ordine
-        seen = set(); ordered = []
-        for n in names:
-            if n not in seen:
-                seen.add(n); ordered.append(n)
-        self.cb_theme_presets.addItems(ordered)
-        # Seleziona tema corrente
-        cur = get_current_theme_name() or "Dark"
-        if cur in ordered:
-            self.cb_theme_presets.setCurrentText(cur)
-        preset_row.addWidget(self.cb_theme_presets)
-        btn_set_active = QPushButton("Imposta attivo")
-        btn_set_active.clicked.connect(self._set_active_theme)
-        preset_row.addWidget(btn_set_active); preset_row.addStretch(1)
-        lay.addLayout(preset_row)
-
-        # Palette colori
+        lay = QVBoxLayout(pg)
         pal_box = QFrame()
         pal_l = QVBoxLayout(pal_box)
         pal_l.addWidget(QLabel("Palette Tema"))
@@ -177,111 +315,38 @@ class UtilityPage(QWidget):
             ("OUTLINE", "Bordo1"), ("OUTLINE_SOFT", "Bordo2"),
             ("HEADER_BG", "Header BG"), ("HEADER_FG", "Header FG"),
         ]
-        # Precompila con il tema attivo
-        active = get_active_theme(); pal_active = (active.get("palette") if isinstance(active, dict) else {}) or {}
         for i, (key, lbl) in enumerate(fields):
             grid.addWidget(QLabel(lbl), i, 0)
             default_value = getattr(THEME, "SURFACE_BG")
-            value = str(pal_active.get(key, getattr(THEME, key, default_value)))
+            value = str(getattr(THEME, key, default_value))
             edit = QLineEdit(value); edit.setFixedWidth(120)
             btn = QPushButton("Scegli…"); btn.setFixedWidth(90)
-
             def picker(k=key, e=edit):
                 col = QColorDialog.getColor()
                 if col.isValid():
                     e.setText(col.name())
-
             btn.clicked.connect(picker)
             grid.addWidget(edit, i, 1); grid.addWidget(btn, i, 2)
             self.color_vars[key] = edit
-
-        pal_l.addLayout(grid)
 
         actions = QHBoxLayout()
         btn_apply = QPushButton("Applica ora"); btn_apply.clicked.connect(self._apply_theme_now)
         btn_save = QPushButton("Salva combinazione"); btn_save.clicked.connect(self._save_theme_combo)
         actions.addWidget(btn_apply); actions.addWidget(btn_save); actions.addStretch(1)
-        pal_l.addLayout(actions)
-        lay.addWidget(pal_box)
-
-        # Icone per i pulsanti Home
-        icon_box = QFrame()
-        icon_l = QVBoxLayout(icon_box)
-        icon_l.addWidget(QLabel("Icone Menu Home (percorso file)"))
-        grid_i = QGridLayout()
-        icons_active = (active.get("icons") if isinstance(active, dict) else {}) or {}
-        for i, (key, label) in enumerate(MENU_KEYS):
-            grid_i.addWidget(QLabel(label), i, 0)
-            edit = QLineEdit(str(icons_active.get(key, ""))); edit.setFixedWidth(260)
-            btn = QPushButton("Sfoglia…"); btn.setFixedWidth(90)
-
-            def pick_file(e=edit):
-                fn, _ = QFileDialog.getOpenFileName(self, "Seleziona icona", "", "Immagini (*.png *.jpg *.jpeg *.bmp *.ico);;Tutti i file (*)")
-                if fn:
-                    e.setText(fn)
-
-            btn.clicked.connect(pick_file)
-            grid_i.addWidget(edit, i, 1); grid_i.addWidget(btn, i, 2)
-            self.icon_vars[key] = edit
-        lay.addWidget(icon_box)
-        lay.addStretch(1)
-
+        pal_l.addLayout(grid); pal_l.addLayout(actions)
+        lay.addWidget(pal_box); lay.addStretch(1)
         return pg
 
     def _apply_theme_now(self):
         pal = {k: e.text().strip() for k, e in self.color_vars.items()}
-        # Aggiorna THEME e riapplica stylesheet
         set_palette_from_dict(pal)
         apply_global_stylesheet(QApplication.instance())
         QMessageBox.information(self, "Tema", "Tema applicato (live).")
 
     def _save_theme_combo(self):
         pal = {k: e.text().strip() for k, e in self.color_vars.items()}
-        icons = {k: e.text().strip() for k, e in self.icon_vars.items()} if self.icon_vars else {}
-        name = self.cb_theme_presets.currentText().strip() or "Custom"
-        save_theme_combo(name, pal, icons)
-        set_current_theme_name(name)
-        QMessageBox.information(self, "Tema", f"Combinazione '{name}' salvata e impostata attiva.")
-
-    def _set_active_theme(self):
-        name = self.cb_theme_presets.currentText().strip()
-        if not name:
-            QMessageBox.warning(self, "Tema", "Seleziona un tema.")
-            return
-        set_current_theme_name(name)
-        # Applica palette del tema selezionato
-        active = get_active_theme(); pal = (active.get("palette") if isinstance(active, dict) else {}) or {}
-        if pal:
-            set_palette_from_dict(pal)
-            apply_global_stylesheet(QApplication.instance())
-        QMessageBox.information(self, "Tema", f"Tema '{name}' impostato come attivo.")
-
-    def _save_counter_settings(self):
-        try:
-            setattr(self.machine, "count_active_on_closed", self.cb_active_state.currentText().strip().lower() == "chiuso")
-            setattr(self.machine, "invert_left_switch", bool(self.chk_invert_left.isChecked()))
-            setattr(self.machine, "invert_right_switch", bool(self.chk_invert_right.isChecked()))
-            setattr(self.machine, "cut_pulse_debounce_ms", int(self.spin_debounce.value()))
-            setattr(self.machine, "cut_pulse_group_ms", int(self.spin_group.value()))
-            QMessageBox.information(self, "Configurazione", "Parametri salvati.")
-        except Exception as e:
-            QMessageBox.warning(self, "Configurazione", f"Errore salvataggio: {e!s}")
-
-    def _do_backup(self): QMessageBox.information(self, "Backup", "Funzione backup: da collegare al backend come in Tk.")
-    def _do_restore(self): QMessageBox.information(self, "Ripristino", "Funzione ripristino: da collegare al backend come in Tk.")
-    def _import_dxf(self): QMessageBox.information(self, "DXF Import", "Import DXF: da collegare al backend come in Tk.")
-
-    def _tick_diag(self):
-        # Aggiornamento diagnostica I/O: tenta nomi comuni; fallback '-'
-        m = self.machine
-        left = None; right = None
-        for name in ("left_switch_active", "left_sensor_active", "conta_left_active"):
-            if hasattr(m, name): left = getattr(m, name, None); break
-        for name in ("right_switch_active", "right_sensor_active", "conta_right_active"):
-            if hasattr(m, name): right = getattr(m, name, None); break
-        self.lbl_diag_left.setText("ATTIVO" if left else "—" if left is not None else "-")
-        self.lbl_diag_right.setText("ATTIVO" if right else "—" if right is not None else "-")
-        self.status.refresh()
+        save_theme_combo("Custom", pal, {})
+        QMessageBox.information(self, "Tema", "Combinazione salvata come 'Custom' in data/themes.json.")
 
     # --- Polling diagnostica/StatusPanel ---
     def on_show(self):
@@ -296,3 +361,9 @@ class UtilityPage(QWidget):
             except Exception: pass
             self._diag_timer = None
         super().hideEvent(ev)
+
+    def _tick_diag(self):
+        try:
+            self.status.refresh()
+        except Exception:
+            pass
