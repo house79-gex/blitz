@@ -10,11 +10,10 @@ from PySide6.QtWidgets import QWidget
 class SectionPreviewWidget(QWidget):
     """
     Anteprima 2D semplificata di una sezione DXF:
-    - Rendering robusto di LINE, LWPOLYLINE (con bulge via virtual_entities), POLYLINE, ARC, CIRCLE, ELLIPSE, SPLINE, HATCH (boundary).
+    - Rendering robusto di LINE, LWPOLYLINE (con bulge via virtual_entities), POLYLINE, ARC, CIRCLE, ELLIPSE, SPLINE, HATCH (boundary) e INSERT.
     - Fit automatico alla finestra.
     - Rotazione vista (deg) attorno al centro dei bounds.
-    - Allineamento verticale al segmento più lungo (utile quando la sezione non è perfettamente ortogonale).
-    - Colori: sfondo bianco, linee nere (come richiesto).
+    - Colori: sfondo bianco, linee nere.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,7 +37,7 @@ class SectionPreviewWidget(QWidget):
     def load_dxf(self, path: str):
         """
         Carica e converte le entità DXF in segmenti 2D.
-        Usa virtual_entities/flattening per coprire archi/bulge/spline/ellipse senza inversioni.
+        Usa virtual_entities/flattening per coprire archi/bulge/spline/ellipse/insert senza inversioni.
         """
         p = Path(path)
         if not p.exists():
@@ -77,32 +76,29 @@ class SectionPreviewWidget(QWidget):
                 b = pts[i + 1]
                 add_seg(a[0], a[1], b[0], b[1])
 
-        def add_virtual_entities(entity):
-            # Converte entità complesse (polilinee con bulge, hatch path, ecc.) in primitive
+        def add_entity_generic(e):
             try:
-                for sub in entity.virtual_entities():
+                if hasattr(e, "flattening"):
+                    pts = list(e.flattening(distance=0.6))
+                    add_poly_pts(pts)
+                elif hasattr(e, "approximate"):
+                    pts = list(e.approximate(180))
+                    add_poly_pts(pts)
+            except Exception:
+                pass
+
+        def add_virtual_entities(e):
+            try:
+                for sub in e.virtual_entities():
                     dxft = sub.dxftype()
                     if dxft == "LINE":
                         add_seg(sub.dxf.start.x, sub.dxf.start.y, sub.dxf.end.x, sub.dxf.end.y)
-                    elif dxft in ("ARC", "CIRCLE"):
-                        try:
-                            pts = list(sub.flattening(distance=0.6))
-                            if dxft == "CIRCLE" and pts:
-                                pts.append(pts[0])  # chiudi il cerchio
-                            add_poly_pts(pts)
-                        except Exception:
-                            pass
+                    elif dxft in ("ARC", "CIRCLE", "ELLIPSE"):
+                        add_entity_generic(sub)
+                    elif dxft in ("LWPOLYLINE", "POLYLINE", "SPLINE"):
+                        add_entity_generic(sub)
                     else:
-                        # fallback generico
-                        try:
-                            if hasattr(sub, "flattening"):
-                                pts = list(sub.flattening(distance=0.6))
-                                add_poly_pts(pts)
-                            elif hasattr(sub, "approximate"):
-                                pts = list(sub.approximate(180))
-                                add_poly_pts(pts)
-                        except Exception:
-                            pass
+                        add_entity_generic(sub)
             except Exception:
                 pass
 
@@ -113,7 +109,7 @@ class SectionPreviewWidget(QWidget):
             except Exception:
                 pass
 
-        # LWPOLYLINE / POLYLINE: usa virtual_entities per includere bulge/archi
+        # LWPOLYLINE / POLYLINE via virtual_entities (bulge)
         for e in msp.query("LWPOLYLINE"):
             add_virtual_entities(e)
         for e in msp.query("POLYLINE"):
@@ -121,11 +117,7 @@ class SectionPreviewWidget(QWidget):
 
         # ARC / CIRCLE
         for e in msp.query("ARC"):
-            try:
-                pts = list(e.flattening(distance=0.6))
-                add_poly_pts(pts)
-            except Exception:
-                pass
+            add_entity_generic(e)
         for e in msp.query("CIRCLE"):
             try:
                 pts = list(e.flattening(distance=0.6))
@@ -135,23 +127,13 @@ class SectionPreviewWidget(QWidget):
             except Exception:
                 pass
 
-        # ELLIPSE
+        # ELLIPSE / SPLINE
         for e in msp.query("ELLIPSE"):
-            try:
-                pts = list(e.flattening(distance=0.6))
-                add_poly_pts(pts)
-            except Exception:
-                pass
-
-        # SPLINE
+            add_entity_generic(e)
         for e in msp.query("SPLINE"):
-            try:
-                pts = list(e.approximate(200))
-                add_poly_pts(pts)
-            except Exception:
-                pass
+            add_entity_generic(e)
 
-        # HATCH -> boundary path edges
+        # HATCH boundary
         for h in msp.query("HATCH"):
             try:
                 for path in h.paths:
@@ -167,16 +149,19 @@ class SectionPreviewWidget(QWidget):
                                 pts = list(edge.flattening(distance=0.6))
                                 add_poly_pts(pts)
                             elif et == "SplineEdge":
-                                pts = list(edge.approximate(200))
+                                pts = list(edge.approximate(180))
                                 add_poly_pts(pts)
                         except Exception:
                             pass
             except Exception:
                 pass
 
+        # INSERT (blocchi)
+        for ins in msp.query("INSERT"):
+            add_virtual_entities(ins)
+
         self._segments = segs
         self._bounds = bounds
-        # Non forziamo rotazione; lasciamo neutra, l'utente può ruotare/ allineare
         self.update()
 
     def set_rotation(self, deg: float):
@@ -186,33 +171,6 @@ class SectionPreviewWidget(QWidget):
     def rotate_by(self, deg: float):
         self._rotation_deg = (self._rotation_deg + float(deg)) % 360.0
         self.update()
-
-    def align_vertical_longest(self):
-        """
-        Ruota la vista per portare verticale (Y-up) il segmento più lungo rilevato.
-        Utile per raddrizzare sezioni leggermente inclinate.
-        """
-        if not self._segments:
-            return
-        # trova il segmento più lungo
-        best_i = -1
-        best_len2 = -1.0
-        for i, (a, b) in enumerate(self._segments):
-            dx = b.x() - a.x()
-            dy = b.y() - a.y()
-            l2 = dx * dx + dy * dy
-            if l2 > best_len2:
-                best_len2 = l2
-                best_i = i
-        if best_i < 0:
-            return
-        a, b = self._segments[best_i]
-        dx = b.x() - a.x()
-        dy = b.y() - a.y()
-        # angolo tra (dx,dy) e asse Y: atan2(dx, dy)
-        import math
-        angle = math.degrees(math.atan2(dx, dy))
-        self.set_rotation(angle)
 
     # ---------------- Rendering helpers ----------------
     def sizeHint(self) -> QSize:
@@ -237,7 +195,6 @@ class SectionPreviewWidget(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
 
         if not self._segments or not self._bounds:
-            # niente da disegnare
             return
 
         # Fit-to-box
