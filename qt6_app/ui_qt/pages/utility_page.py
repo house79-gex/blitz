@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QComboBox, QSpinBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QTabWidget, QLineEdit, QColorDialog, QMessageBox, QGridLayout, QCheckBox, QFileDialog,
     QListWidget, QListWidgetItem, QGroupBox, QFormLayout
 )
@@ -9,7 +9,7 @@ from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.theme import THEME, set_palette_from_dict, apply_global_stylesheet
 
-# Import “tollerante” del theme_store (se manca, fallback no-op)
+# theme_store tollerante
 try:
     from ui_qt.utils.theme_store import save_theme_combo, read_themes
 except Exception:
@@ -18,14 +18,14 @@ except Exception:
     def read_themes():
         return {}
 
-# Impostazioni app (flag per tastatore profili)
+# app settings (flag tastatore)
 try:
     from ui_qt.utils.app_settings import get_bool as settings_get_bool, set_bool as settings_set_bool
 except Exception:
     def settings_get_bool(key: str, default: bool = False) -> bool: return default
     def settings_set_bool(key: str, value: bool): pass
 
-# Servizi profili / DXF / tastatore (tolleranti)
+# servizi profili / dxf / tastatore
 try:
     from ui_qt.services.profiles_store import ProfilesStore
 except Exception:
@@ -41,16 +41,27 @@ try:
 except Exception:
     ProbeService = None
 
-# Dialog CAD misura (opzionale)
+# CAD misura (opzionale)
 try:
     from ui_qt.dialogs.dxf_measure_dialog import DxfMeasureDialog
 except Exception:
     DxfMeasureDialog = None
 
+# Popup anteprima sezione (opzionale)
+try:
+    from ui_qt.widgets.section_preview_popup import SectionPreviewPopup
+except Exception:
+    SectionPreviewPopup = None
+
 
 class UtilityPage(QWidget):
     """
-    Utility con StatusPanel e polling diagnostica.
+    Utility: configurazioni, backup, profili/DXF, tema + StatusPanel.
+    - Import DXF con analisi bbox (ezdxf) e salvataggio profilo (DB condiviso).
+    - Archivio profili con modifica spessore/eliminazione.
+    - CAD di misura (viewer DXF con snap e modalità perpendicolare) opzionale.
+    - Tastatore profili (simulato) opzionale, abilitabile da Configurazione.
+    - Anteprima sezione come popup quando scorri i profili.
     """
     def __init__(self, appwin):
         super().__init__()
@@ -69,6 +80,8 @@ class UtilityPage(QWidget):
         self.edit_prof_name: QLineEdit | None = None
         self.edit_prof_th: QLineEdit | None = None
 
+        self._section_popup = None  # popup anteprima per Utility
+
         self._build()
 
     def _build(self):
@@ -79,14 +92,10 @@ class UtilityPage(QWidget):
 
         # Tabs a sinistra
         tabs = QTabWidget(); body.addWidget(tabs, 3)
-        self._conf_tab = self._build_conf_tab()
-        self._backup_tab = self._build_backup_tab()
-        self._dxf_tab = self._build_dxf_tab()
-        self._theme_tab = self._build_theme_tab()
-        tabs.addTab(self._conf_tab, "Configurazione")
-        tabs.addTab(self._backup_tab, "Backup")
-        tabs.addTab(self._dxf_tab, "Profili / DXF")
-        tabs.addTab(self._theme_tab, "Tema")
+        tabs.addTab(self._build_conf_tab(), "Configurazione")
+        tabs.addTab(self._build_backup_tab(), "Backup")
+        tabs.addTab(self._build_dxf_tab(), "Profili / DXF")
+        tabs.addTab(self._build_theme_tab(), "Tema")
 
         # Stato a destra
         side = QFrame(); body.addWidget(side, 1)
@@ -94,6 +103,7 @@ class UtilityPage(QWidget):
         self.status = StatusPanel(machine_state=self.machine, title="STATO", parent=side)
         side_l.addWidget(self.status)
 
+    # --- Configurazione ---
     def _build_conf_tab(self):
         from PySide6.QtWidgets import QVBoxLayout as VB, QHBoxLayout as HB
         pg = QFrame()
@@ -114,6 +124,7 @@ class UtilityPage(QWidget):
         lay.addStretch(1)
         return pg
 
+    # --- Backup ---
     def _build_backup_tab(self):
         pg = QFrame()
         lay = QVBoxLayout(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(8)
@@ -126,13 +137,8 @@ class UtilityPage(QWidget):
         lay.addStretch(1)
         return pg
 
+    # --- Profili / DXF ---
     def _build_dxf_tab(self):
-        """
-        Profili:
-        - Import DXF con analisi bbox e salvataggio in DB (name/thickness + metadata opzionali).
-        - Archivio profili: elenco, modifica spessore, elimina.
-        - Tastatore: pulsante test visibile solo se abilitato in Configurazione.
-        """
         pg = QFrame()
         lay = QVBoxLayout(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(10)
 
@@ -169,7 +175,7 @@ class UtilityPage(QWidget):
                 QMessageBox.warning(self, "DXF", "Seleziona un file DXF.")
                 return
             if analyze_dxf is None:
-                QMessageBox.warning(self, "DXF", "Analizzatore DXF non disponibile. Installa 'ezdxf' e verifica i moduli.")
+                QMessageBox.warning(self, "DXF", "Analizzatore DXF non disponibile. Installa 'ezdxf'.")
                 return
             try:
                 info = analyze_dxf(p)
@@ -178,8 +184,6 @@ class UtilityPage(QWidget):
                 lbl_meta.setText(f"Entità: {info['entities']} | BBox: {info['bbox_w']:.1f} x {info['bbox_h']:.1f} mm")
                 btn_save.setEnabled(True)
                 btn_save._last_info = info  # type: ignore
-            except ImportError as e:
-                QMessageBox.warning(self, "DXF", str(e))
             except Exception as e:
                 QMessageBox.warning(self, "DXF", f"Errore analisi: {e!s}")
 
@@ -245,7 +249,7 @@ class UtilityPage(QWidget):
         grp_arch = QGroupBox("Archivio profili")
         arch_l = QHBoxLayout(grp_arch)
         self.lst_profiles = QListWidget()
-        self.lst_profiles.setMinimumSize(QSize(240, 220))
+        self.lst_profiles.setMinimumSize(QSize(240, 260))
         arch_l.addWidget(self.lst_profiles, 1)
 
         edit_box = QFrame(); eb_l = QFormLayout(edit_box)
@@ -262,18 +266,37 @@ class UtilityPage(QWidget):
         arch_l.addWidget(edit_box, 0)
 
         def on_select():
-            if not self.profiles: return
+            if not self.profiles:
+                return
             it = self.lst_profiles.currentItem()
-            if not it: return
+            if not it:
+                return
             name = it.text()
             rec = self.profiles.get_profile(name)
-            if not rec: return
+            if not rec:
+                return
             self.edit_prof_name.setText(rec["name"])
             self.edit_prof_th.setText(str(rec["thickness"]))
+            # popup anteprima sezione DXF
+            try:
+                if SectionPreviewPopup:
+                    shape = self.profiles.get_profile_shape(name)
+                    if shape and shape.get("dxf_path"):
+                        if self._section_popup is None:
+                            self._section_popup = SectionPreviewPopup(self.appwin, "Sezione profilo")
+                        self._section_popup.load_path(shape["dxf_path"])
+                        self._section_popup.show_top_right_of(self.window())
+                    else:
+                        if self._section_popup:
+                            self._section_popup.close(); self._section_popup = None
+            except Exception:
+                pass
+
         self.lst_profiles.currentItemChanged.connect(lambda cur, prev: on_select())
 
         def do_update():
-            if not self.profiles: return
+            if not self.profiles:
+                return
             name = (self.edit_prof_name.text() or "").strip()
             if not name:
                 return
@@ -290,9 +313,11 @@ class UtilityPage(QWidget):
                 QMessageBox.warning(self, "Profili", f"Errore aggiornamento: {e!s}")
 
         def do_delete():
-            if not self.profiles: return
+            if not self.profiles:
+                return
             it = self.lst_profiles.currentItem()
-            if not it: return
+            if not it:
+                return
             name = it.text()
             if QMessageBox.question(self, "Conferma", f"Eliminare il profilo '{name}'?") != QMessageBox.Yes:
                 return
@@ -301,6 +326,8 @@ class UtilityPage(QWidget):
                     self._refresh_profiles_list()
                     self.edit_prof_name.setText("")
                     self.edit_prof_th.setText("")
+                    if self._section_popup:
+                        self._section_popup.close(); self._section_popup = None
                     QMessageBox.information(self, "Profili", "Profilo eliminato.")
             except Exception as e:
                 QMessageBox.warning(self, "Profili", f"Errore eliminazione: {e!s}")
@@ -361,6 +388,7 @@ class UtilityPage(QWidget):
         except Exception:
             pass
 
+    # --- Tema ---
     def _build_theme_tab(self):
         pg = QFrame()
         lay = QVBoxLayout(pg)
@@ -419,9 +447,18 @@ class UtilityPage(QWidget):
 
     def hideEvent(self, ev):
         if self._diag_timer is not None:
-            try: self._diag_timer.stop()
-            except Exception: pass
+            try:
+                self._diag_timer.stop()
+            except Exception:
+                pass
             self._diag_timer = None
+        # chiudi eventuale popup anteprima quando lasci Utility
+        try:
+            if self._section_popup:
+                self._section_popup.close()
+                self._section_popup = None
+        except Exception:
+            pass
         super().hideEvent(ev)
 
     def _tick_diag(self):
@@ -430,5 +467,8 @@ class UtilityPage(QWidget):
         except Exception:
             pass
 
-    def _do_backup(self): QMessageBox.information(self, "Backup", "Funzione backup: da collegare al backend.")
-    def _do_restore(self): QMessageBox.information(self, "Ripristino", "Funzione ripristino: da collegare al backend.")
+    def _do_backup(self):
+        QMessageBox.information(self, "Backup", "Funzione backup: da collegare al backend.")
+
+    def _do_restore(self):
+        QMessageBox.information(self, "Ripristino", "Funzione ripristino: da collegare al backend.")
