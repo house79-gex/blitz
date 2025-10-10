@@ -172,6 +172,33 @@ class SectionPreviewWidget(QWidget):
         self._rotation_deg = (self._rotation_deg + float(deg)) % 360.0
         self.update()
 
+    def align_vertical_longest(self):
+        """
+        Ruota la vista per portare verticale (Y-up) il segmento più lungo rilevato.
+        Utile per raddrizzare sezioni leggermente inclinate.
+        """
+        if not self._segments:
+            return
+        # trova il segmento più lungo
+        best_i = -1
+        best_len2 = -1.0
+        for i, (a, b) in enumerate(self._segments):
+            dx = b.x() - a.x()
+            dy = b.y() - a.y()
+            l2 = dx * dx + dy * dy
+            if l2 > best_len2:
+                best_len2 = l2
+                best_i = i
+        if best_i < 0:
+            return
+        a, b = self._segments[best_i]
+        dx = b.x() - a.x()
+        dy = b.y() - a.y()
+        # angolo tra (dx,dy) e asse Y: atan2(dx, dy)
+        import math
+        angle = math.degrees(math.atan2(dx, dy))
+        self.set_rotation(angle)
+
     # ---------------- Rendering helpers ----------------
     def sizeHint(self) -> QSize:
         return QSize(420, 300)
