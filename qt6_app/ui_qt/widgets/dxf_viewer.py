@@ -29,18 +29,17 @@ def _dist_point_to_segment(px: float, py: float, ax: float, ay: float, bx: float
 
 class DxfViewerWidget(QWidget):
     """
-    Viewer DXF semplificato per sezioni profilo:
-    - Rendering robusto: LINE, LWPOLYLINE (bulge via virtual_entities), POLYLINE, ARC, CIRCLE, ELLIPSE, SPLINE,
-      HATCH (boundary) e INSERT (blocchi) via virtual_entities, con flatten/approx accurato.
-    - Conversione OCS→WCS per curve/archi/hatch/spline: niente elementi mancanti su piani inclinati.
-    - Pan (tasto centrale), Zoom (rotellina) centrato sul mouse.
+    Viewer DXF per sezioni profilo:
+    - Import robusto (OCS→WCS) di LINE, LWPOLYLINE (bulge via virtual_entities), POLYLINE, ARC, CIRCLE, ELLIPSE,
+      SPLINE, HATCH (boundary) e INSERT (blocchi) con flatten/approx accurato.
+    - Pan (tasto centrale), zoom sul mouse (rotellina).
     - Misura:
-        - Distanza: 2 click; anteprima live tra primo click e cursore. Shift = vincolo ortogonale (orizz/vert).
-        - Perpendicolare (P): 1° click seleziona il lato (segmento), 2° click il punto; anteprima live.
-    - Snap: solo marker sotto il mouse (endpoint/midpoint del segmento più vicino).
-    - Testo quota (mm) sul disegno.
-    - Rotazione (R/E ±5°), allineamento verticale (A: usa il segmento sotto il mouse).
-    - Tasto destro: reset misurazione corrente.
+        - Distanza: 2 click; anteprima live tra primo click e cursore. Shift = vincolo ortogonale.
+        - Perpendicolare (P): 1° click seleziona segmento base, 2° click definisce punto; anteprima live.
+    - Snap: solo marker (endpoint/midpoint del segmento più vicino) sotto il mouse.
+    - Quota (mm) disegnata vicino alla misura.
+    - Rotazione (R/E ±5°), allineamento verticale (A: sul segmento sotto il mouse).
+    - Tasto destro: reset misura corrente.
     """
     measurementChanged = Signal(float)  # mm
 
@@ -49,7 +48,7 @@ class DxfViewerWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Geometria in world (coordinate DXF, WCS)
+        # Geometria world (WCS)
         self._segments: List[Tuple[QPointF, QPointF]] = []
         self._bounds: Optional[QRectF] = None
 
@@ -107,7 +106,8 @@ class DxfViewerWidget(QWidget):
         dx = b.x() - a.x()
         dy = b.y() - a.y()
         import math
-        angle = math.degrees(math.atan2(dx, dy))  # rende il segmento verticale in vista
+        # Per avere il segmento verticale in vista (asse Y), ruotiamo di atan2(dx, dy)
+        angle = math.degrees(math.atan2(dx, dy))
         self.set_rotation(angle)
 
     def last_measure_mm(self) -> float:
@@ -115,9 +115,9 @@ class DxfViewerWidget(QWidget):
 
     def load_dxf(self, path: str):
         """
-        Carica il DXF e produce una lista di segmenti world (WCS).
-        Gestisce anche i blocchi (INSERT) espandendoli in primitive via virtual_entities.
-        Applica conversione OCS→WCS a tutti i flatten/approx.
+        Carica DXF e produce una lista di segmenti world (WCS).
+        Gestisce blocchi (INSERT) via virtual_entities.
+        Converte OCS→WCS per tutte le coordinate flatten/approx per evitare elementi mancanti/specchiati.
         """
         p = Path(path)
         if not p.exists():
@@ -143,10 +143,9 @@ class DxfViewerWidget(QWidget):
             bounds = r if bounds is None else bounds.united(r)
 
         def to_wcs_pts(entity, pts: Iterable):
-            # Converte una lista di (x,y[,z]) dall'OCS dell'entità al WCS.
-            # elevation per entità 2D in OCS
+            # Converte (x,y[,z]) dall'OCS dell'entità al WCS
             try:
-                extr = entity.dxf.extrusion  # Vec3-like
+                extr = entity.dxf.extrusion
             except Exception:
                 extr = (0, 0, 1)
             ocs = OCS(extr)
@@ -165,7 +164,7 @@ class DxfViewerWidget(QWidget):
                     continue
             return out
 
-        def add_poly_from_pts_wcs(pts_wcs: List):
+        def add_poly_from_pts_wcs(pts_wcs: List[Vec3]):
             if len(pts_wcs) < 2:
                 return
             for i in range(len(pts_wcs) - 1):
@@ -173,14 +172,13 @@ class DxfViewerWidget(QWidget):
 
         def flatten_entity(entity):
             # Tenta flatten/approx e converte OCS->WCS
-            pts_wcs: List = []
+            pts_wcs: List[Vec3] = []
             try:
                 if hasattr(entity, "flattening"):
                     pts = list(entity.flattening(distance=0.25))
                     pts_wcs = to_wcs_pts(entity, pts)
                 elif hasattr(entity, "approximate"):
                     pts = list(entity.approximate(240))
-                    # approximate spesso è già in WCS, ma normalizziamo comunque via OCS
                     pts_wcs = to_wcs_pts(entity, pts)
             except Exception:
                 pts_wcs = []
@@ -188,13 +186,12 @@ class DxfViewerWidget(QWidget):
                 add_poly_from_pts_wcs(pts_wcs)
 
         def add_virtual(entity):
-            # Espande virtual_entities e processa ricorsivamente
+            # Espande virtual_entities e processa sub-entità
             try:
                 for sub in entity.virtual_entities():
                     dxft = sub.dxftype()
                     if dxft == "LINE":
                         try:
-                            # LINE in WCS, ma gestiamo OCS per sicurezza
                             pts_w = to_wcs_pts(sub, [(sub.dxf.start.x, sub.dxf.start.y),
                                                      (sub.dxf.end.x, sub.dxf.end.y)])
                             if len(pts_w) >= 2:
@@ -216,7 +213,7 @@ class DxfViewerWidget(QWidget):
             except Exception:
                 pass
 
-        # LWPOLYLINE / POLYLINE via virtual_entities (copre bulge archi)
+        # LWPOLYLINE/POLYLINE via virtual_entities (copre bulge)
         for e in msp.query("LWPOLYLINE"):
             add_virtual(e)
         for e in msp.query("POLYLINE"):
