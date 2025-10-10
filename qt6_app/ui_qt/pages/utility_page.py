@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QLineEdit, QColorDialog, QMessageBox, QGridLayout, QCheckBox, QFileDialog,
     QListWidget, QListWidgetItem, QGroupBox, QFormLayout
 )
-from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtCore import Qt, QTimer, QSize, QPoint
 from PySide6.QtWidgets import QApplication
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
@@ -59,9 +59,9 @@ class UtilityPage(QWidget):
     Utility: configurazioni, backup, profili/DXF, tema + StatusPanel.
     - Import DXF con analisi bbox (ezdxf) e salvataggio profilo (DB condiviso).
     - Archivio profili con modifica spessore/eliminazione.
-    - CAD di misura (viewer DXF con snap e modalità perpendicolare) opzionale.
+    - CAD di misura (viewer DXF con snap hover e modalità perpendicolare).
     - Tastatore profili (simulato) opzionale, abilitabile da Configurazione.
-    - Anteprima sezione come popup quando scorri i profili.
+    - Anteprima sezione come popup: su selezione e anche in hover della lista profili.
     """
     def __init__(self, appwin):
         super().__init__()
@@ -211,7 +211,16 @@ class UtilityPage(QWidget):
                         meta=info
                     )
                 QMessageBox.information(self, "Profili", f"Profilo '{name}' salvato.")
-                self._refresh_profiles_list()
+                # refresh immediato in Utility
+                self._refresh_profiles_list(select=name)
+                # notifica Semi-Automatico (se presente) per aggiornare la combo
+                try:
+                    rec = getattr(self.appwin, "_pages", {}).get("semi")
+                    page = rec[2] if isinstance(rec, (list, tuple)) and len(rec) >= 3 else (rec[0] if isinstance(rec, (list, tuple)) and len(rec) >= 1 else None)
+                    if page and hasattr(page, "refresh_profiles_external"):
+                        page.refresh_profiles_external(select=name)
+                except Exception:
+                    pass
             except Exception as e:
                 QMessageBox.warning(self, "Profili", f"Errore salvataggio: {e!s}")
 
@@ -249,6 +258,7 @@ class UtilityPage(QWidget):
         grp_arch = QGroupBox("Archivio profili")
         arch_l = QHBoxLayout(grp_arch)
         self.lst_profiles = QListWidget()
+        self.lst_profiles.setMouseTracking(True)
         self.lst_profiles.setMinimumSize(QSize(240, 260))
         arch_l.addWidget(self.lst_profiles, 1)
 
@@ -265,6 +275,27 @@ class UtilityPage(QWidget):
         eb_l.addRow(btns_box)
         arch_l.addWidget(edit_box, 0)
 
+        def show_preview_for(name: str):
+            if not (self.profiles and SectionPreviewPopup):
+                return
+            try:
+                shape = self.profiles.get_profile_shape(name)
+                if shape and shape.get("dxf_path"):
+                    if self._section_popup is None:
+                        self._section_popup = SectionPreviewPopup(self.appwin, "Sezione profilo")
+                    self._section_popup.load_path(shape["dxf_path"])
+                    # posiziona in alto a destra della finestra utility
+                    try:
+                        # usa il parent window
+                        self._section_popup.show_top_left_of(self.window())
+                    except Exception:
+                        self._section_popup.show()
+                else:
+                    if self._section_popup:
+                        self._section_popup.close(); self._section_popup = None
+            except Exception:
+                pass
+
         def on_select():
             if not self.profiles:
                 return
@@ -277,22 +308,21 @@ class UtilityPage(QWidget):
                 return
             self.edit_prof_name.setText(rec["name"])
             self.edit_prof_th.setText(str(rec["thickness"]))
-            # popup anteprima sezione DXF
-            try:
-                if SectionPreviewPopup:
-                    shape = self.profiles.get_profile_shape(name)
-                    if shape and shape.get("dxf_path"):
-                        if self._section_popup is None:
-                            self._section_popup = SectionPreviewPopup(self.appwin, "Sezione profilo")
-                        self._section_popup.load_path(shape["dxf_path"])
-                        self._section_popup.show_top_right_of(self.window())
-                    else:
-                        if self._section_popup:
-                            self._section_popup.close(); self._section_popup = None
-            except Exception:
-                pass
+            show_preview_for(name)
 
         self.lst_profiles.currentItemChanged.connect(lambda cur, prev: on_select())
+
+        # anteprima anche in hover (senza clic)
+        def on_mouse_move(event):
+            if not self.lst_profiles:
+                return
+            pos = event.pos()
+            item = self.lst_profiles.itemAt(pos)
+            if item:
+                show_preview_for(item.text())
+            QWidget.mouseMoveEvent(self.lst_profiles.viewport(), event)  # default
+        self.lst_profiles.viewport().setMouseTracking(True)
+        self.lst_profiles.viewport().mouseMoveEvent = on_mouse_move  # type: ignore
 
         def do_update():
             if not self.profiles:
@@ -309,6 +339,14 @@ class UtilityPage(QWidget):
                 self.profiles.upsert_profile(name, th)
                 QMessageBox.information(self, "Profili", "Spessore aggiornato.")
                 self._refresh_profiles_list(select=name)
+                # notifica Semi per refresh
+                try:
+                    rec = getattr(self.appwin, "_pages", {}).get("semi")
+                    page = rec[2] if isinstance(rec, (list, tuple)) and len(rec) >= 3 else (rec[0] if isinstance(rec, (list, tuple)) and len(rec) >= 1 else None)
+                    if page and hasattr(page, "refresh_profiles_external"):
+                        page.refresh_profiles_external(select=name)
+                except Exception:
+                    pass
             except Exception as e:
                 QMessageBox.warning(self, "Profili", f"Errore aggiornamento: {e!s}")
 
@@ -329,6 +367,14 @@ class UtilityPage(QWidget):
                     if self._section_popup:
                         self._section_popup.close(); self._section_popup = None
                     QMessageBox.information(self, "Profili", "Profilo eliminato.")
+                # notifica Semi per refresh
+                try:
+                    rec = getattr(self.appwin, "_pages", {}).get("semi")
+                    page = rec[2] if isinstance(rec, (list, tuple)) and len(rec) >= 3 else (rec[0] if isinstance(rec, (list, tuple)) and len(rec) >= 1 else None)
+                    if page and hasattr(page, "refresh_profiles_external"):
+                        page.refresh_profiles_external(select=None)
+                except Exception:
+                    pass
             except Exception as e:
                 QMessageBox.warning(self, "Profili", f"Errore eliminazione: {e!s}")
 
