@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QSpinBox, QGridLayout, QDoubleSpinBox, QLineEdit, QComboBox,
-    QSizePolicy, QCheckBox, QAbstractSpinBox, QToolButton
+    QSizePolicy, QCheckBox, QAbstractSpinBox, QToolButton, QStyle, QApplication, QGroupBox
 )
 from PySide6.QtCore import Qt, QTimer, QSize, QLocale
 from PySide6.QtGui import QIcon, QKeyEvent
@@ -10,44 +10,34 @@ from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.widgets.heads_view import HeadsView
 import math
 
-# Opzionali per salvataggio profili (se non presenti, il salvataggio viene ignorato con messaggio info)
+# Store profili (DB condiviso con Utility/Tipologie)
 try:
-    from ui_qt.dialogs.profile_edit_dialog import ProfileEditDialog
     from ui_qt.services.profiles_store import ProfilesStore
 except Exception:
-    ProfileEditDialog = None
     ProfilesStore = None
+
+# Anteprima sezione (DXF); se manca, la funzione si disattiva
+try:
+    from ui_qt.widgets.section_preview import SectionPreviewWidget
+except Exception:
+    SectionPreviewWidget = None
 
 SX_COLOR = "#2980b9"
 DX_COLOR = "#9b59b6"
 
-# UI sizing tweaks
-STATUS_W = 260            # StatusPanel più largo (prima 180)
-FQ_W = 260                # Box Fuori Quota più largo (prima 180)
-FQ_H = 240                # Box Fuori Quota più alto (prima 200)
-COUNTER_SIZE = 260        # Contapezzi più grande (prima 190)
+# UI sizing
+STATUS_W = 260            # StatusPanel più largo
+FQ_W = 260                # Box Fuori Quota più largo
+FQ_H = 240                # Box Fuori Quota più alto
+COUNTER_SIZE = 260        # Contapezzi più grande
 
 
 class SemiAutoPage(QWidget):
     """
     Semi-Automatico: layout a due colonne.
     - Sinistra (expanding): contapezzi + grafica; profilo/spessore + inclinazioni; misura; comandi BLOCCA/SBLOCCA, START e Quota live con dettagli Fuori Quota.
-    - Destra (fissa STATUS_W): StatusPanel + Fuori Quota (offset) + pulsante INTESTATURA (one-shot).
-
-    Funzioni chiave
-    - Fuori Quota (FQ): mostra Pezzo reale e Pos. testa (quota+offset). In FQ la lama DX (mobile) è SEMPRE inibita.
-    - INTESTATURA (one-shot): richiede FQ attivo. Alla pressione:
-        DX -> 45°, posizionamento alla quota minima; BLOCCA freno; INIBISCE lama SX; ABILITA lama DX.
-        Il taglio è avviato dall'operatore (pulsantiera). Il termine del taglio si rileva con l'input “uscita lama DX”
-        (aperto durante il taglio e richiuso a fine ciclo). In sviluppo, F5 (premuto=uscita attiva; rilasciato=uscita chiusa).
-        Al rilascio (uscita chiusa), si conclude l'intestatura: ripristina l'angolo DX precedente; se FQ è attivo, re‑inibisce lama DX
-        e si riposiziona a (quota+offset).
-    - Inclinazione SX/DX: accetta decimali con punto e virgola (la virgola viene convertita in punto), step 0.1°, senza frecce.
-    - Simulazioni tastiera:
-        F5: tieni premuto per simulare “uscita lama DX aperta”; al rilascio si chiude e, se intestatura in corso, termina l'operazione.
-        F6/K: (facoltativo) simula incremento conteggio DX (legacy).
+    - Destra (fissa): StatusPanel + Fuori Quota (offset) + INTESTATURA + (se disponibile) anteprima sezione DXF.
     """
-
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
@@ -79,10 +69,7 @@ class SemiAutoPage(QWidget):
                 for row in rows:
                     profs[row["name"]] = float(row["thickness"] or 0.0)
                 if not profs:
-                    for n, t in (("Nessuno", 0.0), ("Alluminio 50", 50.0), ("PVC 60", 60.0), ("Legno 40", 40.0)):
-                        self.profiles_store.upsert_profile(n, t)
-                    for row in self.profiles_store.list_profiles():
-                        profs[row["name"]] = float(row["thickness"] or 0.0)
+                    profs = {"Nessuno": 0.0}
             else:
                 profs = {"Nessuno": 0.0}
         except Exception:
@@ -108,7 +95,7 @@ class SemiAutoPage(QWidget):
         header = Header(self.appwin, "SEMI-AUTOMATICO")
         left_col.addWidget(header, 0)
 
-        # Banner per messaggi non-modali (evita crash in sviluppo per assenza IO)
+        # Banner per messaggi non-modali
         self.banner = QLabel("")
         self.banner.setVisible(False)
         self.banner.setWordWrap(True)
@@ -186,9 +173,9 @@ class SemiAutoPage(QWidget):
         prof.addWidget(self.cb_profilo, 1, 1, 1, 3)
 
         self.btn_save_profile = QToolButton()
-        self.btn_save_profile.setIcon(QIcon.fromTheme("document-save"))
-        if self.btn_save_profile.icon().isNull():
-            self.btn_save_profile.setText("💾")
+        # icona standard di sistema (evita warning font di alcune emoji)
+        std_icon = QApplication.style().standardIcon(QStyle.SP_DialogSaveButton)
+        self.btn_save_profile.setIcon(std_icon)
         self.btn_save_profile.setToolTip("Salva profilo/spessore")
         self.btn_save_profile.clicked.connect(self._open_save_profile_dialog)
         prof.addWidget(self.btn_save_profile, 1, 4)
@@ -308,7 +295,7 @@ class SemiAutoPage(QWidget):
         bottom_box.addLayout(ctrl_row)
         left_col.addLayout(bottom_box, 0)
 
-        # Sidebar destra: Status + Fuori Quota + INTESTATURA
+        # Sidebar destra: Status + Fuori Quota + INTESTATURA + Anteprima sezione
         right_container = QFrame()
         right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         right_container.setFixedWidth(STATUS_W)
@@ -348,11 +335,25 @@ class SemiAutoPage(QWidget):
 
         right_col.addWidget(fq_box, 0, alignment=Qt.AlignTop)
 
+        # Anteprima sezione profilo (se disponibile)
+        self.preview_box = QGroupBox("Sezione profilo")
+        self.preview_box.setVisible(False)
+        pv_l = QVBoxLayout(self.preview_box)
+        if SectionPreviewWidget:
+            self.section_preview = SectionPreviewWidget(parent=self.preview_box)
+            pv_l.addWidget(self.section_preview, 1)
+        else:
+            self.section_preview = None
+            pv_l.addWidget(QLabel("Anteprima non disponibile"), 0)
+        right_col.addWidget(self.preview_box, 0, alignment=Qt.AlignTop)
+
         # Montaggio colonne
         root.addWidget(left_container, 1)
         root.addWidget(right_container, 0)
 
         self._start_poll()
+        # carica eventuale anteprima in base al profilo di default
+        self._load_section_preview(self.cb_profilo.currentText().strip())
 
     # ---------- Banner helpers ----------
     def _style_banner_warn(self):
@@ -401,11 +402,32 @@ class SemiAutoPage(QWidget):
         except Exception:
             pass
         self._recalc_displays()
+        self._load_section_preview(name)
+
+    def _load_section_preview(self, profile_name: str):
+        if not self.section_preview or not self.profiles_store:
+            self.preview_box.setVisible(False)
+            return
+        try:
+            shape = self.profiles_store.get_profile_shape(profile_name)
+            if shape and shape.get("dxf_path"):
+                self.section_preview.load_dxf(shape["dxf_path"])
+                self.preview_box.setVisible(True)
+            else:
+                self.section_preview.clear()
+                self.preview_box.setVisible(False)
+        except Exception:
+            self.section_preview.clear()
+            self.preview_box.setVisible(False)
 
     def _open_save_profile_dialog(self):
-        if not ProfileEditDialog or not self.profiles_store:
+        # Dialog opzionale disponibile nel progetto
+        try:
+            from ui_qt.dialogs.profile_edit_dialog import ProfileEditDialog
+        except Exception:
             self._show_info("Modulo profili non disponibile in questa build.", auto_hide_ms=2500)
             return
+
         cur_name = (self.cb_profilo.currentText() or "").strip()
         try:
             cur_th = float((self.thickness.text() or "0").replace(",", "."))
@@ -414,6 +436,8 @@ class SemiAutoPage(QWidget):
         dlg = ProfileEditDialog(self, default_name=cur_name, default_thickness=cur_th)
         if dlg.exec():
             name, th = dlg.result_name, dlg.result_thickness
+            if not self.profiles_store:
+                return
             try:
                 self.profiles_store.upsert_profile(name, th)
                 self._profiles[name] = th
@@ -422,6 +446,7 @@ class SemiAutoPage(QWidget):
                 self.cb_profilo.setCurrentText(name)
                 self.thickness.setText(str(th))
                 self._show_info("Profilo salvato.", auto_hide_ms=2000)
+                self._load_section_preview(name)
             except Exception as e:
                 self._show_err(f"Errore salvataggio: {e!s}")
 
@@ -481,7 +506,10 @@ class SemiAutoPage(QWidget):
         min_with_offset = max(0.0, min_q - offset)
 
         if internal < min_with_offset:
-            self._show_warn(f"Quota troppo piccola: {internal:.1f} < {min_with_offset:.1f} mm (min {min_q:.0f} − offset {offset:.0f})", auto_hide_ms=3000)
+            self._show_warn(
+                f"Quota troppo piccola: {internal:.1f} < {min_with_offset:.1f} mm (min {min_q:.0f} − offset {offset:.0f})",
+                auto_hide_ms=3000
+            )
             self._last_internal = None
             self._last_target = None
             self.lbl_fq_details.setVisible(False)
@@ -635,7 +663,6 @@ class SemiAutoPage(QWidget):
         # Reset stato intestatura
         self._intest_in_progress = False
         self._intest_prev_ang_dx = 0.0
-        self._intest_dx_count_before = None
         self._last_dx_blade_out = None
         self._dx_blade_out_sim = False
         self._show_info("Intestatura completata.", auto_hide_ms=2000)
@@ -826,14 +853,13 @@ class SemiAutoPage(QWidget):
         if event.key() == Qt.Key_F5:
             if not self._dx_blade_out_sim:
                 self._dx_blade_out_sim = True
-                # facoltativo: riflette anche nell'oggetto macchina
+                # opzionale: riflette anche nell'oggetto macchina
                 setattr(self.machine, "dx_blade_out", True)
                 self._show_info("Uscita lama DX: ATTIVA (simulazione F5)")
             event.accept()
             return
         # F6/K = (legacy) simula incremento contapezzi DX
         if event.key() in (Qt.Key_F6, Qt.Key_K):
-            # opzionale legacy; non più usato per terminare intestatura
             done = int(getattr(self.machine, "semi_auto_count_done", 0))
             setattr(self.machine, "semi_auto_count_done", done + 1)
             event.accept()
@@ -855,7 +881,7 @@ class SemiAutoPage(QWidget):
 
     # --- lifecycle hook: setta la modalità ---
     def on_show(self):
-        # Modalità Semi-Automatico per coerenza logica (cut_enable, ecc.)
+        # Modalità Semi-Automatico per coerenza logica
         if hasattr(self.machine, "set_active_mode"):
             try: self.machine.set_active_mode("semi")
             except Exception: pass
