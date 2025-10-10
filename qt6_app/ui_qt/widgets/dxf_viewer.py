@@ -482,7 +482,7 @@ class DxfViewerWidget(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
 
         if not self._segments or not self._bounds:
-            self._draw_hint_text(p, "Carica un DXF (mouse: pan=centrale, zoom=rotellina | R/E=rotazione | A=allinea | P=perpendicolare | tasto destro=reset misura)")
+            self._draw_hint_text(p, "Carica un DXF (mouse: pan=centrale, zoom=rotellina | R/E=rotazione | A=allinea | P=perpendicolare | Dx=reset misura)")
             return
 
         # segmenti
