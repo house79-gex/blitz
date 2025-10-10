@@ -1,10 +1,10 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QSpinBox, QGridLayout, QDoubleSpinBox, QLineEdit, QComboBox,
-    QSizePolicy, QCheckBox, QAbstractSpinBox, QToolButton, QStyle, QApplication, QGroupBox
+    QSizePolicy, QCheckBox, QAbstractSpinBox, QToolButton, QStyle, QApplication
 )
 from PySide6.QtCore import Qt, QTimer, QSize, QLocale
-from PySide6.QtGui import QIcon, QKeyEvent
+from PySide6.QtGui import QKeyEvent
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.widgets.heads_view import HeadsView
@@ -16,34 +16,33 @@ try:
 except Exception:
     ProfilesStore = None
 
-# Anteprima sezione (DXF); se manca, la funzione si disattiva
+# Popup anteprima sezione
 try:
-    from ui_qt.widgets.section_preview import SectionPreviewWidget
+    from ui_qt.widgets.section_preview_popup import SectionPreviewPopup
 except Exception:
-    SectionPreviewWidget = None
+    SectionPreviewPopup = None
 
 SX_COLOR = "#2980b9"
 DX_COLOR = "#9b59b6"
 
-# UI sizing
-STATUS_W = 260            # StatusPanel più largo
-FQ_W = 260                # Box Fuori Quota più largo
-FQ_H = 240                # Box Fuori Quota più alto
-COUNTER_SIZE = 260        # Contapezzi più grande
+STATUS_W = 260
+FQ_W = 260
+FQ_H = 240
+COUNTER_SIZE = 260
 
 
 class SemiAutoPage(QWidget):
     """
     Semi-Automatico: layout a due colonne.
-    - Sinistra (expanding): contapezzi + grafica; profilo/spessore + inclinazioni; misura; comandi BLOCCA/SBLOCCA, START e Quota live con dettagli Fuori Quota.
-    - Destra (fissa): StatusPanel + Fuori Quota (offset) + INTESTATURA + (se disponibile) anteprima sezione DXF.
+    - Sinistra: contapezzi + grafica; profilo/spessore + inclinazioni; misura; comandi BLOCCA/SBLOCCA, START e Quota live con dettagli Fuori Quota.
+    - Destra: StatusPanel + Fuori Quota (offset) + INTESTATURA.
+    - Anteprima sezione profilo mostrata come popup in alto a destra (se esiste DXF associato al profilo).
     """
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
         self.machine = appwin.machine
 
-        # Store profili/spessori
         self.profiles_store = ProfilesStore() if ProfilesStore else None
         self._profiles = self._load_profiles_dict()
 
@@ -52,12 +51,12 @@ class SemiAutoPage(QWidget):
         self._intest_prev_ang_dx = 0.0
         self._last_internal = None
         self._last_target = None
-
-        # Monitor “uscita lama DX”
-        self._last_dx_blade_out = None  # ultimo stato noto (bool)
-        self._dx_blade_out_sim = False  # simulazione via tastiera
+        self._last_dx_blade_out = None
+        self._dx_blade_out_sim = False
 
         self._poll = None
+        self._section_popup = None  # popup anteprima DXF
+
         self._build()
 
     # ---------- Profili ----------
@@ -99,7 +98,7 @@ class SemiAutoPage(QWidget):
         self.banner = QLabel("")
         self.banner.setVisible(False)
         self.banner.setWordWrap(True)
-        self._style_banner_warn()
+        self.banner.setStyleSheet("background:#f7ca4a; color:#3c2b13; border-radius:6px; padding:8px; font-weight:700;")
         left_col.addWidget(self.banner, 0)
 
         # Riga alta: contapezzi + grafica
@@ -295,7 +294,7 @@ class SemiAutoPage(QWidget):
         bottom_box.addLayout(ctrl_row)
         left_col.addLayout(bottom_box, 0)
 
-        # Sidebar destra: Status + Fuori Quota + INTESTATURA + Anteprima sezione
+        # Sidebar destra: Status + Fuori Quota + INTESTATURA
         right_container = QFrame()
         right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         right_container.setFixedWidth(STATUS_W)
@@ -335,35 +334,20 @@ class SemiAutoPage(QWidget):
 
         right_col.addWidget(fq_box, 0, alignment=Qt.AlignTop)
 
-        # Anteprima sezione profilo (se disponibile)
-        self.preview_box = QGroupBox("Sezione profilo")
-        self.preview_box.setVisible(False)
-        pv_l = QVBoxLayout(self.preview_box)
-        if SectionPreviewWidget:
-            self.section_preview = SectionPreviewWidget(parent=self.preview_box)
-            pv_l.addWidget(self.section_preview, 1)
-        else:
-            self.section_preview = None
-            pv_l.addWidget(QLabel("Anteprima non disponibile"), 0)
-        right_col.addWidget(self.preview_box, 0, alignment=Qt.AlignTop)
-
         # Montaggio colonne
         root.addWidget(left_container, 1)
         root.addWidget(right_container, 0)
 
         self._start_poll()
-        # carica eventuale anteprima in base al profilo di default
-        self._load_section_preview(self.cb_profilo.currentText().strip())
+        # anteprima popup iniziale
+        self._update_section_preview(self.cb_profilo.currentText().strip())
 
     # ---------- Banner helpers ----------
-    def _style_banner_warn(self):
-        self.banner.setStyleSheet("background:#f7ca4a; color:#3c2b13; border-radius:6px; padding:8px; font-weight:700;")
-
     def _style_banner_info(self):
         self.banner.setStyleSheet("background:#2d98da; color:white; border-radius:6px; padding:8px; font-weight:700;")
 
-    def _style_banner_err(self):
-        self.banner.setStyleSheet("background:#e74c3c; color:white; border-radius:6px; padding:8px; font-weight:700;")
+    def _style_banner_warn(self):
+        self.banner.setStyleSheet("background:#f7ca4a; color:#3c2b13; border-radius:6px; padding:8px; font-weight:700;")
 
     def _show_info(self, msg: str, auto_hide_ms: int = 0):
         self._style_banner_info()
@@ -374,13 +358,6 @@ class SemiAutoPage(QWidget):
 
     def _show_warn(self, msg: str, auto_hide_ms: int = 0):
         self._style_banner_warn()
-        self.banner.setText(msg)
-        self.banner.setVisible(True)
-        if auto_hide_ms > 0:
-            QTimer.singleShot(auto_hide_ms, lambda: self.banner.setVisible(False))
-
-    def _show_err(self, msg: str, auto_hide_ms: int = 0):
-        self._style_banner_err()
         self.banner.setText(msg)
         self.banner.setVisible(True)
         if auto_hide_ms > 0:
@@ -402,23 +379,33 @@ class SemiAutoPage(QWidget):
         except Exception:
             pass
         self._recalc_displays()
-        self._load_section_preview(name)
+        self._update_section_preview(name)
 
-    def _load_section_preview(self, profile_name: str):
-        if not self.section_preview or not self.profiles_store:
-            self.preview_box.setVisible(False)
+    def _update_section_preview(self, profile_name: str):
+        # Mostra/aggiorna popup anteprima sulla DXF del profilo (se presente)
+        if not (SectionPreviewPopup and self.profiles_store):
+            if self._section_popup:
+                self._section_popup.close()
+                self._section_popup = None
             return
         try:
             shape = self.profiles_store.get_profile_shape(profile_name)
             if shape and shape.get("dxf_path"):
-                self.section_preview.load_dxf(shape["dxf_path"])
-                self.preview_box.setVisible(True)
+                if self._section_popup is None:
+                    self._section_popup = SectionPreviewPopup(self.appwin, "Sezione profilo")
+                self._section_popup.load_path(shape["dxf_path"])
+                try:
+                    self._section_popup.show_top_right_of(self.window())
+                except Exception:
+                    self._section_popup.show()
             else:
-                self.section_preview.clear()
-                self.preview_box.setVisible(False)
+                if self._section_popup:
+                    self._section_popup.close()
+                    self._section_popup = None
         except Exception:
-            self.section_preview.clear()
-            self.preview_box.setVisible(False)
+            if self._section_popup:
+                self._section_popup.close()
+                self._section_popup = None
 
     def _open_save_profile_dialog(self):
         # Dialog opzionale disponibile nel progetto
@@ -446,9 +433,9 @@ class SemiAutoPage(QWidget):
                 self.cb_profilo.setCurrentText(name)
                 self.thickness.setText(str(th))
                 self._show_info("Profilo salvato.", auto_hide_ms=2000)
-                self._load_section_preview(name)
+                self._update_section_preview(name)
             except Exception as e:
-                self._show_err(f"Errore salvataggio: {e!s}")
+                self._show_warn(f"Errore salvataggio: {e!s}", auto_hide_ms=2500)
 
     def _set_angle_quick(self, side: str, val: float):
         if side == "sx":
@@ -546,14 +533,21 @@ class SemiAutoPage(QWidget):
 
     def _on_fuori_quota_toggle(self, on: bool):
         # In Fuori Quota inibire SEMPRE lama DX; quando FQ off, riabilitarla
-        self._set_right_blade_inhibit(bool(on))
+        if hasattr(self.machine, "set_right_blade_inhibit"):
+            try:
+                self.machine.set_right_blade_inhibit(bool(on))
+            except Exception:
+                pass
+        else:
+            setattr(self.machine, "right_blade_inhibit", bool(on))
         self.lbl_fq_details.setVisible(False)
         self._last_internal = None
         self._last_target = None
 
     # ---------- Intestatura (one-shot) ----------
     def _do_intestatura(self):
-        # Necessita FQ attivo; posiziona e prepara inibizioni. Taglio avviato dall'operatore. Fine taglio: input uscita lama DX (simulabile con F5).
+        # Necessita FQ attivo; posiziona e prepara inibizioni. Taglio avviato dall'operatore.
+        # Fine taglio: input uscita lama DX (simulabile con F5).
         if not self.chk_fuori_quota.isChecked():
             self._show_warn("Abilita prima la modalità Fuori Quota.", auto_hide_ms=2500)
             return
@@ -573,8 +567,12 @@ class SemiAutoPage(QWidget):
         self._intest_prev_ang_dx = float(getattr(self.machine, "right_head_angle", 0.0) or 0.0)
 
         # Inibizioni: SX inibita, DX abilitata (permette uscita lama DX)
-        self._set_left_blade_inhibit(True)
-        self._set_right_blade_inhibit(False)
+        if hasattr(self.machine, "set_left_blade_inhibit"):
+            try:
+                self.machine.set_left_blade_inhibit(True)
+            except Exception:
+                pass
+        setattr(self.machine, "right_blade_inhibit", False)
 
         # Imposta angolo DX a 45°, SX invariato
         sx_cur = float(getattr(self.machine, "left_head_angle", 0.0) or 0.0)
@@ -592,8 +590,10 @@ class SemiAutoPage(QWidget):
             if hasattr(self.machine, "toggle_brake"):
                 self.machine.toggle_brake()
             else:
-                try: setattr(self.machine, "brake_active", False)
-                except Exception: pass
+                try:
+                    setattr(self.machine, "brake_active", False)
+                except Exception:
+                    pass
 
         # Muovi a minima; dopo movimento, blocca freno e attendi input “uscita lama DX”
         def _after_move_ui():
@@ -602,11 +602,13 @@ class SemiAutoPage(QWidget):
                 if not getattr(self.machine, "brake_active", False):
                     self.machine.toggle_brake()
             else:
-                try: setattr(self.machine, "brake_active", True)
-                except Exception: pass
+                try:
+                    setattr(self.machine, "brake_active", True)
+                except Exception:
+                    pass
             # inizializza monitor uscita lama DX
             self._last_dx_blade_out = self._get_dx_blade_out()
-            self._show_info("Intestatura pronta: DX @45° alla minima. SX INIBITA, DX ABILITATA. Premi F5 per simulare 'uscita lama' (tieni premuto durante il taglio).")
+            self._show_info("Intestatura pronta: DX @45° alla minima. Premi F5 per simulare 'uscita lama' (tieni premuto durante il taglio).")
 
         if hasattr(self.machine, "move_to_length_and_angles"):
             self.machine.move_to_length_and_angles(
@@ -621,8 +623,12 @@ class SemiAutoPage(QWidget):
         fq = self.chk_fuori_quota.isChecked()
 
         # SX abilitata; DX re-inibita se FQ attivo
-        self._set_left_blade_inhibit(False)
-        self._set_right_blade_inhibit(True if fq else False)
+        if hasattr(self.machine, "set_left_blade_inhibit"):
+            try:
+                self.machine.set_left_blade_inhibit(False)
+            except Exception:
+                pass
+        setattr(self.machine, "right_blade_inhibit", bool(fq))
 
         # Ripristina angolo DX precedente
         sx_cur = float(getattr(self.machine, "left_head_angle", 0.0) or 0.0)
@@ -650,8 +656,10 @@ class SemiAutoPage(QWidget):
                 if hasattr(self.machine, "toggle_brake"):
                     self.machine.toggle_brake()
                 else:
-                    try: setattr(self.machine, "brake_active", False)
-                    except Exception: pass
+                    try:
+                        setattr(self.machine, "brake_active", False)
+                    except Exception:
+                        pass
             if hasattr(self.machine, "move_to_length_and_angles"):
                 self.machine.move_to_length_and_angles(
                     length_mm=float(self._last_target),
@@ -671,7 +679,7 @@ class SemiAutoPage(QWidget):
     def _get_dx_blade_out(self):
         """
         Rileva lo stato dell'input 'uscita lama DX'.
-        Nomi possibili (firmware): 'dx_blade_out', 'right_blade_out', 'blade_out_right'.
+        Nomi possibili: 'dx_blade_out', 'right_blade_out', 'blade_out_right'.
         In sviluppo, se attiva la simulazione con F5, ritorna True mentre il tasto è premuto.
         """
         if self._dx_blade_out_sim:
@@ -710,21 +718,27 @@ class SemiAutoPage(QWidget):
 
         # Assicura modalità e stati corretti per il movimento
         if hasattr(self.machine, "set_active_mode"):
-            try: self.machine.set_active_mode("semi")
-            except Exception: pass
+            try:
+                self.machine.set_active_mode("semi")
+            except Exception:
+                pass
 
         # Rilascia freno se bloccato (fallback anche senza toggle)
         if getattr(self.machine, "brake_active", False):
             if hasattr(self.machine, "toggle_brake"):
                 self.machine.toggle_brake()
             else:
-                try: setattr(self.machine, "brake_active", False)
-                except Exception: pass
+                try:
+                    setattr(self.machine, "brake_active", False)
+                except Exception:
+                    pass
 
         # Inserisci frizione se disinserita
         if hasattr(self.machine, "set_clutch"):
-            try: self.machine.set_clutch(True)
-            except Exception: pass
+            try:
+                self.machine.set_clutch(True)
+            except Exception:
+                pass
         else:
             try:
                 if hasattr(self.machine, "clutch_active"):
@@ -828,25 +842,6 @@ class SemiAutoPage(QWidget):
         except Exception:
             pass
 
-    # ---------- Inibizioni Lama ----------
-    def _set_left_blade_inhibit(self, on: bool):
-        if hasattr(self.machine, "set_left_blade_inhibit"):
-            try:
-                self.machine.set_left_blade_inhibit(bool(on))
-                return
-            except Exception:
-                pass
-        setattr(self.machine, "left_blade_inhibit", bool(on))
-
-    def _set_right_blade_inhibit(self, on: bool):
-        if hasattr(self.machine, "set_right_blade_inhibit"):
-            try:
-                self.machine.set_right_blade_inhibit(bool(on))
-                return
-            except Exception:
-                pass
-        setattr(self.machine, "right_blade_inhibit", bool(on))
-
     # ---------- Simulazioni tastiera ----------
     def keyPressEvent(self, event: QKeyEvent):
         # F5 = “uscita lama DX” attiva mentre il tasto è premuto
@@ -860,6 +855,7 @@ class SemiAutoPage(QWidget):
             return
         # F6/K = (legacy) simula incremento contapezzi DX
         if event.key() in (Qt.Key_F6, Qt.Key_K):
+            # opzionale legacy; non più usato per terminare intestatura
             done = int(getattr(self.machine, "semi_auto_count_done", 0))
             setattr(self.machine, "semi_auto_count_done", done + 1)
             event.accept()
@@ -881,7 +877,21 @@ class SemiAutoPage(QWidget):
 
     # --- lifecycle hook: setta la modalità ---
     def on_show(self):
-        # Modalità Semi-Automatico per coerenza logica
+        # Modalità Semi-Automatico per coerenza logica (cut_enable, ecc.)
         if hasattr(self.machine, "set_active_mode"):
-            try: self.machine.set_active_mode("semi")
-            except Exception: pass
+            try:
+                self.machine.set_active_mode("semi")
+            except Exception:
+                pass
+        # ripristina/mostra popup all'apertura
+        self._update_section_preview(self.cb_profilo.currentText().strip())
+
+    def hideEvent(self, ev):
+        # chiudi il popup anteprima quando lasci la pagina
+        try:
+            if self._section_popup:
+                self._section_popup.close()
+                self._section_popup = None
+        except Exception:
+            pass
+        super().hideEvent(ev)
