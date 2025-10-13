@@ -1,156 +1,158 @@
 from __future__ import annotations
-from typing import List, Tuple, Optional, Iterable, Dict, Any
-from math import hypot
+from typing import List, Tuple, Optional, Iterable, Dict, Any, Set
+from dataclasses import dataclass
+from math import hypot, atan2, degrees, radians, sin, cos, sqrt, isfinite
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QLineF, QObject
 from PySide6.QtGui import (
-    QPainter, QColor, QPen, QWheelEvent, QMouseEvent, QKeyEvent, QFont, QFontMetrics
+    QWheelEvent, QMouseEvent, QKeyEvent, QTransform, QPen, QColor, QPainterPath, QFont, QGuiApplication
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import (
+    QGraphicsView, QGraphicsScene, QGraphicsItemGroup, QGraphicsItem, QGraphicsLineItem,
+    QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsSimpleTextItem, QWidget
+)
 
 
-def _dist_point_to_segment(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> Tuple[float, float]:
-    """
-    Distanza punto-segmento con proiezione clampata.
-    Ritorna (distanza, t), dove t in [0,1] è la posizione del piede della perpendicolare su AB.
-    """
+# --------------------- Geometria helper ---------------------
+def _dist(a: QPointF, b: QPointF) -> float:
+    return hypot(a.x() - b.x(), a.y() - b.y())
+
+
+def _line_intersection(p1: QPointF, p2: QPointF, p3: QPointF, p4: QPointF) -> Optional[QPointF]:
+    # Intersezione segmenti p1-p2 e p3-p4; ritorna punto o None se parallele o fuori dai segmenti
+    x1, y1 = p1.x(), p1.y()
+    x2, y2 = p2.x(), p2.y()
+    x3, y3 = p3.x(), p3.y()
+    x4, y4 = p4.x(), p4.y()
+    den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(den) < 1e-12:
+        return None
+    px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / den
+    py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / den
+    # verifica se il punto sta su entrambi i segmenti (con tolleranza)
+    def _on_seg(xa, ya, xb, yb, x, y):
+        minx, maxx = (xa, xb) if xa <= xb else (xb, xa)
+        miny, maxy = (ya, yb) if ya <= yb else (yb, ya)
+        return minx - 1e-7 <= x <= maxx + 1e-7 and miny - 1e-7 <= y <= maxy + 1e-7
+    if _on_seg(x1, y1, x2, y2, px, py) and _on_seg(x3, y3, x4, y4, px, py):
+        return QPointF(px, py)
+    return None
+
+
+def _project_point_on_segment(p: QPointF, a: QPointF, b: QPointF) -> Tuple[QPointF, float]:
+    # Proiezione di p sul segmento a-b, ritorna (piede, t in [0..1])
+    ax, ay = a.x(), a.y()
+    bx, by = b.x(), b.y()
+    px, py = p.x(), p.y()
     vx, vy = bx - ax, by - ay
-    wx, wy = px - ax, py - ay
-    c2 = vx * vx + vy * vy
-    if c2 <= 1e-12:
-        return hypot(px - ax, py - ay), 0.0
-    t = (vx * wx + vy * wy) / c2
+    c2 = vx*vx + vy*vy
+    if c2 < 1e-12:
+        return a, 0.0
+    t = ((px - ax)*vx + (py - ay)*vy) / c2
     t = max(0.0, min(1.0, t))
-    projx = ax + t * vx
-    projy = ay + t * vy
-    return hypot(px - projx, py - projy), t
+    proj = QPointF(ax + t * vx, ay + t * vy)
+    return proj, t
 
 
-class DxfViewerWidget(QWidget):
+@dataclass
+class CadSegment:
+    a: QPointF
+    b: QPointF
+    item: Optional[QGraphicsLineItem] = None
+
+
+# --------------------- CAD Viewer Avanzato ---------------------
+class AdvancedDxfCadView(QGraphicsView):
     """
-    Viewer DXF avanzato per sezioni profilo:
-    - Import DXF robusto:
-        - LINE, LWPOLYLINE (bulge), POLYLINE, ARC, CIRCLE, ELLIPSE, SPLINE, HATCH (boundary), INSERT (blocchi)
-        - virtual_entities ricorsivo per bulge e blocchi
-        - fallback con ezdxf.path.from_entity() per curve/archi/ellissi/spline
-        - conversione OCS→WCS per ogni set di punti generato
-    - Interazione:
-        - Pan (tasto centrale), Zoom (rotellina) centrato sul mouse
-        - Rotazione vista integrata (R/E = ±5°, A = allinea verticale al segmento sotto il mouse)
-        - Salvataggio/recupero stato vista (rotazione, scala, offset)
-    - Misura:
-        - Distanza: due click, anteprima live; Shift = vincolo ortogonale (orizz/vert)
-        - Perpendicolare (P): 1° click segmento base, 2° click punto; anteprima live
-        - Testo quota (mm) sempre visibile sulla misura
-    - Snap: marker singolo solo sotto il mouse (endpoint/midpoint del segmento più vicino)
-    - Tasto destro: reset misura corrente
+    CAD avanzato su QGraphicsView:
+    - Import DXF robusto (ezdxf.path.from_entity + fallback; OCS→WCS; include blocchi/curve/hatch)
+    - Snap: endpoint, midpoint, intersezione
+    - Misure: distanza, perpendicolare, angolare (overlay con testo in mm/gradi)
+    - Rotazione/allineamento globale della vista (R/E/A)
+    - Modifica 2D base: sposta/ruota selezione, trim/extend (LINE ↔ LINE)
+    - Salvataggio stato vista (scala/rotazione/pan)
+    Hotkeys:
+      - P: perpendicolare, G: linear distance, O: angular, Esc: reset tool
+      - R/E: ruota vista ±5°, A: allinea verticale al segmento sotto mouse
+      - M: move selezione, Shift+R: ruota selezione, T: trim, X: extend
+      - Shift per vincolo ortogonale nella misura lineare
+      - Mouse: rotellina zoom, centrale pan
     """
-    measurementChanged = Signal(float)      # mm
-    viewStateChanged = Signal(dict)         # {rotation_deg, scale, offset_x, offset_y}
+    measurementChanged = Signal(float)   # per comunicare la misura in mm
+    viewStateChanged = Signal(dict)      # {"rotation_deg","scale","dx","dy"}
 
-    MODE_DISTANCE = 0
-    MODE_PERP = 1
+    TOOL_DISTANCE = 1
+    TOOL_PERP = 2
+    TOOL_ANGLE = 3
+    TOOL_MOVE = 4
+    TOOL_ROTATE = 5
+    TOOL_TRIM = 6
+    TOOL_EXTEND = 7
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        # Geometria in world (coordinate DXF, WCS)
-        self._segments: List[Tuple[QPointF, QPointF]] = []
-        self._bounds: Optional[QRectF] = None
-
-        # Vista
-        self._scale = 1.0
-        self._offset = QPointF(0, 0)
-        self._rotation_deg = 0.0
-
-        # Interazione
-        self._last_mouse_view = QPointF(0, 0)
-        self._panning = False
-        self._shift_down = False
-        self._snap_radius_px = 12
-
-        # Hover
-        self._hover_seg_index: Optional[int] = None
-        self._hover_snap: Optional[QPointF] = None
-
-        # Misura
-        self._mode = self.MODE_DISTANCE
-        self._pt_a: Optional[QPointF] = None
-        self._pt_b: Optional[QPointF] = None  # fissata al secondo click
-        self._live_b: Optional[QPointF] = None  # anteprima live durante il movimento
-        self._base_seg_index: Optional[int] = None  # per PERP
-        self._meas_mm: float = 0.0
-
+        self.setRenderHints(self.renderHints() | self.viewportUpdateMode())
+        self.setDragMode(QGraphicsView.NoDrag)
         self.setMouseTracking(True)
-        self.setFocusPolicy(Qt.StrongFocus)
 
-    # ---------------- Public API ----------------
+        # Scene + root
+        self.scene = QGraphicsScene(self)
+        self.setScene(self.scene)
+        self._root = QGraphicsItemGroup()
+        self.scene.addItem(self._root)
+
+        # Stato vista
+        self._rotation_deg = 0.0
+        self._scale_factor = 1.0
+        self._panning = False
+        self._last_mouse_pos = QPointF()
+
+        # Dati CAD
+        self._segments: List[CadSegment] = []  # solo per LINE e per snapping/intersezioni
+        self._intersections: List[QPointF] = []
+        self._all_items: List[QGraphicsItem] = []
+
+        # Snap
+        self._snap_radius_px = 12
+        self._hover_snap_item: Optional[QGraphicsEllipseItem] = None
+        self._hover_snap_point: Optional[QPointF] = None
+
+        # Selezione
+        self.setInteractive(True)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        self._selected_items: Set[QGraphicsItem] = set()
+
+        # Tool/misure
+        self._tool = self.TOOL_DISTANCE
+        self._shift_down = False
+        self._pt_a: Optional[QPointF] = None
+        self._pt_b: Optional[QPointF] = None
+        self._base_seg: Optional[CadSegment] = None
+        self._live_line_item: Optional[QGraphicsLineItem] = None
+        self._live_extra_item: Optional[QGraphicsItem] = None  # per arco angolare
+        self._live_text: Optional[QGraphicsSimpleTextItem] = None
+
+        self._measure_value = 0.0
+
+        # Pen
+        self._pen_entity = QPen(QColor("#000000"), 0)  # 0 = hairline
+        self._pen_highlight = QPen(QColor("#ff9800"), 0)
+        self._pen_measure = QPen(QColor("#00c853"), 0)
+        self._pen_construction = QPen(QColor("#1976d2"), 0)
+
+    # ----------------------- Import DXF -----------------------
     def clear(self):
+        self.scene.clear()
+        self._root = QGraphicsItemGroup()
+        self.scene.addItem(self._root)
         self._segments.clear()
-        self._bounds = None
-        self._reset_measure()
-        self.update()
-
-    def set_mode(self, mode: int):
-        self._mode = mode
-        self._reset_measure()
-        self.update()
-
-    def rotate_by(self, deg: float):
-        self._rotation_deg = (self._rotation_deg + deg) % 360.0
-        self.update()
-        self._emit_view_state()
-
-    def set_rotation(self, deg: float):
-        self._rotation_deg = float(deg) % 360.0
-        self.update()
-        self._emit_view_state()
-
-    def align_segment_vertical(self, seg_index: Optional[int]):
-        idx = seg_index if seg_index is not None else self._hover_seg_index
-        if idx is None or not (0 <= idx < len(self._segments)):
-            return
-        a, b = self._segments[idx]
-        dx = b.x() - a.x()
-        dy = b.y() - a.y()
-        import math
-        angle = math.degrees(math.atan2(dx, dy))  # rende il segmento verticale in vista (Y-up)
-        self.set_rotation(angle)
-
-    def last_measure_mm(self) -> float:
-        return float(self._meas_mm)
-
-    def save_view_state(self) -> Dict[str, Any]:
-        return {
-            "rotation_deg": float(self._rotation_deg),
-            "scale": float(self._scale),
-            "offset_x": float(self._offset.x()),
-            "offset_y": float(self._offset.y()),
-        }
-
-    def restore_view_state(self, state: Dict[str, Any]):
-        try:
-            self._rotation_deg = float(state.get("rotation_deg", 0.0))
-            self._scale = max(1e-6, float(state.get("scale", 1.0)))
-            ox = float(state.get("offset_x", 0.0))
-            oy = float(state.get("offset_y", 0.0))
-            self._offset = QPointF(ox, oy)
-            self.update()
-            self._emit_view_state()
-        except Exception:
-            pass
-
-    def _emit_view_state(self):
-        self.viewStateChanged.emit(self.save_view_state())
+        self._intersections.clear()
+        self._all_items.clear()
+        self._reset_measure_overlay()
 
     def load_dxf(self, path: str):
-        """
-        Carica il DXF e produce una lista di segmenti world (WCS).
-        Implementa pipeline robusta:
-          1) virtual_entities per bulge e blocchi (INSERT) – trasformazioni applicate
-          2) ezdxf.path.from_entity per curve/archi/ellissi/spline – flattening a densità fine
-          3) conversione OCS→WCS per tutti i set di punti ottenuti
-        """
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(path)
@@ -161,24 +163,13 @@ class DxfViewerWidget(QWidget):
         except Exception as e:
             raise ImportError("Installa 'ezdxf' (pip install ezdxf)") from e
 
+        self.clear()
         doc = ezdxf.readfile(str(p))
         msp = doc.modelspace()
 
-        segs: List[Tuple[QPointF, QPointF]] = []
-        bounds: Optional[QRectF] = None
-
-        def add_seg_wcs(p1: Vec3, p2: Vec3):
-            a = QPointF(float(p1.x), float(p1.y))
-            b = QPointF(float(p2.x), float(p2.y))
-            segs.append((a, b))
-            nonlocal bounds
-            r = QRectF(a, b).normalized()
-            bounds = r if bounds is None else bounds.united(r)
-
-        def to_wcs_pts(entity, pts: Iterable):
-            # Converte una lista di (x,y[,z]) dall'OCS dell'entità al WCS.
+        def to_wcs_pts(entity, pts: Iterable) -> List[QPointF]:
             try:
-                extr = entity.dxf.extrusion  # Vec3-like
+                extr = entity.dxf.extrusion
             except Exception:
                 extr = (0, 0, 1)
             ocs = OCS(extr)
@@ -187,284 +178,546 @@ class DxfViewerWidget(QWidget):
                 elevation = float(getattr(entity.dxf, "elevation", 0.0) or 0.0)
             except Exception:
                 pass
-            out = []
+            out: List[QPointF] = []
             for pt in pts:
                 try:
                     x = float(pt[0]); y = float(pt[1])
                     v = ocs.to_wcs((x, y, elevation))
-                    out.append(v if isinstance(v, Vec3) else Vec3(v[0], v[1], v[2]))
+                    out.append(QPointF(float(v[0]), float(v[1])))
                 except Exception:
                     continue
             return out
 
-        def add_poly_from_pts_wcs(pts_wcs: List[Vec3]):
-            if len(pts_wcs) < 2:
+        def add_path_from_points(points: List[QPointF]):
+            if len(points) < 2:
                 return
-            for i in range(len(pts_wcs) - 1):
-                add_seg_wcs(pts_wcs[i], pts_wcs[i + 1])
+            path = QPainterPath(points[0])
+            for pt in points[1:]:
+                path.lineTo(pt)
+            item = QGraphicsPathItem(path)
+            item.setPen(self._pen_entity)
+            self._root.addToGroup(item)
+            self._all_items.append(item)
+            # mantieni segments per snap/intersezioni
+            for i in range(len(points)-1):
+                a = points[i]; b = points[i+1]
+                line_item = QGraphicsLineItem(a.x(), a.y(), b.x(), b.y())
+                line_item.setPen(self._pen_entity)
+                line_item.setVisible(False)  # ausiliario per segment registry
+                self._root.addToGroup(line_item)
+                self._segments.append(CadSegment(a, b, line_item))
+
+        def add_line(a: QPointF, b: QPointF):
+            line = QGraphicsLineItem(a.x(), a.y(), b.x(), b.y())
+            line.setPen(self._pen_entity)
+            line.setFlag(QGraphicsItem.ItemIsSelectable, True)
+            self._root.addToGroup(line)
+            self._all_items.append(line)
+            self._segments.append(CadSegment(a, b, line))
 
         def flatten_by_path(entity) -> bool:
-            # Prova ezdxf.path.from_entity: restituisce uno o più Path.
             try:
-                path = ezpath.from_entity(entity, segments=0)  # 0 = autodensità
+                path = ezpath.from_entity(entity, segments=0)  # auto densità
                 if path:
                     pts = list(path.flattening(distance=0.25))
                     pts_w = to_wcs_pts(entity, pts)
-                    add_poly_from_pts_wcs(pts_w)
+                    add_path_from_points(pts_w)
                     return True
             except Exception:
                 pass
-            # Alcune entità (HATCH, ecc.) non supportano from_entity direttamente
             return False
 
         def flatten_entity(entity):
-            # Pipeline: prima path, poi flattening/approx nativi
             if flatten_by_path(entity):
                 return
-            # fallback nativo
-            pts_wcs: List[Vec3] = []
             try:
                 if hasattr(entity, "flattening"):
                     pts = list(entity.flattening(distance=0.25))
-                    pts_wcs = to_wcs_pts(entity, pts)
+                    pts_w = to_wcs_pts(entity, pts)
+                    add_path_from_points(pts_w)
                 elif hasattr(entity, "approximate"):
-                    pts = list(entity.approximate(360))  # più denso per spline
-                    pts_wcs = to_wcs_pts(entity, pts)
+                    pts = list(entity.approximate(360))
+                    pts_w = to_wcs_pts(entity, pts)
+                    add_path_from_points(pts_w)
             except Exception:
-                pts_wcs = []
-            if pts_wcs:
-                add_poly_from_pts_wcs(pts_wcs)
+                pass
 
         def add_virtual(entity):
-            # Espande virtual_entities e processa ricorsivamente
             try:
                 for sub in entity.virtual_entities():
                     dxft = sub.dxftype()
                     if dxft == "LINE":
-                        try:
-                            pts_w = to_wcs_pts(sub, [(sub.dxf.start.x, sub.dxf.start.y),
-                                                     (sub.dxf.end.x, sub.dxf.end.y)])
-                            if len(pts_w) >= 2:
-                                add_seg_wcs(pts_w[0], pts_w[1])
-                        except Exception:
-                            pass
+                        pts_w = to_wcs_pts(sub, [(sub.dxf.start.x, sub.dxf.start.y),
+                                                 (sub.dxf.end.x, sub.dxf.end.y)])
+                        if len(pts_w) >= 2:
+                            add_line(pts_w[0], pts_w[1])
                     else:
-                        # prova via path, poi fallback flatten/approx
                         if not flatten_by_path(sub):
                             flatten_entity(sub)
             except Exception:
                 pass
 
-        # LINE
+        # Entità
         for e in msp.query("LINE"):
             try:
-                pts_w = to_wcs_pts(e, [(e.dxf.start.x, e.dxf.start.y),
-                                       (e.dxf.end.x, e.dxf.end.y)])
+                pts_w = to_wcs_pts(e, [(e.dxf.start.x, e.dxf.start.y), (e.dxf.end.x, e.dxf.end.y)])
                 if len(pts_w) >= 2:
-                    add_seg_wcs(pts_w[0], pts_w[1])
+                    add_line(pts_w[0], pts_w[1])
             except Exception:
                 pass
 
-        # LWPOLYLINE / POLYLINE via virtual_entities (copre bulge archi)
         for e in msp.query("LWPOLYLINE"):
             add_virtual(e)
         for e in msp.query("POLYLINE"):
             add_virtual(e)
 
-        # ARC / CIRCLE / ELLIPSE / SPLINE
         for e in msp.query("ARC"):
-            if not flatten_by_path(e):
-                flatten_entity(e)
+            if not flatten_by_path(e): flatten_entity(e)
         for e in msp.query("CIRCLE"):
             if not flatten_by_path(e):
                 try:
                     pts = list(e.flattening(distance=0.25))
                     pts_w = to_wcs_pts(e, pts)
                     if pts_w:
-                        pts_w.append(pts_w[0])  # chiudi
-                    add_poly_from_pts_wcs(pts_w)
+                        pts_w.append(pts_w[0])
+                    add_path_from_points(pts_w)
                 except Exception:
                     pass
         for e in msp.query("ELLIPSE"):
-            if not flatten_by_path(e):
-                flatten_entity(e)
+            if not flatten_by_path(e): flatten_entity(e)
         for e in msp.query("SPLINE"):
-            if not flatten_by_path(e):
-                flatten_entity(e)
+            if not flatten_by_path(e): flatten_entity(e)
 
-        # HATCH boundary
         for h in msp.query("HATCH"):
             try:
                 for path in h.paths:
                     for edge in path.edges:
-                        try:
-                            et = edge.EDGE_TYPE
-                        except Exception:
-                            continue
+                        et = getattr(edge, "EDGE_TYPE", "")
                         try:
                             if et == "LineEdge":
                                 pts_w = to_wcs_pts(h, [edge.start, edge.end])
                                 if len(pts_w) >= 2:
-                                    add_seg_wcs(pts_w[0], pts_w[1])
+                                    add_line(pts_w[0], pts_w[1])
                             elif et in ("ArcEdge", "EllipseEdge"):
-                                # prova path-like se disponibile, altrimenti flatten
-                                try:
-                                    pts = list(edge.flattening(distance=0.25))
-                                    pts_w = to_wcs_pts(h, pts)
-                                    add_poly_from_pts_wcs(pts_w)
-                                except Exception:
-                                    pass
+                                pts = list(edge.flattening(distance=0.25))
+                                pts_w = to_wcs_pts(h, pts)
+                                add_path_from_points(pts_w)
                             elif et == "SplineEdge":
                                 pts = list(edge.approximate(360))
                                 pts_w = to_wcs_pts(h, pts)
-                                add_poly_from_pts_wcs(pts_w)
+                                add_path_from_points(pts_w)
                         except Exception:
                             pass
             except Exception:
                 pass
 
-        # INSERT (blocchi) espansi ricorsivamente
         for ins in msp.query("INSERT"):
             add_virtual(ins)
 
-        self._segments = segs
-        self._bounds = bounds
-        self._normalize_view()
-        self._reset_measure()
-        self.update()
+        # Fit alla vista
+        self._fit_and_reset_view()
+        # Intersezioni
+        self._rebuild_intersections()
+
+    # ----------------------- Vista/trasformazioni -----------------------
+    def _fit_and_reset_view(self):
+        rect = self._root.childrenBoundingRect()
+        if not rect.isValid() or rect.width() < 1e-6 or rect.height() < 1e-6:
+            rect = QRectF(-100, -100, 200, 200)
+        self.setSceneRect(rect.adjusted(-10, -10, 10, 10))
+        self.resetTransform()
+        self._rotation_deg = 0.0
+        self._scale_factor = 1.0
+        # Fit 90%
+        view_rect = self.viewport().rect()
+        if not view_rect.isEmpty():
+            self.fitInView(rect, Qt.KeepAspectRatio)
+            # ricava lo scale attuale approssimando dalla transform
+            m = self.transform()
+            self._scale_factor = m.m11()
+
         self._emit_view_state()
 
-    # ---------------- Trasformazioni vista ----------------
-    def _normalize_view(self):
-        if not self._bounds or self.width() <= 0 or self.height() <= 0:
-            self._scale = 1.0
-            self._offset = QPointF(self.width() / 2, self.height() / 2)
-            return
-        bw = self._bounds.width()
-        bh = self._bounds.height()
-        if bw <= 0 or bh <= 0:
-            self._scale = 1.0
-            self._offset = QPointF(self.width() / 2, self.height() / 2)
-            return
-        sx = (self.width() * 0.9) / bw
-        sy = (self.height() * 0.9) / bh
-        self._scale = min(sx, sy)
-        cx = self._bounds.center().x()
-        cy = self._bounds.center().y()
-        self._offset = QPointF(self.width() / 2.0 - cx * self._scale, self.height() / 2.0 + cy * self._scale)
+    def _emit_view_state(self):
+        t: QTransform = self.transform()
+        self.viewStateChanged.emit({
+            "rotation_deg": float(self._rotation_deg),
+            "scale": float(self._scale_factor),
+            "dx": float(t.dx()),
+            "dy": float(t.dy()),
+        })
 
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        self._normalize_view()
+    def rotate_view(self, deg: float):
+        self._rotation_deg = (self._rotation_deg + deg) % 360.0
+        self.rotate(deg)
         self._emit_view_state()
 
-    def _rotate_world_point(self, pt: QPointF, deg: float) -> QPointF:
-        if not self._bounds or abs(deg) < 1e-9:
-            return pt
-        import math
-        rad = math.radians(deg)
-        cx = self._bounds.center().x()
-        cy = self._bounds.center().y()
-        x0 = pt.x() - cx
-        y0 = pt.y() - cy
-        x1 = x0 * math.cos(rad) - y0 * math.sin(rad)
-        y1 = x0 * math.sin(rad) + y0 * math.cos(rad)
-        return QPointF(x1 + cx, y1 + cy)
+    def align_vertical_to_segment_under_cursor(self):
+        seg = self._nearest_segment(self.mapToScene(self.mapFromGlobal(QGuiApplication.cursor().pos())))
+        if not seg:
+            return
+        dx = seg.b.x() - seg.a.x()
+        dy = seg.b.y() - seg.a.y()
+        ang = degrees(atan2(dx, dy))  # verticalità: annulla componente X
+        self.rotate_view(ang)
 
-    def _world_to_view(self, pt_world: QPointF) -> QPointF:
-        pr = self._rotate_world_point(pt_world, self._rotation_deg)
-        return QPointF(self._offset.x() + pr.x() * self._scale, self._offset.y() - pr.y() * self._scale)
+    # ----------------------- Snap -----------------------
+    def _rebuild_intersections(self):
+        inter: List[QPointF] = []
+        n = len(self._segments)
+        for i in range(n):
+            a1 = self._segments[i].a; b1 = self._segments[i].b
+            for j in range(i+1, n):
+                a2 = self._segments[j].a; b2 = self._segments[j].b
+                ip = _line_intersection(a1, b1, a2, b2)
+                if ip is not None:
+                    inter.append(ip)
+        self._intersections = inter
 
-    def _view_to_world(self, pt_view: QPointF) -> QPointF:
-        if self._scale <= 1e-12:
-            return QPointF(0, 0)
-        xr = (pt_view.x() - self._offset.x()) / self._scale
-        yr = -(pt_view.y() - self._offset.y()) / self._scale
-        return self._rotate_world_point(QPointF(xr, yr), -self._rotation_deg)
+    def _nearest_segment(self, pos_scene: QPointF, tol_px: Optional[float] = None) -> Optional[CadSegment]:
+        if not self._segments:
+            return None
+        # Converti raggio pixel in raggio scene
+        if tol_px is None:
+            tol_px = float(self._snap_radius_px)
+        radius_scene = tol_px / max(self._scale_factor, 1e-6)
+        best: Optional[CadSegment] = None
+        best_d = 1e18
+        for s in self._segments:
+            proj, _ = _project_point_on_segment(pos_scene, s.a, s.b)
+            d = _dist(proj, pos_scene)
+            if d < best_d:
+                best_d = d; best = s
+        if best and best_d <= radius_scene * 2.0:
+            return best
+        return None
 
-    # ---------------- Interazione ----------------
+    def _candidate_snaps(self) -> List[QPointF]:
+        snaps: List[QPointF] = []
+        for s in self._segments:
+            snaps.append(s.a)
+            snaps.append(s.b)
+            snaps.append(QPointF((s.a.x()+s.b.x())/2.0, (s.a.y()+s.b.y())/2.0))
+        snaps.extend(self._intersections)
+        return snaps
+
+    def _update_hover_snap(self, pos_scene: QPointF):
+        # trova il punto più vicino tra snaps
+        snaps = self._candidate_snaps()
+        if not snaps:
+            self._clear_hover_snap()
+            return
+        radius_scene = self._snap_radius_px / max(self._scale_factor, 1e-6)
+        best = None; best_d = 1e18
+        for sp in snaps:
+            d = _dist(sp, pos_scene)
+            if d < best_d:
+                best_d = d; best = sp
+        if best is not None and best_d <= radius_scene:
+            self._show_hover_snap(best)
+        else:
+            self._clear_hover_snap()
+
+    def _show_hover_snap(self, p: QPointF):
+        self._hover_snap_point = p
+        if self._hover_snap_item is None:
+            e = QGraphicsEllipseItem(-3, -3, 6, 6)
+            e.setPen(self._pen_construction)
+            e.setZValue(9e6)
+            self.scene.addItem(e)
+            self._hover_snap_item = e
+        self._hover_snap_item.setPos(p)
+
+    def _clear_hover_snap(self):
+        self._hover_snap_point = None
+        if self._hover_snap_item:
+            self.scene.removeItem(self._hover_snap_item)
+            self._hover_snap_item = None
+
+    def _snap_or_raw(self, p: QPointF) -> QPointF:
+        return self._hover_snap_point if self._hover_snap_point is not None else p
+
+    # ----------------------- Misure overlay -----------------------
+    def _reset_measure_overlay(self):
+        self._pt_a = None
+        self._pt_b = None
+        self._base_seg = None
+        self._measure_value = 0.0
+        if self._live_line_item:
+            self.scene.removeItem(self._live_line_item)
+            self._live_line_item = None
+        if self._live_extra_item:
+            self.scene.removeItem(self._live_extra_item)
+            self._live_extra_item = None
+        if self._live_text:
+            self.scene.removeItem(self._live_text)
+            self._live_text = None
+        self.measurementChanged.emit(0.0)
+
+    def _ensure_live_line(self) -> QGraphicsLineItem:
+        if self._live_line_item is None:
+            li = QGraphicsLineItem()
+            li.setPen(self._pen_measure)
+            li.setZValue(9e6)
+            self.scene.addItem(li)
+            self._live_line_item = li
+        return self._live_line_item
+
+    def _ensure_live_text(self) -> QGraphicsSimpleTextItem:
+        if self._live_text is None:
+            t = QGraphicsSimpleTextItem("")
+            font = QFont(); font.setBold(True)
+            t.setFont(font); t.setBrush(QColor("#000"))
+            t.setZValue(9e6)
+            self.scene.addItem(t)
+            self._live_text = t
+        return self._live_text
+
+    def _ensure_live_extra(self) -> QGraphicsPathItem:
+        if self._live_extra_item is None or not isinstance(self._live_extra_item, QGraphicsPathItem):
+            if self._live_extra_item:
+                self.scene.removeItem(self._live_extra_item)
+            p = QGraphicsPathItem()
+            p.setPen(self._pen_measure)
+            p.setZValue(9e6)
+            self.scene.addItem(p)
+            self._live_extra_item = p
+        return self._live_extra_item  # type: ignore
+
+    def _update_distance_overlay(self, a: QPointF, b: QPointF):
+        if self._shift_down:
+            # vincolo orto
+            dx = b.x()-a.x(); dy = b.y()-a.y()
+            b = QPointF(a.x()+dx if abs(dx)>=abs(dy) else a.x(), a.y() if abs(dx)>=abs(dy) else a.y()+dy)
+        line = self._ensure_live_line()
+        line.setLine(a.x(), a.y(), b.x(), b.y())
+        d = _dist(a, b)
+        self._measure_value = d
+        self.measurementChanged.emit(d)
+        mid = QPointF((a.x()+b.x())/2.0, (a.y()+b.y())/2.0)
+        txt = self._ensure_live_text()
+        txt.setText(f"{d:.2f} mm")
+        txt.setPos(mid)
+
+    def _update_perp_overlay(self, seg: CadSegment, p: QPointF):
+        foot, _ = _project_point_on_segment(p, seg.a, seg.b)
+        line = self._ensure_live_line()
+        line.setLine(p.x(), p.y(), foot.x(), foot.y())
+        d = _dist(p, foot)
+        self._measure_value = d
+        self.measurementChanged.emit(d)
+        mid = QPointF((p.x()+foot.x())/2.0, (p.y()+foot.y())/2.0)
+        txt = self._ensure_live_text()
+        txt.setText(f"{d:.2f} mm")
+        txt.setPos(mid)
+
+    def _update_angle_overlay(self, a1: QPointF, a2: QPointF, b1: QPointF, b2: QPointF, cursor: QPointF):
+        # Calcola angolo tra segmenti a1-a2 e b1-b2 al loro punto più vicino al cursore (usa a2,b2 come vertici)
+        v1 = QPointF(a2.x()-a1.x(), a2.y()-a1.y())
+        v2 = QPointF(b2.x()-b1.x(), b2.y()-b1.y())
+        ang1 = atan2(v1.y(), v1.x())
+        ang2 = atan2(v2.y(), v2.x())
+        ddeg = abs(degrees((ang2 - ang1)))
+        while ddeg > 180.0:
+            ddeg = abs(ddeg - 360.0)
+        # arco semplice al centro vicino al cursore
+        center = cursor
+        r = max(20.0 / max(self._scale_factor, 1e-3), 5.0)
+        start = min(ang1, ang2)
+        end = max(ang1, ang2)
+        # disegna arco
+        path = QPainterPath()
+        steps = 48
+        for i in range(steps+1):
+            t = start + (end-start)*i/steps
+            pt = QPointF(center.x() + r*cos(t), center.y() + r*sin(t))
+            if i == 0:
+                path.moveTo(pt)
+            else:
+                path.lineTo(pt)
+        extra = self._ensure_live_extra()
+        extra.setPath(path)
+        txt = self._ensure_live_text()
+        txt.setText(f"{ddeg:.2f}°")
+        txt.setPos(center)
+        self._measure_value = ddeg
+        self.measurementChanged.emit(ddeg)
+
+    # ----------------------- Edit base (move/rotate/trim/extend) -----------------------
+    def _selected_line_items(self) -> List[QGraphicsLineItem]:
+        out: List[QGraphicsLineItem] = []
+        for it in self.scene.selectedItems():
+            if isinstance(it, QGraphicsLineItem):
+                out.append(it)
+        return out
+
+    def _map_line_to_seg(self, li: QGraphicsLineItem) -> Optional[CadSegment]:
+        for s in self._segments:
+            if s.item is li:
+                return s
+        return None
+
+    def _trim_lines(self, l1: QGraphicsLineItem, l2: QGraphicsLineItem):
+        seg1 = self._map_line_to_seg(l1)
+        seg2 = self._map_line_to_seg(l2)
+        if not seg1 or not seg2:
+            return
+        ip = _line_intersection(seg1.a, seg1.b, seg2.a, seg2.b)
+        if ip is None:
+            return
+        # trancia la linea 1 al punto più vicino
+        if _dist(seg1.a, ip) < _dist(seg1.b, ip):
+            seg1.b = ip
+        else:
+            seg1.a = ip
+        l1.setLine(seg1.a.x(), seg1.a.y(), seg1.b.x(), seg1.b.y())
+        self._rebuild_intersections()
+
+    def _extend_line_to(self, l1: QGraphicsLineItem, l2: QGraphicsLineItem):
+        seg1 = self._map_line_to_seg(l1)
+        seg2 = self._map_line_to_seg(l2)
+        if not seg1 or not seg2:
+            return
+        ip = _line_intersection(seg1.a, seg1.b, seg2.a, seg2.b)
+        if ip is None:
+            return
+        # estendi l'estremo più vicino all'intersezione
+        if _dist(seg1.a, ip) < _dist(seg1.b, ip):
+            seg1.a = ip
+        else:
+            seg1.b = ip
+        l1.setLine(seg1.a.x(), seg1.a.y(), seg1.b.x(), seg1.b.y())
+        self._rebuild_intersections()
+
+    # ----------------------- Input -----------------------
     def wheelEvent(self, e: QWheelEvent):
-        if self._scale <= 0:
-            return
         angle = e.angleDelta().y()
         factor = 1.0 + (0.1 if angle > 0 else -0.1)
-        mouse_v = QPointF(e.position().x(), e.position().y())
-        before_w = self._view_to_world(mouse_v)
-        self._scale = max(1e-4, self._scale * factor)
-        after_w = self._view_to_world(mouse_v)
-        delta_w = after_w - before_w
-        self._offset -= QPointF(delta_w.x() * self._scale, -delta_w.y() * self._scale)
-        self.update()
+        self._scale_factor = max(1e-4, self._scale_factor * factor)
+        self.scale(factor, factor)
         self._emit_view_state()
 
     def mousePressEvent(self, e: QMouseEvent):
-        if e.button() == Qt.RightButton:
-            self._reset_measure()
-            self.update()
+        pos_view = e.position()
+        pos_scene = self.mapToScene(int(pos_view.x()), int(pos_view.y()))
+        if e.button() == Qt.MiddleButton:
+            self._panning = True
+            self._last_mouse_pos = pos_view
             e.accept()
             return
-
         if e.button() == Qt.LeftButton:
-            self._panning = False
-            wp = self._view_to_world(QPointF(e.position().x(), e.position().y()))
-            if self._mode == self.MODE_DISTANCE:
-                p = self._snap_or_raw(wp)
-                if self._pt_a is None:
-                    self._pt_a = p
-                    self._pt_b = None
-                    self._live_b = None
-                else:
-                    # secondo click: fissa pt_b con eventuale vincolo orto
-                    if self._shift_down and self._pt_a is not None:
-                        p = self._apply_ortho(self._pt_a, p)
-                    self._pt_b = p
-                    self._live_b = None
-                self._update_measure()
-            else:
-                # PERP: primo click seleziona segmento base, secondo click definisce punto
-                if self._base_seg_index is None:
-                    self._base_seg_index = self._nearest_segment_index(wp)
-                else:
-                    self._pt_b = self._snap_or_raw(wp)
-                    self._live_b = None
-                self._update_measure()
-            self.update()
-
-        elif e.button() == Qt.MiddleButton:
-            self._panning = True
-            self._last_mouse_view = QPointF(e.position().x(), e.position().y())
-
+            # selezione standard + gestione tool
+            if self._tool in (self.TOOL_DISTANCE, self.TOOL_PERP, self.TOOL_ANGLE):
+                if self._tool == self.TOOL_DISTANCE:
+                    if self._pt_a is None:
+                        self._pt_a = self._snap_or_raw(pos_scene)
+                    else:
+                        self._pt_b = self._snap_or_raw(pos_scene)
+                elif self._tool == self.TOOL_PERP:
+                    if self._base_seg is None:
+                        s = self._nearest_segment(pos_scene)
+                        if s:
+                            self._base_seg = s
+                    else:
+                        self._pt_b = self._snap_or_raw(pos_scene)
+                elif self._tool == self.TOOL_ANGLE:
+                    # usa pt_a come primo click (segmento 1), pt_b come secondo click (segmento 2)
+                    if self._pt_a is None:
+                        s = self._nearest_segment(pos_scene)
+                        if s:
+                            self._pt_a = QPointF(s.a)  # store come marker
+                            self._pt_b = QPointF(s.b)
+                    else:
+                        s = self._nearest_segment(pos_scene)
+                        if s:
+                            # fissa misura
+                            self._update_angle_overlay(self._pt_a, self._pt_b, s.a, s.b, pos_scene)
+                self.scene.update()
+                e.accept()
+                return
+            elif self._tool in (self.TOOL_MOVE, self.TOOL_ROTATE):
+                # inizializza trasformazione su selezione
+                self._transform_origin = pos_scene
+                e.accept()
+                return
+            elif self._tool in (self.TOOL_TRIM, self.TOOL_EXTEND):
+                # azione tra due linee selezionate
+                lines = self._selected_line_items()
+                if len(lines) == 2:
+                    if self._tool == self.TOOL_TRIM:
+                        self._trim_lines(lines[0], lines[1])
+                    else:
+                        self._extend_line_to(lines[0], lines[1])
+                e.accept()
+                return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e: QMouseEvent):
+        pos_view = e.position()
+        pos_scene = self.mapToScene(int(pos_view.x()), int(pos_view.y()))
         if self._panning:
-            cur = QPointF(e.position().x(), e.position().y())
-            delta = cur - self._last_mouse_view
-            self._offset += delta
-            self._last_mouse_view = cur
-            self.update()
+            delta = pos_view - self._last_mouse_pos
+            self._last_mouse_pos = pos_view
+            self.translate(delta.x(), delta.y())
             self._emit_view_state()
             return
 
-        v = QPointF(e.position().x(), e.position().y())
-        w = self._view_to_world(v)
-        self._hover_seg_index = self._nearest_segment_index(w)
-        self._hover_snap = self._compute_hover_snap(w)
+        # hover snap
+        self._update_hover_snap(pos_scene)
 
-        # anteprima live misura
-        if self._mode == self.MODE_DISTANCE:
+        # tool live
+        if self._tool == self.TOOL_DISTANCE:
             if self._pt_a is not None and self._pt_b is None:
-                p = self._snap_or_raw(w)
-                if self._shift_down:
-                    p = self._apply_ortho(self._pt_a, p)
-                self._live_b = p
-                self._update_measure(live=True)
-        else:
-            if self._base_seg_index is not None and self._pt_b is None:
-                self._live_b = self._snap_or_raw(w)
-                self._update_measure(live=True)
+                self._update_distance_overlay(self._pt_a, self._snap_or_raw(pos_scene))
+        elif self._tool == self.TOOL_PERP:
+            if self._base_seg is not None and self._pt_b is None:
+                self._update_perp_overlay(self._base_seg, self._snap_or_raw(pos_scene))
+        elif self._tool == self.TOOL_ANGLE:
+            if self._pt_a is not None and self._pt_b is not None:
+                s = self._nearest_segment(pos_scene)
+                if s:
+                    self._update_angle_overlay(self._pt_a, self._pt_b, s.a, s.b, pos_scene)
+        elif self._tool == self.TOOL_MOVE:
+            if self.scene.selectedItems():
+                delta = pos_scene - getattr(self, "_transform_origin", pos_scene)
+                self._transform_origin = pos_scene
+                for it in self.scene.selectedItems():
+                    it.moveBy(delta.x(), delta.y())
+                # aggiorna registry segments per linee
+                for s in self._segments:
+                    if s.item and s.item.isSelected():
+                        ln = s.item.line()
+                        s.a = QPointF(ln.x1(), ln.y1())
+                        s.b = QPointF(ln.x2(), ln.y2())
+                self._rebuild_intersections()
+        elif self._tool == self.TOOL_ROTATE:
+            if self.scene.selectedItems():
+                center = getattr(self, "_transform_center", None)
+                if center is None:
+                    center = self._transform_origin
+                    self._transform_center = center
+                vec0 = getattr(self, "_transform_prev_vec", None)
+                cur_vec = pos_scene - center
+                if vec0 is None:
+                    self._transform_prev_vec = cur_vec
+                else:
+                    ang0 = atan2(vec0.y(), vec0.x())
+                    ang1 = atan2(cur_vec.y(), cur_vec.x())
+                    ddeg = degrees(ang1 - ang0)
+                    for it in self.scene.selectedItems():
+                        tr = it.transform()
+                        it.setTransformOriginPoint(center)
+                        it.setRotation(it.rotation() + ddeg)
+                    self._transform_prev_vec = cur_vec
+                    # aggiorna segments
+                    for s in self._segments:
+                        if s.item and s.item.isSelected():
+                            ln = s.item.line()
+                            s.a = QPointF(ln.x1(), ln.y1())
+                            s.b = QPointF(ln.x2(), ln.y2())
+                    self._rebuild_intersections()
 
-        self.update()
+        super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e: QMouseEvent):
         if e.button() == Qt.MiddleButton:
@@ -472,241 +725,77 @@ class DxfViewerWidget(QWidget):
         super().mouseReleaseEvent(e)
 
     def keyPressEvent(self, e: QKeyEvent):
-        if e.key() == Qt.Key_Shift:
+        k = e.key()
+        if k == Qt.Key_Shift:
             self._shift_down = True
-            e.accept()
-            return
-        if e.key() == Qt.Key_P:
-            self.set_mode(self.MODE_PERP if self._mode == self.MODE_DISTANCE else self.MODE_DISTANCE)
-            e.accept()
-            return
-        if e.key() == Qt.Key_R:
-            self.rotate_by(+5.0); e.accept(); return
-        if e.key() == Qt.Key_E:
-            self.rotate_by(-5.0); e.accept(); return
-        if e.key() == Qt.Key_A:
-            self.align_segment_vertical(self._hover_seg_index); e.accept(); return
+            e.accept(); return
+        if k == Qt.Key_Escape:
+            self._tool = self.TOOL_DISTANCE
+            self._reset_measure_overlay()
+            e.accept(); return
+        # Tools
+        if k == Qt.Key_G:  # distanza lineare
+            self._tool = self.TOOL_DISTANCE; self._reset_measure_overlay(); e.accept(); return
+        if k == Qt.Key_P:  # perpendicolare
+            self._tool = self.TOOL_PERP; self._reset_measure_overlay(); e.accept(); return
+        if k == Qt.Key_O:  # angolo
+            self._tool = self.TOOL_ANGLE; self._reset_measure_overlay(); e.accept(); return
+        if k == Qt.Key_M:  # move
+            self._tool = self.TOOL_MOVE; e.accept(); return
+        if k == Qt.Key_R and (e.modifiers() & Qt.ShiftModifier):  # rotate selection
+            self._tool = self.TOOL_ROTATE; e.accept(); return
+        if k == Qt.Key_T:  # trim
+            self._tool = self.TOOL_TRIM; e.accept(); return
+        if k == Qt.Key_X:  # extend
+            self._tool = self.TOOL_EXTEND; e.accept(); return
+        # Vista
+        if k == Qt.Key_R and not (e.modifiers() & Qt.ShiftModifier):
+            self.rotate_view(+5.0); e.accept(); return
+        if k == Qt.Key_E:
+            self.rotate_view(-5.0); e.accept(); return
+        if k == Qt.Key_A:
+            self.align_vertical_to_segment_under_cursor(); e.accept(); return
+
         super().keyPressEvent(e)
 
     def keyReleaseEvent(self, e: QKeyEvent):
         if e.key() == Qt.Key_Shift:
             self._shift_down = False
-            e.accept()
-            return
+            e.accept(); return
         super().keyReleaseEvent(e)
 
-    # ---------------- Snap / selezioni ----------------
-    def _nearest_segment_index(self, wp: QPointF) -> Optional[int]:
-        if not self._segments:
-            return None
-        best_i = None
-        best_d = 1e18
-        rad_w = self._snap_radius_px / max(self._scale, 1e-6)
-        for i, (a, b) in enumerate(self._segments):
-            d, _ = _dist_point_to_segment(wp.x(), wp.y(), a.x(), a.y(), b.x(), b.y())
-            if d < best_d:
-                best_d = d
-                best_i = i
-        if best_d <= rad_w * 2.0:
-            return best_i
-        return None
+    # ----------------------- API pubblica misure/stato -----------------------
+    def set_tool_distance(self): self._tool = self.TOOL_DISTANCE; self._reset_measure_overlay()
+    def set_tool_perpendicular(self): self._tool = self.TOOL_PERP; self._reset_measure_overlay()
+    def set_tool_angle(self): self._tool = self.TOOL_ANGLE; self._reset_measure_overlay()
 
-    def _compute_hover_snap(self, wp: QPointF) -> Optional[QPointF]:
-        idx = self._nearest_segment_index(wp)
-        if idx is None:
-            return None
-        a, b = self._segments[idx]
-        mid = QPointF((a.x() + b.x()) / 2.0, (a.y() + b.y()) / 2.0)
-        cand = [a, b, mid]
-        best = None
-        bestd = 1e18
-        for sp in cand:
-            d = hypot(sp.x() - wp.x(), sp.y() - wp.y())
-            if d < bestd:
-                bestd = d
-                best = sp
-        rad_w = self._snap_radius_px / max(self._scale, 1e-6)
-        if best is not None and bestd <= rad_w:
-            return best
-        return None
+    def last_measure_value(self) -> float:
+        return float(self._measure_value)
 
-    def _snap_or_raw(self, wp: QPointF) -> QPointF:
-        return self._hover_snap if self._hover_snap is not None else wp
+    def save_view_state(self) -> Dict[str, Any]:
+        t: QTransform = self.transform()
+        return {
+            "rotation_deg": float(self._rotation_deg),
+            "scale": float(self._scale_factor),
+            "m11": float(t.m11()), "m12": float(t.m12()),
+            "m21": float(t.m21()), "m22": float(t.m22()),
+            "dx": float(t.dx()), "dy": float(t.dy()),
+        }
 
-    def _apply_ortho(self, a: QPointF, b: QPointF) -> QPointF:
-        dx = b.x() - a.x()
-        dy = b.y() - a.y()
-        if abs(dx) >= abs(dy):
-            return QPointF(a.x() + dx, a.y())
-        else:
-            return QPointF(a.x(), a.y() + dy)
+    def restore_view_state(self, state: Dict[str, Any]):
+        try:
+            self.resetTransform()
+            self._rotation_deg = float(state.get("rotation_deg", 0.0))
+            self._scale_factor = float(state.get("scale", 1.0))
+            # Ricrea una transform plausibile
+            self.scale(self._scale_factor, self._scale_factor)
+            self.rotate(self._rotation_deg)
+            self.translate(float(state.get("dx", 0.0)), float(state.get("dy", 0.0)))
+            self._emit_view_state()
+        except Exception:
+            pass
 
-    def _reset_measure(self):
-        self._pt_a = None
-        self._pt_b = None
-        self._live_b = None
-        self._base_seg_index = None
-        self._meas_mm = 0.0
-        self.measurementChanged.emit(0.0)
 
-    def _update_measure(self, live: bool = False):
-        if self._mode == self.MODE_DISTANCE:
-            a = self._pt_a
-            b = self._pt_b if self._pt_b is not None else (self._live_b if live else None)
-            if a is not None and b is not None:
-                dx = b.x() - a.x()
-                dy = b.y() - a.y()
-                self._meas_mm = float(hypot(dx, dy))
-                self.measurementChanged.emit(self._meas_mm)
-            else:
-                self._meas_mm = 0.0
-                self.measurementChanged.emit(0.0)
-        else:
-            if self._base_seg_index is not None:
-                a_seg, b_seg = self._segments[self._base_seg_index]
-                p = self._pt_b if self._pt_b is not None else (self._live_b if live else None)
-                if p is not None:
-                    d, t = _dist_point_to_segment(p.x(), p.y(), a_seg.x(), a_seg.y(), b_seg.x(), b_seg.y())
-                    self._meas_mm = float(d)
-                    self.measurementChanged.emit(self._meas_mm)
-                    return
-            self._meas_mm = 0.0
-            self.measurementChanged.emit(0.0)
-
-    # ---------------- Rendering ----------------
-    def paintEvent(self, ev):
-        p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#ffffff"))
-        p.setRenderHint(QPainter.Antialiasing, True)
-
-        if not self._segments or not self._bounds:
-            self._draw_hint_text(p, "Carica un DXF (pan=centrale, zoom=rotellina | R/E=rotazione | A=allinea | P=perpendicolare | Dx=reset misura)")
-            return
-
-        # segmenti
-        seg_pen = QPen(QColor("#000000"))
-        seg_pen.setWidthF(1.2)
-        p.setPen(seg_pen)
-        for (a, b) in self._segments:
-            va = self._world_to_view(a)
-            vb = self._world_to_view(b)
-            p.drawLine(va, vb)
-
-        # evidenzia segmento hover
-        if self._hover_seg_index is not None and 0 <= self._hover_seg_index < len(self._segments):
-            a, b = self._segments[self._hover_seg_index]
-            va = self._world_to_view(a)
-            vb = self._world_to_view(b)
-            p.setPen(QPen(QColor("#ff9800"), 2))
-            p.drawLine(va, vb)
-
-        # snap marker singolo
-        if self._hover_snap is not None:
-            p.setPen(QPen(QColor("#1976d2"), 2))
-            v = self._world_to_view(self._hover_snap)
-            p.drawEllipse(v, 5, 5)
-
-        # misura
-        if self._mode == self.MODE_DISTANCE:
-            self._draw_distance_measure(p)
-        else:
-            self._draw_perp_measure(p)
-
-        # overlay modalità
-        self._draw_overlay_mode(p)
-
-    def _draw_distance_measure(self, p: QPainter):
-        if self._pt_a is None and self._live_b is None:
-            return
-        pa = self._world_to_view(self._pt_a) if self._pt_a is not None else None
-        pb_world = self._pt_b if self._pt_b is not None else self._live_b
-        if pa is None:
-            return
-        p.setPen(QPen(QColor("#00c853"), 2))
-        p.drawEllipse(pa, 4, 4)
-        if pb_world is not None:
-            pb = self._world_to_view(pb_world)
-            p.drawLine(pa, pb)
-            p.drawEllipse(pb, 4, 4)
-            mid = QPointF((pa.x() + pb.x()) / 2.0, (pa.y() + pb.y()) / 2.0)
-            self._draw_measure_text(p, mid, self._meas_mm)
-
-    def _draw_perp_measure(self, p: QPainter):
-        if self._base_seg_index is None:
-            return
-        a, b = self._segments[self._base_seg_index]
-        va = self._world_to_view(a)
-        vb = self._world_to_view(b)
-        p.setPen(QPen(QColor("#ff9800"), 2))
-        p.drawLine(va, vb)
-
-        pnt = self._pt_b if self._pt_b is not None else self._live_b
-        if pnt is None:
-            return
-
-        d, t = _dist_point_to_segment(pnt.x(), pnt.y(), a.x(), a.y(), b.x(), b.y())
-        projx = a.x() + t * (b.x() - a.x())
-        projy = a.y() + t * (b.y() - a.y())
-        proj = QPointF(projx, projy)
-
-        v_point = self._world_to_view(pnt)
-        v_proj = self._world_to_view(proj)
-
-        p.setPen(QPen(QColor("#00c853"), 2))
-        p.drawLine(v_point, v_proj)
-        p.drawEllipse(v_point, 4, 4)
-        p.drawEllipse(v_proj, 4, 4)
-        mid = QPointF((v_point.x() + v_proj.x()) / 2.0, (v_point.y() + v_proj.y()) / 2.0)
-        self._draw_measure_text(p, mid, float(d))
-
-    def _draw_measure_text(self, p: QPainter, pos_view: QPointF, value_mm: float):
-        txt = f"{value_mm:.2f} mm"
-        font = QFont()
-        font.setBold(True)
-        p.setFont(font)
-        fm = QFontMetrics(font)
-        w = fm.horizontalAdvance(txt) + 8
-        h = fm.height() + 4
-        x = pos_view.x() - w / 2.0
-        y = pos_view.y() - h / 2.0
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 220))
-        p.drawRect(int(x), int(y), int(w), int(h))
-        p.setPen(QPen(QColor("#000000")))
-        p.drawText(int(x) + 4, int(y) + h - fm.descent() - 2, txt)
-
-    def _draw_overlay_mode(self, p: QPainter):
-        mode_txt = "Perpendicolare (P)" if self._mode == self.MODE_PERP else "Distanza (P=Perp)"
-        sub = "Shift=orto | R/E=rotazione | A=allinea | Dx=reset"
-        font = QFont()
-        font.setPointSize(9)
-        p.setFont(font)
-        fm = QFontMetrics(font)
-        txt_w = fm.horizontalAdvance(mode_txt)
-        sub_w = fm.horizontalAdvance(sub)
-        pad = 6
-        total_w = max(txt_w, sub_w) + pad * 2
-        total_h = fm.height() * 2 + pad * 3
-        x = 8
-        y = 8
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(0, 0, 0, 100))
-        p.drawRoundedRect(x, y, total_w, total_h, 6, 6)
-        p.setPen(QPen(QColor("#ffffff")))
-        p.drawText(x + pad, y + pad + fm.ascent(), mode_txt)
-        p.drawText(x + pad, y + pad + fm.height() + fm.ascent() + 2, sub)
-
-    def _draw_hint_text(self, p: QPainter, text: str):
-        font = QFont()
-        font.setPointSize(9)
-        p.setFont(font)
-        fm = QFontMetrics(font)
-        w = fm.horizontalAdvance(text) + 16
-        h = fm.height() + 10
-        x = 10
-        y = self.height() - h - 10
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(0, 0, 0, 90))
-        p.drawRoundedRect(x, y, w, h, 6, 6)
-        p.setPen(QPen(QColor("#ffffff")))
-        p.drawText(x + 8, y + h - fm.descent() - 4, text)
+# Per retrocompatibilità con codice esistente
+class DxfViewerWidget(AdvancedDxfCadView):
+    pass
