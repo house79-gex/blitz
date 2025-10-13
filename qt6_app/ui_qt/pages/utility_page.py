@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QSize, QRect, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QListWidget, QListWidgetItem,
-    QLineEdit, QPushButton, QGridLayout, QSizePolicy
+    QLineEdit, QPushButton, QGridLayout, QSizePolicy, QAbstractItemView
 )
 
 from ui_qt.widgets.header import Header
@@ -27,10 +27,7 @@ class UtilityPage(QWidget):
     """
     Utility:
     - Gestione profili base: elenco a sinistra, dettagli (nome, spessore) a destra.
-    - Preview DXF della sezione (se presente in archivio): popup ridotto, posizionato in alto-sinistra della pagina, temporaneo (auto-hide).
-    Note:
-    - Questo modulo non gestisce l'assegnazione/rimozione del file DXF ai profili (dipende dall'implementazione del ProfilesStore).
-      Se un profilo ha una shape con 'dxf_path', la anteprima mostrerà il DXF in popup.
+    - Preview DXF della sezione (se presente): popup ridotto, in alto-sinistra della pagina, temporaneo (auto-hide).
     """
     def __init__(self, appwin):
         super().__init__()
@@ -76,7 +73,7 @@ class UtilityPage(QWidget):
 
         left_layout.addWidget(QLabel("Profili"), 0)
         self.lst_profiles = QListWidget()
-        self.lst_profiles.setSelectionMode(self.lst_profiles.SingleSelection)
+        self.lst_profiles.setSelectionMode(QAbstractItemView.SingleSelection)
         self.lst_profiles.currentItemChanged.connect(self._on_select_profile)
         left_layout.addWidget(self.lst_profiles, 1)
 
@@ -119,7 +116,6 @@ class UtilityPage(QWidget):
         self.btn_save.clicked.connect(self._save_profile)
         btn_row.addWidget(self.btn_save)
 
-        # Nota: eliminazione profilo richiede API del ProfilesStore; non sempre disponibile
         self.btn_delete = QPushButton("Elimina")
         self.btn_delete.clicked.connect(self._delete_profile)
         btn_row.addWidget(self.btn_delete)
@@ -128,7 +124,7 @@ class UtilityPage(QWidget):
         row += 1
 
         # Tip: messaggio contestuale
-        self.lbl_tip = QLabel("Suggerimento: seleziona un profilo nell'elenco per vedere la preview DXF (se presente).")
+        self.lbl_tip = QLabel("Seleziona un profilo per vedere la preview DXF (se disponibile).")
         self.lbl_tip.setStyleSheet("color:#7f8c8d;")
         form.addWidget(self.lbl_tip, row, 0, 1, 3)
         row += 1
@@ -186,14 +182,12 @@ class UtilityPage(QWidget):
         self._show_profile_preview_ephemeral(name)
 
     def _new_profile(self):
-        # Genera un nome univoco
         base = "Nuovo"
         i = 1
         name = base
         while name in self._profiles_index:
             i += 1
             name = f"{base} {i}"
-        # Inserisci in memoria e UI
         self._profiles_index[name] = 0.0
         if self.lst_profiles:
             self.lst_profiles.addItem(QListWidgetItem(name))
@@ -213,22 +207,18 @@ class UtilityPage(QWidget):
         if not name:
             return
 
-        # Aggiorna store
         if self.profiles and hasattr(self.profiles, "upsert_profile"):
             try:
                 self.profiles.upsert_profile(name, th)
             except Exception:
                 pass
 
-        # Aggiorna indice e lista
         self._profiles_index[name] = th
         if self.lst_profiles:
             names_in_list = set(self._iter_list_items(self.lst_profiles))
             if name not in names_in_list:
                 self.lst_profiles.addItem(QListWidgetItem(name))
-            # ordina per nome
             self._sort_list_widget(self.lst_profiles)
-            # seleziona la voce
             items = self.lst_profiles.findItems(name, Qt.MatchExactly)
             if items:
                 self.lst_profiles.setCurrentItem(items[0])
@@ -237,31 +227,24 @@ class UtilityPage(QWidget):
         name = self._get_selected_name()
         if not name:
             return
-        # Prova ad eliminare da store se disponibile
-        deleted = False
         if self.profiles and hasattr(self.profiles, "delete_profile"):
             try:
                 self.profiles.delete_profile(name)
-                deleted = True
             except Exception:
-                deleted = False
-        # Se nessuna API di delete: rimuovi solo dalla lista in UI
+                pass
         if name in self._profiles_index:
             del self._profiles_index[name]
         if self.lst_profiles:
             row = self.lst_profiles.currentRow()
             it = self.lst_profiles.takeItem(row)
             del it
-            # seleziona altro elemento
             if self.lst_profiles.count() > 0:
                 self.lst_profiles.setCurrentRow(min(row, self.lst_profiles.count() - 1))
             else:
-                # svuota form
                 if self.edit_prof_name:
                     self.edit_prof_name.clear()
                 if self.edit_prof_th:
                     self.edit_prof_th.clear()
-        # Chiudi eventuale preview
         self._close_preview()
 
     # --------------------- Preview DXF ---------------------
@@ -289,7 +272,6 @@ class UtilityPage(QWidget):
             return None
 
     def _show_profile_preview_ephemeral(self, profile_name: str, auto_hide_ms: int = 1200):
-        # Mostra popup piccolo e temporaneo in alto-sinistra della pagina
         if not profile_name or SectionPreviewPopup is None:
             return
         shape = self._get_profile_shape(profile_name)
@@ -306,7 +288,6 @@ class UtilityPage(QWidget):
             self._close_preview()
             return
 
-        # Dimensiona alla bbox, non oltre ~25% dello schermo e non ingrandire oltre la sezione
         try:
             bw = float(shape.get("bbox_w") or 0.0)
             bh = float(shape.get("bbox_h") or 0.0)
@@ -327,13 +308,11 @@ class UtilityPage(QWidget):
             except Exception:
                 pass
 
-        # Posiziona in alto-sinistra della pagina e auto-chiudi
         try:
             popup.show_top_left_of(self, auto_hide_ms=auto_hide_ms)
         except TypeError:
-            # Fallback per versioni senza auto_hide_ms nel metodo
             popup.show_top_left_of(self)
-            QTimer.singleShot(auto_hide_ms, lambda: self._close_preview())
+            QTimer.singleShot(auto_hide_ms, self._close_preview)
 
     # --------------------- Helpers ---------------------
     def _iter_list_items(self, lw: QListWidget) -> List[str]:
@@ -348,7 +327,6 @@ class UtilityPage(QWidget):
 
     # --------------------- Lifecycle ---------------------
     def on_show(self):
-        # Ricarica elenco (nel caso l'altro modulo Profili abbia creato o aggiornato voci)
         self._load_profiles()
 
     def hideEvent(self, ev):
