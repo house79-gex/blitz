@@ -1,53 +1,22 @@
+from __future__ import annotations
+from typing import Optional, Dict, Any, List
+
+from PySide6.QtCore import Qt, QSize, QRect, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
-    QTabWidget, QLineEdit, QColorDialog, QMessageBox, QGridLayout, QCheckBox, QFileDialog,
-    QListWidget, QListWidgetItem, QGroupBox, QFormLayout
+    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QListWidget, QListWidgetItem,
+    QLineEdit, QPushButton, QGridLayout, QSizePolicy
 )
-from PySide6.QtCore import Qt, QTimer, QSize, QPoint
-from PySide6.QtWidgets import QApplication
+
 from ui_qt.widgets.header import Header
-from ui_qt.widgets.status_panel import StatusPanel
-from ui_qt.theme import THEME, set_palette_from_dict, apply_global_stylesheet
 
-# theme_store tollerante
-try:
-    from ui_qt.utils.theme_store import save_theme_combo, read_themes
-except Exception:
-    def save_theme_combo(name, palette, icons):  # fallback
-        pass
-    def read_themes():
-        return {}
-
-# app settings (flag tastatore)
-try:
-    from ui_qt.utils.app_settings import get_bool as settings_get_bool, set_bool as settings_set_bool
-except Exception:
-    def settings_get_bool(key: str, default: bool = False) -> bool: return default
-    def settings_set_bool(key: str, value: bool): pass
-
-# servizi profili / dxf / tastatore
+# Store profili (DB condiviso con Utility/Tipologie)
 try:
     from ui_qt.services.profiles_store import ProfilesStore
 except Exception:
     ProfilesStore = None
 
-try:
-    from ui_qt.services.dxf_importer import analyze_dxf
-except Exception:
-    analyze_dxf = None
-
-try:
-    from ui_qt.services.probe_service import ProbeService
-except Exception:
-    ProbeService = None
-
-# CAD misura (opzionale)
-try:
-    from ui_qt.dialogs.dxf_measure_dialog import DxfMeasureDialog
-except Exception:
-    DxfMeasureDialog = None
-
-# Popup anteprima sezione (opzionale)
+# Popup anteprima sezione ridotto e temporaneo
 try:
     from ui_qt.widgets.section_preview_popup import SectionPreviewPopup
 except Exception:
@@ -56,465 +25,332 @@ except Exception:
 
 class UtilityPage(QWidget):
     """
-    Utility: configurazioni, backup, profili/DXF, tema + StatusPanel.
-    - Import DXF con analisi bbox (ezdxf) e salvataggio profilo (DB condiviso).
-    - Archivio profili con modifica spessore/eliminazione.
-    - CAD di misura (viewer DXF con snap hover e modalità perpendicolare).
-    - Tastatore profili (simulato) opzionale, abilitabile da Configurazione.
-    - Anteprima sezione come popup: su selezione e anche in hover della lista profili.
+    Utility:
+    - Gestione profili base: elenco a sinistra, dettagli (nome, spessore) a destra.
+    - Preview DXF della sezione (se presente in archivio): popup ridotto, posizionato in alto-sinistra della pagina, temporaneo (auto-hide).
+    Note:
+    - Questo modulo non gestisce l'assegnazione/rimozione del file DXF ai profili (dipende dall'implementazione del ProfilesStore).
+      Se un profilo ha una shape con 'dxf_path', la anteprima mostrerà il DXF in popup.
     """
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
-        self.machine = appwin.machine
-        self.color_vars = {}
-        self.icon_vars = {}
-        self._diag_timer: QTimer | None = None
 
-        # servizi
+        # Backend profili
         self.profiles = ProfilesStore() if ProfilesStore else None
-        self.probe = ProbeService(self.machine) if ProbeService else None
+        self._profiles_index: Dict[str, float] = {}  # name -> thickness
 
-        # cache UI handle
-        self.lst_profiles: QListWidget | None = None
-        self.edit_prof_name: QLineEdit | None = None
-        self.edit_prof_th: QLineEdit | None = None
+        # UI refs
+        self.lst_profiles: Optional[QListWidget] = None
+        self.edit_prof_name: Optional[QLineEdit] = None
+        self.edit_prof_th: Optional[QLineEdit] = None
 
-        self._section_popup = None  # popup anteprima per Utility
+        # Popup anteprima
+        self._section_popup: Optional[SectionPreviewPopup] = None
 
         self._build()
+        self._load_profiles()
 
+    # --------------------- Build UI ---------------------
     def _build(self):
-        root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
-        root.addWidget(Header(self.appwin, "UTILITY"))
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(8)
 
-        body = QHBoxLayout(); body.setSpacing(8); root.addLayout(body, 1)
+        header = Header(self.appwin, "UTILITY")
+        root.addWidget(header, 0)
 
-        # Tabs a sinistra
-        tabs = QTabWidget(); body.addWidget(tabs, 3)
-        tabs.addTab(self._build_conf_tab(), "Configurazione")
-        tabs.addTab(self._build_backup_tab(), "Backup")
-        tabs.addTab(self._build_dxf_tab(), "Profili / DXF")
-        tabs.addTab(self._build_theme_tab(), "Tema")
+        content = QHBoxLayout()
+        content.setSpacing(12)
+        root.addLayout(content, 1)
 
-        # Stato a destra
-        side = QFrame(); body.addWidget(side, 1)
-        side_l = QVBoxLayout(side); side_l.setContentsMargins(4, 4, 4, 4)
-        self.status = StatusPanel(machine_state=self.machine, title="STATO", parent=side)
-        side_l.addWidget(self.status)
+        # Colonna sinistra: elenco profili
+        left = QFrame()
+        left.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        left.setFixedWidth(260)
+        left.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
 
-    # --- Configurazione ---
-    def _build_conf_tab(self):
-        from PySide6.QtWidgets import QVBoxLayout as VB, QHBoxLayout as HB
-        pg = QFrame()
-        lay = VB(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(8)
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(8)
 
-        # Tastatore profili (sperimentale, disabilitato di default)
-        row_probe = HB()
-        chk_probe = QCheckBox("Abilita tastatore profili (sperimentale)")
-        chk_probe.setChecked(settings_get_bool("probe_profiles_enabled", False))
-        def on_probe_toggle(checked: bool):
-            settings_set_bool("probe_profiles_enabled", bool(checked))
-            QMessageBox.information(self, "Tastatore profili", ("Abilitato" if checked else "Disabilitato") + ".")
-        chk_probe.toggled.connect(on_probe_toggle)
-        row_probe.addWidget(chk_probe)
-        row_probe.addStretch(1)
-        lay.addLayout(row_probe)
-
-        lay.addStretch(1)
-        return pg
-
-    # --- Backup ---
-    def _build_backup_tab(self):
-        pg = QFrame()
-        lay = QVBoxLayout(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(8)
-        lay.addWidget(QLabel("Backup e Ripristino"), 0, alignment=Qt.AlignLeft)
-        btns = QHBoxLayout()
-        btn_backup = QPushButton("Esegui backup"); btn_restore = QPushButton("Ripristina da file…")
-        btn_backup.clicked.connect(self._do_backup); btn_restore.clicked.connect(self._do_restore)
-        btns.addWidget(btn_backup); btns.addWidget(btn_restore); btns.addStretch(1)
-        lay.addLayout(btns)
-        lay.addStretch(1)
-        return pg
-
-    # --- Profili / DXF ---
-    def _build_dxf_tab(self):
-        pg = QFrame()
-        lay = QVBoxLayout(pg); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(10)
-
-        # --- Import DXF ---
-        grp_import = QGroupBox("Importa profilo da DXF")
-        f = QFormLayout(grp_import); f.setLabelAlignment(Qt.AlignRight)
-        edit_path = QLineEdit(); edit_path.setPlaceholderText("Seleziona un file DXF…")
-        btn_browse = QPushButton("Sfoglia…")
-        def pick_file():
-            fn, _ = QFileDialog.getOpenFileName(self, "Seleziona DXF", "", "Disegni DXF (*.dxf);;Tutti i file (*)")
-            if fn:
-                edit_path.setText(fn)
-        btn_browse.clicked.connect(pick_file)
-
-        row1 = QHBoxLayout(); row1.addWidget(edit_path, 1); row1.addWidget(btn_browse)
-        f.addRow("File DXF:", row1)
-
-        edit_name = QLineEdit(); edit_name.setPlaceholderText("Nome profilo (es. Alluminio 50)")
-        f.addRow("Nome profilo:", edit_name)
-
-        edit_th = QLineEdit(); edit_th.setPlaceholderText("Spessore (mm) — opzionale")
-        f.addRow("Spessore (mm):", edit_th)
-
-        lbl_meta = QLabel("—"); lbl_meta.setWordWrap(True)
-        f.addRow("Analisi:", lbl_meta)
-
-        btn_analyze = QPushButton("Analizza DXF")
-        btn_save = QPushButton("Salva in archivio")
-        btn_save.setEnabled(False)
-
-        def analyze_now():
-            p = (edit_path.text() or "").strip()
-            if not p:
-                QMessageBox.warning(self, "DXF", "Seleziona un file DXF.")
-                return
-            if analyze_dxf is None:
-                QMessageBox.warning(self, "DXF", "Analizzatore DXF non disponibile. Installa 'ezdxf'.")
-                return
-            try:
-                info = analyze_dxf(p)
-                if not (edit_name.text() or "").strip():
-                    edit_name.setText(info.get("name_suggestion", ""))
-                lbl_meta.setText(f"Entità: {info['entities']} | BBox: {info['bbox_w']:.1f} x {info['bbox_h']:.1f} mm")
-                btn_save.setEnabled(True)
-                btn_save._last_info = info  # type: ignore
-            except Exception as e:
-                QMessageBox.warning(self, "DXF", f"Errore analisi: {e!s}")
-
-        def save_now():
-            name = (edit_name.text() or "").strip()
-            if not name:
-                QMessageBox.warning(self, "Profili", "Inserisci un nome profilo.")
-                return
-            try:
-                th = float((edit_th.text() or "0").replace(",", "."))
-            except Exception:
-                th = 0.0
-            if not self.profiles:
-                QMessageBox.warning(self, "Profili", "Archivio profili non disponibile.")
-                return
-            info = getattr(btn_save, "_last_info", None)
-            try:
-                self.profiles.upsert_profile(name, th)
-                if info:
-                    self.profiles.upsert_profile_shape(
-                        name=name,
-                        dxf_path=info.get("path"),
-                        bbox_w=info.get("bbox_w"),
-                        bbox_h=info.get("bbox_h"),
-                        meta=info
-                    )
-                QMessageBox.information(self, "Profili", f"Profilo '{name}' salvato.")
-                # refresh immediato in Utility
-                self._refresh_profiles_list(select=name)
-                # notifica Semi-Automatico (se presente) per aggiornare la combo
-                try:
-                    rec = getattr(self.appwin, "_pages", {}).get("semi")
-                    page = rec[2] if isinstance(rec, (list, tuple)) and len(rec) >= 3 else (rec[0] if isinstance(rec, (list, tuple)) and len(rec) >= 1 else None)
-                    if page and hasattr(page, "refresh_profiles_external"):
-                        page.refresh_profiles_external(select=name)
-                except Exception:
-                    pass
-            except Exception as e:
-                QMessageBox.warning(self, "Profili", f"Errore salvataggio: {e!s}")
-
-        btn_analyze.clicked.connect(analyze_now)
-        btn_save.clicked.connect(save_now)
-
-        row_btns = QHBoxLayout(); row_btns.addStretch(1); row_btns.addWidget(btn_analyze); row_btns.addWidget(btn_save)
-
-        # CAD misura (opzionale)
-        btn_open_cad = QPushButton("Apri CAD di misura…")
-        def open_cad():
-            if DxfMeasureDialog is None:
-                QMessageBox.information(self, "DXF", "CAD di misura non disponibile in questa build.")
-                return
-            path = (getattr(btn_save, "_last_info", {}) or {}).get("path", (edit_path.text() or "").strip())
-            if not path:
-                QMessageBox.information(self, "DXF", "Seleziona e analizza un DXF prima.")
-                return
-            try:
-                dlg = DxfMeasureDialog(self, path=path)
-                if dlg.exec():
-                    th = dlg.result_thickness_mm()
-                    if th > 0:
-                        edit_th.setText(f"{th:.2f}")
-                        QMessageBox.information(self, "Misura", f"Spessore misurato: {th:.2f} mm")
-            except Exception as e:
-                QMessageBox.warning(self, "DXF", f"Errore apertura CAD: {e!s}")
-        btn_open_cad.clicked.connect(open_cad)
-        row_btns.addWidget(btn_open_cad)
-
-        lay.addWidget(grp_import)
-        lay.addLayout(row_btns)
-
-        # --- Archivio profili ---
-        grp_arch = QGroupBox("Archivio profili")
-        arch_l = QHBoxLayout(grp_arch)
+        left_layout.addWidget(QLabel("Profili"), 0)
         self.lst_profiles = QListWidget()
-        self.lst_profiles.setMouseTracking(True)
-        self.lst_profiles.setMinimumSize(QSize(240, 260))
-        arch_l.addWidget(self.lst_profiles, 1)
+        self.lst_profiles.setSelectionMode(self.lst_profiles.SingleSelection)
+        self.lst_profiles.currentItemChanged.connect(self._on_select_profile)
+        left_layout.addWidget(self.lst_profiles, 1)
 
-        edit_box = QFrame(); eb_l = QFormLayout(edit_box)
-        self.edit_prof_name = QLineEdit(); self.edit_prof_name.setReadOnly(True)
+        content.addWidget(left, 0)
+
+        # Colonna destra: dettagli
+        right = QFrame()
+        right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        right.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
+
+        form = QGridLayout(right)
+        form.setContentsMargins(8, 8, 8, 8)
+        form.setHorizontalSpacing(8)
+        form.setVerticalSpacing(6)
+
+        row = 0
+        form.addWidget(QLabel("Dettagli profilo"), row, 0, 1, 3, alignment=Qt.AlignLeft)
+        row += 1
+
+        form.addWidget(QLabel("Nome:"), row, 0)
+        self.edit_prof_name = QLineEdit()
+        form.addWidget(self.edit_prof_name, row, 1, 1, 2)
+        row += 1
+
+        form.addWidget(QLabel("Spessore (mm):"), row, 0)
         self.edit_prof_th = QLineEdit()
-        eb_l.addRow("Nome:", self.edit_prof_name)
-        eb_l.addRow("Spessore (mm):", self.edit_prof_th)
+        self.edit_prof_th.setPlaceholderText("0.0")
+        form.addWidget(self.edit_prof_th, row, 1, 1, 2)
+        row += 1
 
-        btns_box = QHBoxLayout()
-        btn_update = QPushButton("Aggiorna spessore")
-        btn_delete = QPushButton("Elimina profilo")
-        btns_box.addWidget(btn_delete); btns_box.addStretch(1); btns_box.addWidget(btn_update)
-        eb_l.addRow(btns_box)
-        arch_l.addWidget(edit_box, 0)
+        # Bottoni
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
 
-        def show_preview_for(name: str):
-            if not (self.profiles and SectionPreviewPopup):
-                return
+        self.btn_new = QPushButton("Nuovo")
+        self.btn_new.clicked.connect(self._new_profile)
+        btn_row.addWidget(self.btn_new)
+
+        self.btn_save = QPushButton("Salva")
+        self.btn_save.clicked.connect(self._save_profile)
+        btn_row.addWidget(self.btn_save)
+
+        # Nota: eliminazione profilo richiede API del ProfilesStore; non sempre disponibile
+        self.btn_delete = QPushButton("Elimina")
+        self.btn_delete.clicked.connect(self._delete_profile)
+        btn_row.addWidget(self.btn_delete)
+
+        form.addLayout(btn_row, row, 0, 1, 3)
+        row += 1
+
+        # Tip: messaggio contestuale
+        self.lbl_tip = QLabel("Suggerimento: seleziona un profilo nell'elenco per vedere la preview DXF (se presente).")
+        self.lbl_tip.setStyleSheet("color:#7f8c8d;")
+        form.addWidget(self.lbl_tip, row, 0, 1, 3)
+        row += 1
+
+        content.addWidget(right, 1)
+
+    # --------------------- Data ---------------------
+    def _load_profiles(self):
+        self._profiles_index.clear()
+        if self.profiles:
             try:
-                shape = self.profiles.get_profile_shape(name)
-                if shape and shape.get("dxf_path"):
-                    if self._section_popup is None:
-                        self._section_popup = SectionPreviewPopup(self.appwin, "Sezione profilo")
-                    self._section_popup.load_path(shape["dxf_path"])
-                    # posiziona in alto a destra della finestra utility
-                    try:
-                        # usa il parent window
-                        self._section_popup.show_top_left_of(self.window())
-                    except Exception:
-                        self._section_popup.show()
-                else:
-                    if self._section_popup:
-                        self._section_popup.close(); self._section_popup = None
+                rows = self.profiles.list_profiles()
+                for r in rows:
+                    name = str(r.get("name"))
+                    th = float(r.get("thickness") or 0.0)
+                    if name:
+                        self._profiles_index[name] = th
             except Exception:
                 pass
 
-        def on_select():
-            if not self.profiles:
-                return
-            it = self.lst_profiles.currentItem()
-            if not it:
-                return
-            name = it.text()
-            rec = self.profiles.get_profile(name)
-            if not rec:
-                return
-            self.edit_prof_name.setText(rec["name"])
-            self.edit_prof_th.setText(str(rec["thickness"]))
-            show_preview_for(name)
+        # Fallback se lista vuota
+        if not self._profiles_index:
+            self._profiles_index = {"Nessuno": 0.0}
 
-        self.lst_profiles.currentItemChanged.connect(lambda cur, prev: on_select())
+        # Popola la lista
+        if self.lst_profiles:
+            self.lst_profiles.blockSignals(True)
+            self.lst_profiles.clear()
+            for name in sorted(self._profiles_index.keys()):
+                self.lst_profiles.addItem(QListWidgetItem(name))
+            self.lst_profiles.blockSignals(False)
 
-        # anteprima anche in hover (senza clic)
-        def on_mouse_move(event):
-            if not self.lst_profiles:
-                return
-            pos = event.pos()
-            item = self.lst_profiles.itemAt(pos)
-            if item:
-                show_preview_for(item.text())
-            QWidget.mouseMoveEvent(self.lst_profiles.viewport(), event)  # default
-        self.lst_profiles.viewport().setMouseTracking(True)
-        self.lst_profiles.viewport().mouseMoveEvent = on_mouse_move  # type: ignore
+        # Seleziona primo elemento di default
+        if self.lst_profiles and self.lst_profiles.count() > 0:
+            self.lst_profiles.setCurrentRow(0)
 
-        def do_update():
-            if not self.profiles:
-                return
-            name = (self.edit_prof_name.text() or "").strip()
-            if not name:
-                return
-            try:
-                th = float((self.edit_prof_th.text() or "0").replace(",", "."))
-            except Exception:
-                QMessageBox.warning(self, "Profili", "Spessore non valido.")
-                return
+    def _get_selected_name(self) -> Optional[str]:
+        if not self.lst_profiles:
+            return None
+        it = self.lst_profiles.currentItem()
+        return it.text() if it else None
+
+    # --------------------- Actions ---------------------
+    def _on_select_profile(self, cur: Optional[QListWidgetItem], prev: Optional[QListWidgetItem]):
+        if cur is None:
+            return
+        name = cur.text()
+        th = self._profiles_index.get(name, 0.0)
+        if self.edit_prof_name:
+            self.edit_prof_name.setText(name)
+        if self.edit_prof_th:
+            self.edit_prof_th.setText(str(th))
+
+        # Mostra anteprima DXF (ridotta, temporanea) se shape presente
+        self._show_profile_preview_ephemeral(name)
+
+    def _new_profile(self):
+        # Genera un nome univoco
+        base = "Nuovo"
+        i = 1
+        name = base
+        while name in self._profiles_index:
+            i += 1
+            name = f"{base} {i}"
+        # Inserisci in memoria e UI
+        self._profiles_index[name] = 0.0
+        if self.lst_profiles:
+            self.lst_profiles.addItem(QListWidgetItem(name))
+            self.lst_profiles.setCurrentRow(self.lst_profiles.count() - 1)
+        if self.edit_prof_name:
+            self.edit_prof_name.setText(name)
+        if self.edit_prof_th:
+            self.edit_prof_th.setText("0.0")
+
+    def _save_profile(self):
+        name = (self.edit_prof_name.text() if self.edit_prof_name else "").strip()
+        th_s = (self.edit_prof_th.text() if self.edit_prof_th else "").strip()
+        try:
+            th = float((th_s or "0").replace(",", "."))
+        except Exception:
+            th = 0.0
+        if not name:
+            return
+
+        # Aggiorna store
+        if self.profiles and hasattr(self.profiles, "upsert_profile"):
             try:
                 self.profiles.upsert_profile(name, th)
-                QMessageBox.information(self, "Profili", "Spessore aggiornato.")
-                self._refresh_profiles_list(select=name)
-                # notifica Semi per refresh
-                try:
-                    rec = getattr(self.appwin, "_pages", {}).get("semi")
-                    page = rec[2] if isinstance(rec, (list, tuple)) and len(rec) >= 3 else (rec[0] if isinstance(rec, (list, tuple)) and len(rec) >= 1 else None)
-                    if page and hasattr(page, "refresh_profiles_external"):
-                        page.refresh_profiles_external(select=name)
-                except Exception:
-                    pass
-            except Exception as e:
-                QMessageBox.warning(self, "Profili", f"Errore aggiornamento: {e!s}")
-
-        def do_delete():
-            if not self.profiles:
-                return
-            it = self.lst_profiles.currentItem()
-            if not it:
-                return
-            name = it.text()
-            if QMessageBox.question(self, "Conferma", f"Eliminare il profilo '{name}'?") != QMessageBox.Yes:
-                return
-            try:
-                if self.profiles.delete_profile(name):
-                    self._refresh_profiles_list()
-                    self.edit_prof_name.setText("")
-                    self.edit_prof_th.setText("")
-                    if self._section_popup:
-                        self._section_popup.close(); self._section_popup = None
-                    QMessageBox.information(self, "Profili", "Profilo eliminato.")
-                # notifica Semi per refresh
-                try:
-                    rec = getattr(self.appwin, "_pages", {}).get("semi")
-                    page = rec[2] if isinstance(rec, (list, tuple)) and len(rec) >= 3 else (rec[0] if isinstance(rec, (list, tuple)) and len(rec) >= 1 else None)
-                    if page and hasattr(page, "refresh_profiles_external"):
-                        page.refresh_profiles_external(select=None)
-                except Exception:
-                    pass
-            except Exception as e:
-                QMessageBox.warning(self, "Profili", f"Errore eliminazione: {e!s}")
-
-        btn_update.clicked.connect(do_update)
-        btn_delete.clicked.connect(do_delete)
-
-        lay.addWidget(grp_arch)
-
-        # --- Tastatore profili (test, visibile solo se abilitato e servizio presente) ---
-        grp_probe = QGroupBox("Tastatore profili (test)")
-        enable_probe = settings_get_bool("probe_profiles_enabled", False) and (self.probe is not None)
-        grp_probe.setVisible(bool(enable_probe))
-        pr_l = QHBoxLayout(grp_probe)
-        btn_probe = QPushButton("Misura spessore (test)")
-        lbl_probe = QLabel("—")
-        pr_l.addWidget(btn_probe); pr_l.addWidget(lbl_probe, 1, alignment=Qt.AlignLeft)
-
-        def do_probe():
-            if not self.probe:
-                QMessageBox.information(self, "Tastatore", "Servizio tastatore non disponibile.")
-                return
-            if self.probe.is_busy():
-                QMessageBox.information(self, "Tastatore", "Misura in corso…")
-                return
-            btn_probe.setEnabled(False); lbl_probe.setText("Misuro…")
-            def done(ok: bool, value: float | None, msg: str):
-                btn_probe.setEnabled(True)
-                if ok and value is not None:
-                    lbl_probe.setText(f"Spessore: {value:.1f} mm")
-                    cur = self.lst_profiles.currentItem() if self.lst_profiles else None
-                    if cur and self.edit_prof_name:
-                        self.edit_prof_th.setText(f"{value:.1f}")
-                else:
-                    lbl_probe.setText(f"Errore: {msg}")
-            self.probe.measure_thickness_async(done_cb=done)
-
-        btn_probe.clicked.connect(do_probe)
-        lay.addWidget(grp_probe)
-
-        # popolamento iniziale
-        self._refresh_profiles_list()
-
-        return pg
-
-    def _refresh_profiles_list(self, select: str | None = None):
-        if not self.lst_profiles or not self.profiles:
-            return
-        self.lst_profiles.clear()
-        try:
-            rows = self.profiles.list_profiles()
-            for r in rows:
-                self.lst_profiles.addItem(QListWidgetItem(str(r["name"])))
-            if select:
-                items = self.lst_profiles.findItems(select, Qt.MatchExactly)
-                if items:
-                    self.lst_profiles.setCurrentItem(items[0])
-        except Exception:
-            pass
-
-    # --- Tema ---
-    def _build_theme_tab(self):
-        pg = QFrame()
-        lay = QVBoxLayout(pg)
-        pal_box = QFrame()
-        pal_l = QVBoxLayout(pal_box)
-        pal_l.addWidget(QLabel("Palette Tema"))
-        grid = QGridLayout()
-        fields = [
-            ("APP_BG", "Sfondo app"), ("SURFACE_BG", "Superficie"), ("PANEL_BG", "Pannello"),
-            ("CARD_BG", "Card"), ("TILE_BG", "Tile Home"),
-            ("ACCENT", "Accento 1"), ("ACCENT_2", "Accento 2"),
-            ("OK", "OK"), ("WARN", "Warn"), ("ERR", "Errore"),
-            ("TEXT", "Testo"), ("TEXT_MUTED", "Testo attenuato"),
-            ("OUTLINE", "Bordo1"), ("OUTLINE_SOFT", "Bordo2"),
-            ("HEADER_BG", "Header BG"), ("HEADER_FG", "Header FG"),
-        ]
-        for i, (key, lbl) in enumerate(fields):
-            grid.addWidget(QLabel(lbl), i, 0)
-            default_value = getattr(THEME, "SURFACE_BG")
-            value = str(getattr(THEME, key, default_value))
-            edit = QLineEdit(value); edit.setFixedWidth(120)
-            btn = QPushButton("Scegli…"); btn.setFixedWidth(90)
-            def picker(k=key, e=edit):
-                col = QColorDialog.getColor()
-                if col.isValid():
-                    e.setText(col.name())
-            btn.clicked.connect(picker)
-            grid.addWidget(edit, i, 1); grid.addWidget(btn, i, 2)
-            self.color_vars[key] = edit
-
-        actions = QHBoxLayout()
-        btn_apply = QPushButton("Applica ora"); btn_apply.clicked.connect(self._apply_theme_now)
-        btn_save = QPushButton("Salva combinazione"); btn_save.clicked.connect(self._save_theme_combo)
-        actions.addWidget(btn_apply); actions.addWidget(btn_save); actions.addStretch(1)
-        pal_l.addLayout(grid); pal_l.addLayout(actions)
-        lay.addWidget(pal_box); lay.addStretch(1)
-        return pg
-
-    def _apply_theme_now(self):
-        pal = {k: e.text().strip() for k, e in self.color_vars.items()}
-        set_palette_from_dict(pal)
-        apply_global_stylesheet(QApplication.instance())
-        QMessageBox.information(self, "Tema", "Tema applicato (live).")
-
-    def _save_theme_combo(self):
-        pal = {k: e.text().strip() for k, e in self.color_vars.items()}
-        save_theme_combo("Custom", pal, {})
-        QMessageBox.information(self, "Tema", "Combinazione salvata come 'Custom' in data/themes.json.")
-
-    # --- Polling diagnostica/StatusPanel ---
-    def on_show(self):
-        if self._diag_timer is None:
-            self._diag_timer = QTimer(self)
-            self._diag_timer.timeout.connect(self._tick_diag)
-            self._diag_timer.start(300)
-
-    def hideEvent(self, ev):
-        if self._diag_timer is not None:
-            try:
-                self._diag_timer.stop()
             except Exception:
                 pass
-            self._diag_timer = None
-        # chiudi eventuale popup anteprima quando lasci Utility
+
+        # Aggiorna indice e lista
+        self._profiles_index[name] = th
+        if self.lst_profiles:
+            names_in_list = set(self._iter_list_items(self.lst_profiles))
+            if name not in names_in_list:
+                self.lst_profiles.addItem(QListWidgetItem(name))
+            # ordina per nome
+            self._sort_list_widget(self.lst_profiles)
+            # seleziona la voce
+            items = self.lst_profiles.findItems(name, Qt.MatchExactly)
+            if items:
+                self.lst_profiles.setCurrentItem(items[0])
+
+    def _delete_profile(self):
+        name = self._get_selected_name()
+        if not name:
+            return
+        # Prova ad eliminare da store se disponibile
+        deleted = False
+        if self.profiles and hasattr(self.profiles, "delete_profile"):
+            try:
+                self.profiles.delete_profile(name)
+                deleted = True
+            except Exception:
+                deleted = False
+        # Se nessuna API di delete: rimuovi solo dalla lista in UI
+        if name in self._profiles_index:
+            del self._profiles_index[name]
+        if self.lst_profiles:
+            row = self.lst_profiles.currentRow()
+            it = self.lst_profiles.takeItem(row)
+            del it
+            # seleziona altro elemento
+            if self.lst_profiles.count() > 0:
+                self.lst_profiles.setCurrentRow(min(row, self.lst_profiles.count() - 1))
+            else:
+                # svuota form
+                if self.edit_prof_name:
+                    self.edit_prof_name.clear()
+                if self.edit_prof_th:
+                    self.edit_prof_th.clear()
+        # Chiudi eventuale preview
+        self._close_preview()
+
+    # --------------------- Preview DXF ---------------------
+    def _close_preview(self):
         try:
             if self._section_popup:
                 self._section_popup.close()
                 self._section_popup = None
         except Exception:
-            pass
-        super().hideEvent(ev)
+            self._section_popup = None
 
-    def _tick_diag(self):
+    def _ensure_popup(self) -> Optional[SectionPreviewPopup]:
+        if SectionPreviewPopup is None:
+            return None
+        if self._section_popup is None:
+            self._section_popup = SectionPreviewPopup(self.appwin, "Sezione profilo")
+        return self._section_popup
+
+    def _get_profile_shape(self, name: str) -> Optional[Dict[str, Any]]:
+        if not self.profiles or not hasattr(self.profiles, "get_profile_shape"):
+            return None
         try:
-            self.status.refresh()
+            return self.profiles.get_profile_shape(name)
         except Exception:
-            pass
+            return None
 
-    def _do_backup(self):
-        QMessageBox.information(self, "Backup", "Funzione backup: da collegare al backend.")
+    def _show_profile_preview_ephemeral(self, profile_name: str, auto_hide_ms: int = 1200):
+        # Mostra popup piccolo e temporaneo in alto-sinistra della pagina
+        if not profile_name or SectionPreviewPopup is None:
+            return
+        shape = self._get_profile_shape(profile_name)
+        if not shape or not shape.get("dxf_path"):
+            self._close_preview()
+            return
 
-    def _do_restore(self):
-        QMessageBox.information(self, "Ripristino", "Funzione ripristino: da collegare al backend.")
+        popup = self._ensure_popup()
+        if not popup:
+            return
+        try:
+            popup.load_path(shape["dxf_path"])
+        except Exception:
+            self._close_preview()
+            return
+
+        # Dimensiona alla bbox, non oltre ~25% dello schermo e non ingrandire oltre la sezione
+        try:
+            bw = float(shape.get("bbox_w") or 0.0)
+            bh = float(shape.get("bbox_h") or 0.0)
+        except Exception:
+            bw = bh = 0.0
+
+        if bw > 0.0 and bh > 0.0:
+            screen = QGuiApplication.primaryScreen()
+            scr = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+            max_w = int(scr.width() * 0.25)
+            max_h = int(scr.height() * 0.25)
+            desired_w = int(min(bw, max_w))
+            desired_h = int(min(bh, max_h))
+            desired_w = max(160, desired_w)
+            desired_h = max(120, desired_h)
+            try:
+                popup.resize(desired_w, desired_h)
+            except Exception:
+                pass
+
+        # Posiziona in alto-sinistra della pagina e auto-chiudi
+        try:
+            popup.show_top_left_of(self, auto_hide_ms=auto_hide_ms)
+        except TypeError:
+            # Fallback per versioni senza auto_hide_ms nel metodo
+            popup.show_top_left_of(self)
+            QTimer.singleShot(auto_hide_ms, lambda: self._close_preview())
+
+    # --------------------- Helpers ---------------------
+    def _iter_list_items(self, lw: QListWidget) -> List[str]:
+        return [lw.item(i).text() for i in range(lw.count())]
+
+    def _sort_list_widget(self, lw: QListWidget):
+        texts = self._iter_list_items(lw)
+        texts.sort()
+        lw.clear()
+        for t in texts:
+            lw.addItem(QListWidgetItem(t))
+
+    # --------------------- Lifecycle ---------------------
+    def on_show(self):
+        # Ricarica elenco (nel caso l'altro modulo Profili abbia creato o aggiornato voci)
+        self._load_profiles()
+
+    def hideEvent(self, ev):
+        self._close_preview()
+        super().hideEvent(ev)
