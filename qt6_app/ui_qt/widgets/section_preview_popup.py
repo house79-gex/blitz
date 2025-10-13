@@ -3,15 +3,14 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QRect, QTimer
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QWidget
-
 from ui_qt.widgets.section_preview import SectionPreviewWidget
 
 
 class SectionPreviewPopup(QDialog):
     """
     Popup anteprima sezione:
-    - Dimensionabile alla bbox della sezione (non più grande di un limite).
-    - Modalità temporanea: auto-chiusura dopo N ms.
+    - Dimensionabile alla bbox (ridotto).
+    - Temporaneo: auto-chiusura dopo N ms.
     - Posizionamento in alto-sinistra di un widget di riferimento.
     """
     def __init__(self, parent: Optional[QWidget] = None, title: str = "Sezione profilo"):
@@ -21,10 +20,8 @@ class SectionPreviewPopup(QDialog):
         lay = QVBoxLayout(self); lay.setContentsMargins(4, 4, 4, 4)
         self.preview = SectionPreviewWidget(self)
         lay.addWidget(self.preview, 1)
-
         self._auto_close_timer: Optional[QTimer] = None
-        # dimensione base più piccola
-        self.resize(240, 160)
+        self.resize(220, 150)
 
     def load_path(self, path: str):
         try:
