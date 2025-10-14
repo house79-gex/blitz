@@ -27,6 +27,12 @@ try:
 except Exception:
     SectionPreviewPopup = None
 
+# Nuovo dialog modale per il salvataggio profili
+try:
+    from ui_qt.dialogs.profile_save_dialog import ProfileSaveDialog
+except Exception:
+    ProfileSaveDialog = None
+
 STATUS_W = 260
 
 
@@ -50,7 +56,7 @@ class UtilityPage(QWidget):
         main = QHBoxLayout(); main.setSpacing(10); main.setContentsMargins(0, 0, 0, 0)
         root.addLayout(main, 1)
 
-        # Menu
+        # Menu sinistro
         menu = QFrame(); menu.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); menu.setFixedWidth(200)
         menu.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
         menu_layout = QVBoxLayout(menu); menu_layout.setContentsMargins(8, 8, 8, 8); menu_layout.setSpacing(6)
@@ -61,7 +67,7 @@ class UtilityPage(QWidget):
         menu_layout.addWidget(QLabel("Sottomenu"))
         menu_layout.addWidget(self.lst_menu, 1)
 
-        # Stack
+        # Stack centrale
         self.stack = QStackedWidget(); self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.page_profiles = ProfilesSubPage(self.appwin, self.profiles_store)
         self.page_cad = CadSubPage(self.appwin, self.profiles_store)
@@ -75,7 +81,7 @@ class UtilityPage(QWidget):
         self.stack.addWidget(self.page_config)
         self.stack.addWidget(self.page_themes)
 
-        # Status
+        # Status destro
         right = QFrame(); right.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); right.setFixedWidth(STATUS_W)
         right_layout = QVBoxLayout(right); right_layout.setContentsMargins(0, 0, 0, 0); right_layout.setSpacing(6)
         self.status_panel = StatusPanel(self.machine, title="STATO")
@@ -145,21 +151,40 @@ class ProfilesSubPage(QFrame):
 
         right = QFrame(); rl = QGridLayout(right); rl.setContentsMargins(6, 6, 6, 6); rl.setHorizontalSpacing(8); rl.setVerticalSpacing(6)
         row = 0
-        rl.addWidget(QLabel("Dettagli"), row, 0, 1, 3, alignment=Qt.AlignLeft); row += 1
-        rl.addWidget(QLabel("Nome:"), row, 0); self.edit_prof_name = QLineEdit(); rl.addWidget(self.edit_prof_name, row, 1, 1, 2); row += 1
-        rl.addWidget(QLabel("Spessore (mm):"), row, 0); self.edit_prof_th = QLineEdit(); self.edit_prof_th.setPlaceholderText("0.0"); rl.addWidget(self.edit_prof_th, row, 1, 1, 2); row += 1
+        rl.addWidget(QLabel("Dettagli"), row, 0, 1, 4, alignment=Qt.AlignLeft); row += 1
+        rl.addWidget(QLabel("Nome:"), row, 0); self.edit_prof_name = QLineEdit(); rl.addWidget(self.edit_prof_name, row, 1, 1, 3); row += 1
+        rl.addWidget(QLabel("Spessore (mm):"), row, 0); self.edit_prof_th = QLineEdit(); self.edit_prof_th.setPlaceholderText("0.0"); rl.addWidget(self.edit_prof_th, row, 1, 1, 3); row += 1
 
         btns = QHBoxLayout(); btns.setSpacing(6)
         self.btn_new = QPushButton("Nuovo"); self.btn_new.clicked.connect(self._new_profile); btns.addWidget(self.btn_new)
         self.btn_save = QPushButton("Salva"); self.btn_save.clicked.connect(self._save_profile); btns.addWidget(self.btn_save)
         self.btn_delete = QPushButton("Elimina"); self.btn_delete.clicked.connect(self._delete_profile); btns.addWidget(self.btn_delete)
         self.btn_open_cad = QPushButton("Apri in CAD"); self.btn_open_cad.setEnabled(False); self.btn_open_cad.clicked.connect(self._open_cad_for_current); btns.addWidget(self.btn_open_cad)
-        rl.addLayout(btns, row, 0, 1, 3); row += 1
+        # Nuovo: finestra modale Salva/Modifica
+        self.btn_modal = QPushButton("Salva/Modifica (modale)")
+        self.btn_modal.clicked.connect(self._open_modal_save)
+        btns.addWidget(self.btn_modal)
 
-        tip = QLabel("Suggerimento: seleziona un profilo per la preview DXF (popup)."); tip.setStyleSheet("color:#7f8c8d;")
-        rl.addWidget(tip, row, 0, 1, 3); row += 1
+        rl.addLayout(btns, row, 0, 1, 4); row += 1
+
+        tip = QLabel("Suggerimento: usa 'Salva/Modifica (modale)' per rinominare o aggiornare velocemente un profilo.")
+        tip.setStyleSheet("color:#7f8c8d;")
+        rl.addWidget(tip, row, 0, 1, 4); row += 1
 
         root.addWidget(left, 0); root.addWidget(right, 1)
+
+    def _open_modal_save(self):
+        if not (self.profiles and ProfileSaveDialog):
+            return
+        name = (self.edit_prof_name.text() or "").strip()
+        try:
+            th = float((self.edit_prof_th.text() or "0").replace(",", "."))
+        except Exception:
+            th = 0.0
+        dlg = ProfileSaveDialog(self.profiles, self, default_name=name, default_thickness=th)
+        dlg.exec()
+        # ricarica elenco dopo eventuale modifica
+        self.reload_profiles()
 
     def reload_profiles(self):
         self._profiles_index.clear()
@@ -304,17 +329,21 @@ class CadSubPage(QFrame):
         btn_open.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         btn_open.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
         btn_open.clicked.connect(self._choose_and_load); bar1.addWidget(btn_open)
-        lbl_oda = QLabel("ODA Converter:"); lbl_oda.setStyleSheet("font-size:11px;")
+        lbl_oda = QLabel("ODA Converter:"); lbl_oda.setStyleSheet("font-size:11px; color:#0a0a0a;")
         bar1.addWidget(lbl_oda)
-        self.edit_oda_path = QLineEdit(); self.edit_oda_path.setPlaceholderText("Percorso ODA/Teigha (opzionale)"); bar1.addWidget(self.edit_oda_path, 1)
+        self.edit_oda_path = QLineEdit(); self.edit_oda_path.setPlaceholderText("Percorso ODA/Teigha (opzionale)")
+        self.edit_oda_path.setStyleSheet("font-size:11px;")
+        bar1.addWidget(self.edit_oda_path, 1)
         btn_browse_oda = QToolButton(); btn_browse_oda.setText("…"); btn_browse_oda.clicked.connect(self._browse_oda); bar1.addWidget(btn_browse_oda)
         btn_apply_oda = QPushButton("Applica"); btn_apply_oda.clicked.connect(self._apply_oda_path); bar1.addWidget(btn_apply_oda)
         bar1.addStretch(1)
         root.addLayout(bar1)
 
-        # Toolbar 2 (font più piccolo per leggibilità)
+        # Toolbar 2: comandi ad alto contrasto e font ridotto
         bar2 = QHBoxLayout(); bar2.setSpacing(6)
-        btn_style = "QPushButton{font-size:11px;padding:4px 8px;} QToolButton{font-size:11px;}"
+        btn_style = ("QPushButton{font-size:11px;padding:4px 8px;color:#0a0a0a;background:#e9eef6;border:1px solid #c8d3e6;border-radius:4px;}"
+                     "QPushButton:checked{background:#d4e1fb;border-color:#9bb6e3;}"
+                     "QToolButton{font-size:11px;}")
         grp = QButtonGroup(self)
 
         btn_dist = QPushButton("Distanza (G)"); btn_dist.setCheckable(True); btn_dist.setStyleSheet(btn_style)
@@ -336,18 +365,25 @@ class CadSubPage(QFrame):
         bar2.addWidget(btn_rot_l); bar2.addWidget(btn_rot_r); bar2.addWidget(btn_align)
 
         bar2.addSpacing(12)
-        lbl_prof = QLabel("Profilo:"); lbl_prof.setStyleSheet("font-size:11px;")
+        lbl_prof = QLabel("Profilo:"); lbl_prof.setStyleSheet("font-size:11px; color:#0a0a0a;")
         bar2.addWidget(lbl_prof)
         self.cmb_profiles = QComboBox(); self.cmb_profiles.setStyleSheet("font-size:11px;")
         bar2.addWidget(self.cmb_profiles)
+
         btn_set_th = QPushButton("Imposta spessore = quota"); btn_set_th.setStyleSheet(btn_style)
         btn_set_th.clicked.connect(self._apply_thickness_from_dimension); bar2.addWidget(btn_set_th)
+
+        # Nuovo: salvataggio/modifica con modale direttamente dal CAD (prefilla con ultima quota)
+        btn_modal_save = QPushButton("Salva/Modifica profilo…"); btn_modal_save.setStyleSheet(btn_style)
+        btn_modal_save.clicked.connect(self._open_modal_save_from_cad)
+        bar2.addWidget(btn_modal_save)
+
         bar2.addStretch(1)
         root.addLayout(bar2)
 
         # Viewer
         if DxfViewerWidget is None:
-            na = QLabel("Modulo CAD non disponibile in questa build."); na.setStyleSheet("font-size:12px;")
+            na = QLabel("Modulo CAD non disponibile in questa build."); na.setStyleSheet("font-size:12px;color:#0a0a0a;")
             root.addWidget(na, 1); return
 
         self.viewer = DxfViewerWidget(self)
@@ -364,6 +400,18 @@ class CadSubPage(QFrame):
         btn_rot_l.clicked.connect(lambda: self.viewer and self.viewer.rotate_view(+5.0))
         btn_rot_r.clicked.connect(lambda: self.viewer and self.viewer.rotate_view(-5.0))
         btn_align.clicked.connect(lambda: self.viewer and self.viewer.align_vertical_to_segment_under_cursor())
+
+    def _open_modal_save_from_cad(self):
+        if not (self.profiles and ProfileSaveDialog):
+            return
+        # Nome correntemente selezionato + ultima quota come spessore default
+        cur_name = (self.cmb_profiles.currentText() or "").strip()
+        default_th = 0.0
+        if self.viewer:
+            default_th = self.viewer.last_dimension_value() or self.viewer.last_measure_value() or 0.0
+        dlg = ProfileSaveDialog(self.profiles, self, default_name=cur_name, default_thickness=default_th)
+        dlg.exec()
+        self.reload_profiles_list()
 
     def reload_profiles_list(self):
         self._profiles_names = []
@@ -391,7 +439,8 @@ class CadSubPage(QFrame):
         if self.edit_oda_path and self.edit_oda_path.text().strip():
             try: self.viewer.set_oda_converter_path(self.edit_oda_path.text().strip())
             except Exception: pass
-        try: self.viewer.load_file(path)
+        try:
+            self.viewer.load_file(path)
         except Exception:
             try:
                 if path.lower().endswith(".dxf"): self.viewer.load_dxf(path)
@@ -407,7 +456,7 @@ class CadSubPage(QFrame):
             self.viewer.set_oda_converter_path(self.edit_oda_path.text().strip() or None)
 
     def _on_dimension_committed(self, value: float):
-        # Hook per eventuali feedback UI
+        # hook per feedback eventuale
         pass
 
     def _apply_thickness_from_dimension(self):
