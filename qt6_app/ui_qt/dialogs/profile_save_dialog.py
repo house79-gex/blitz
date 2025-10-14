@@ -1,12 +1,11 @@
 from __future__ import annotations
-from typing import Optional, Dict, Any, List
+from typing import Optional, List
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QGridLayout, QHBoxLayout, QLabel,
-    QComboBox, QLineEdit, QPushButton
+    QComboBox, QLineEdit, QPushButton, QMessageBox
 )
-
 
 class ProfileSaveDialog(QDialog):
     """
@@ -47,7 +46,6 @@ class ProfileSaveDialog(QDialog):
 
         root.addLayout(form)
 
-        # Pulsanti
         btns = QHBoxLayout()
         self.btn_apply = QPushButton("Applica")
         self.btn_close = QPushButton("Chiudi")
@@ -56,12 +54,10 @@ class ProfileSaveDialog(QDialog):
         btns.addStretch(1)
         root.addLayout(btns)
 
-        # Wiring
         self.cmb_existing.currentTextChanged.connect(self._on_existing_changed)
         self.btn_apply.clicked.connect(self._do_apply)
         self.btn_close.clicked.connect(self.accept)
 
-        # Precompila
         if default_name:
             self.edit_name.setText(default_name)
             idx = self.cmb_existing.findText(default_name)
@@ -85,7 +81,6 @@ class ProfileSaveDialog(QDialog):
         name = (text or "").strip()
         if name == "— Nuovo —" or not name:
             return
-        # Precarica spessore del profilo selezionato
         try:
             rows = self.profiles_store.list_profiles()
             for r in rows:
@@ -100,6 +95,7 @@ class ProfileSaveDialog(QDialog):
     def _do_apply(self):
         name = (self.edit_name.text() or "").strip()
         if not name:
+            QMessageBox.warning(self, "Attenzione", "Inserisci un nome profilo valido.")
             return
         try:
             th = float((self.edit_th.text() or "0").replace(",", "."))
@@ -108,4 +104,4 @@ class ProfileSaveDialog(QDialog):
         try:
             self.profiles_store.upsert_profile(name, th)
         except Exception:
-            pass
+            QMessageBox.critical(self, "Errore", "Impossibile salvare il profilo.")
