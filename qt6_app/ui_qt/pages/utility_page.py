@@ -6,7 +6,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QListWidget, QListWidgetItem,
     QLineEdit, QPushButton, QGridLayout, QSizePolicy, QAbstractItemView, QStackedWidget,
-    QFileDialog, QToolButton, QStyle, QButtonGroup
+    QFileDialog, QToolButton, QStyle, QButtonGroup, QComboBox
 )
 
 from ui_qt.widgets.header import Header
@@ -40,9 +40,8 @@ class UtilityPage(QWidget):
     - Colonna sinistra: menu (Profili, CAD 2D, Backup, Configurazione, Temi)
     - Centro: contenuto pagine (QStackedWidget)
     - Destra: StatusPanel
-    - Profili è un sottomenu dedicato alla gestione (nome/spessore), preview DXF popup auto-hide, e "Apri in CAD".
-    - CAD 2D integra il viewer avanzato (misure, rotazione, snap, ecc.).
-    - Backup/Configurazione/Temi sono pagine placeholder pronte per essere estese.
+    - Profili: gestione (nome/spessore), preview DXF popup auto-hide, “Apri in CAD”
+    - CAD 2D: apertura DXF/DWG (converter ODA opzionale), misure e quota allineata, “Imposta spessore = quota”
     """
     def __init__(self, appwin):
         super().__init__()
@@ -93,7 +92,7 @@ class UtilityPage(QWidget):
 
         # Pagine
         self.page_profiles = ProfilesSubPage(self.appwin, self.profiles_store)
-        self.page_cad = CadSubPage(self.appwin)
+        self.page_cad = CadSubPage(self.appwin, self.profiles_store)
         self.page_backup = BackupSubPage(self.appwin)
         self.page_config = ConfigSubPage(self.appwin)
         self.page_themes = ThemesSubPage(self.appwin)
@@ -145,22 +144,20 @@ class UtilityPage(QWidget):
     def _open_in_cad(self, dxf_path: str):
         if not dxf_path:
             return
-        # passa alla pagina CAD e carica il file
         self.stack.setCurrentIndex(1)
-        # sincronizza lista menu
         items = self.lst_menu.findItems("CAD 2D", Qt.MatchExactly)
         if items:
             self.lst_menu.setCurrentItem(items[0])
         try:
-            self.page_cad.load_dxf_path(dxf_path)
+            self.page_cad.load_path(dxf_path)
         except Exception:
             pass
 
     # ---------- Lifecycle ----------
     def on_show(self):
-        # refresh profili all'apertura Utility
         try:
             self.page_profiles.reload_profiles()
+            self.page_cad.reload_profiles_list()
         except Exception:
             pass
 
@@ -185,7 +182,7 @@ class ProfilesSubPage(QFrame):
         self._profiles_index: Dict[str, float] = {}
         self._section_popup: Optional[SectionPreviewPopup] = None
 
-        self.lst_profiles: Optional[ListWidget] = None
+        self.lst_profiles: Optional[QListWidget] = None
         self.edit_prof_name: Optional[QLineEdit] = None
         self.edit_prof_th: Optional[QLineEdit] = None
         self.btn_open_cad: Optional[QPushButton] = None
@@ -250,7 +247,6 @@ class ProfilesSubPage(QFrame):
         self.btn_delete.clicked.connect(self._delete_profile)
         btns.addWidget(self.btn_delete)
 
-        # Apri in CAD
         self.btn_open_cad = QPushButton("Apri in CAD")
         self.btn_open_cad.setEnabled(False)
         self.btn_open_cad.clicked.connect(self._open_cad_for_current)
@@ -259,7 +255,6 @@ class ProfilesSubPage(QFrame):
         rl.addLayout(btns, row, 0, 1, 3)
         row += 1
 
-        # Tip
         tip = QLabel("Suggerimento: seleziona un profilo per la preview DXF (popup).")
         tip.setStyleSheet("color:#7f8c8d;")
         rl.addWidget(tip, row, 0, 1, 3)
@@ -310,7 +305,6 @@ class ProfilesSubPage(QFrame):
         # Preview popup (ridotta e temporanea)
         dxf_path = self._get_profile_dxf_path(name)
         self._show_profile_preview_ephemeral(name)
-        # abilita "Apri in CAD" solo se presente DXF
         self.btn_open_cad.setEnabled(bool(dxf_path))
 
     def _new_profile(self):
@@ -468,11 +462,19 @@ class ProfilesSubPage(QFrame):
 # Subpage: CAD 2D (sottomenu)
 # ======================================================================
 class CadSubPage(QFrame):
-    def __init__(self, appwin):
+    def __init__(self, appwin, profiles_store):
         super().__init__()
         self.appwin = appwin
+        self.profiles = profiles_store
+
         self.viewer: Optional[DxfViewerWidget] = None
+        self.cmb_profiles: Optional[QComboBox] = None
+        self.edit_oda_path: Optional[QLineEdit] = None
+
+        self._profiles_names: List[str] = []
+
         self._build()
+        self.reload_profiles_list()
 
     def _build(self):
         self.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
@@ -480,39 +482,68 @@ class CadSubPage(QFrame):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        # Toolbar
-        bar = QHBoxLayout()
-        bar.setSpacing(6)
+        # Toolbar riga 1: apertura file e converter
+        bar1 = QHBoxLayout()
+        bar1.setSpacing(6)
 
         btn_open = QToolButton()
-        btn_open.setText("Apri DXF")
+        btn_open.setText("Apri DXF/DWG")
         btn_open.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         btn_open.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
         btn_open.clicked.connect(self._choose_and_load)
-        bar.addWidget(btn_open)
+        bar1.addWidget(btn_open)
 
-        # Tools group: distanza, perpendicolare, angolo
+        bar1.addWidget(QLabel("ODA Converter:"))
+        self.edit_oda_path = QLineEdit()
+        self.edit_oda_path.setPlaceholderText("Percorso ODA/Teigha File Converter (opz.) o lascia vuoto")
+        bar1.addWidget(self.edit_oda_path, 1)
+        btn_browse_oda = QToolButton()
+        btn_browse_oda.setText("…")
+        btn_browse_oda.clicked.connect(self._browse_oda)
+        bar1.addWidget(btn_browse_oda)
+        btn_apply_oda = QPushButton("Applica")
+        btn_apply_oda.clicked.connect(self._apply_oda_path)
+        bar1.addWidget(btn_apply_oda)
+
+        bar1.addStretch(1)
+        root.addLayout(bar1)
+
+        # Toolbar riga 2: strumenti CAD e integrazione profili
+        bar2 = QHBoxLayout()
+        bar2.setSpacing(6)
+
         grp = QButtonGroup(self)
         btn_dist = QPushButton("Distanza (G)")
         btn_perp = QPushButton("Perp. (P)")
         btn_ang = QPushButton("Angolo (O)")
-        for b in (btn_dist, btn_perp, btn_ang):
+        btn_dim = QPushButton("Quota allineata (D)")
+        for b in (btn_dist, btn_perp, btn_ang, btn_dim):
             b.setCheckable(True)
-            bar.addWidget(b)
+            bar2.addWidget(b)
         grp.addButton(btn_dist, 1)
         grp.addButton(btn_perp, 2)
         grp.addButton(btn_ang, 3)
+        grp.addButton(btn_dim, 4)
         btn_dist.setChecked(True)
 
-        # Rotazione vista
         btn_rot_l = QPushButton("↺ (R)")
         btn_rot_r = QPushButton("↻ (E)")
         btn_align = QPushButton("Allinea (A)")
-        bar.addWidget(btn_rot_l)
-        bar.addWidget(btn_rot_r)
-        bar.addWidget(btn_align)
-        bar.addStretch(1)
-        root.addLayout(bar)
+        bar2.addWidget(btn_rot_l)
+        bar2.addWidget(btn_rot_r)
+        bar2.addWidget(btn_align)
+
+        bar2.addSpacing(12)
+        bar2.addWidget(QLabel("Profilo:"))
+        self.cmb_profiles = QComboBox()
+        bar2.addWidget(self.cmb_profiles)
+
+        btn_set_th = QPushButton("Imposta spessore = quota")
+        btn_set_th.clicked.connect(self._apply_thickness_from_dimension)
+        bar2.addWidget(btn_set_th)
+
+        bar2.addStretch(1)
+        root.addLayout(bar2)
 
         # Viewer
         if DxfViewerWidget is None:
@@ -520,33 +551,100 @@ class CadSubPage(QFrame):
             return
 
         self.viewer = DxfViewerWidget(self)
+        self.viewer.dimensionCommitted.connect(self._on_dimension_committed)
         root.addWidget(self.viewer, 1)
 
         # Wiring tools
         btn_dist.toggled.connect(lambda on: (on and self.viewer and self.viewer.set_tool_distance()))
         btn_perp.toggled.connect(lambda on: (on and self.viewer and self.viewer.set_tool_perpendicular()))
         btn_ang.toggled.connect(lambda on: (on and self.viewer and self.viewer.set_tool_angle()))
+        btn_dim.toggled.connect(lambda on: (on and self.viewer and self.viewer.set_tool_dim_aligned()))
         btn_rot_l.clicked.connect(lambda: self.viewer and self.viewer.rotate_view(+5.0))
         btn_rot_r.clicked.connect(lambda: self.viewer and self.viewer.rotate_view(-5.0))
-        btn_align.clicked.connect(lambda: self.viewer and self.viewer.align_vertical_to_segment_under_cursor())
+        btn_align.clicked.connect(lambda: self.viewer and self.viewer.align_vertical_to_segment_under_cursor()))
 
+    # ---------- Profili ----------
+    def reload_profiles_list(self):
+        self._profiles_names = []
+        self.cmb_profiles.blockSignals(True)
+        self.cmb_profiles.clear()
+        if self.profiles:
+            try:
+                rows = self.profiles.list_profiles()
+                for r in rows:
+                    name = str(r.get("name"))
+                    if name:
+                        self._profiles_names.append(name)
+                for n in sorted(self._profiles_names):
+                    self.cmb_profiles.addItem(n)
+            except Exception:
+                pass
+        if not self._profiles_names:
+            self.cmb_profiles.addItem("Nessuno")
+        self.cmb_profiles.blockSignals(False)
+
+    # ---------- Apertura file ----------
     def _choose_and_load(self):
         if DxfViewerWidget is None:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Apri DXF", "", "DXF Files (*.dxf);;All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Apri DXF/DWG", "", "CAD Files (*.dxf *.dwg);;Tutti i file (*)")
         if not path:
             return
-        self.load_dxf_path(path)
+        self.load_path(path)
 
-    def load_dxf_path(self, path: str):
+    def load_path(self, path: str):
         if self.viewer is None:
             return
+        # applica converter se impostato
+        if self.edit_oda_path and self.edit_oda_path.text().strip():
+            try:
+                self.viewer.set_oda_converter_path(self.edit_oda_path.text().strip())
+            except Exception:
+                pass
         try:
-            self.viewer.load_dxf(path)
-        except Exception:
-            # visualizza errore minimale
-            pass
+            # Gestione automatica DXF/DWG
+            self.viewer.load_file(path)
+        except Exception as e:
+            # fallback DXF puro
+            try:
+                if path.lower().endswith(".dxf"):
+                    self.viewer.load_dxf(path)
+            except Exception:
+                pass
 
+    def _browse_oda(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Seleziona ODA/Teigha File Converter", "", "Eseguibili (*)")
+        if not path:
+            return
+        if self.edit_oda_path:
+            self.edit_oda_path.setText(path)
+
+    def _apply_oda_path(self):
+        if self.viewer and self.edit_oda_path:
+            self.viewer.set_oda_converter_path(self.edit_oda_path.text().strip() or None)
+
+    # ---------- Quota → spessore ----------
+    def _on_dimension_committed(self, value: float):
+        # si aggiorna solo internamente; l'utente deve premere il bottone per scrivere sul profilo
+        pass
+
+    def _apply_thickness_from_dimension(self):
+        if self.viewer is None or self.profiles is None:
+            return
+        name = (self.cmb_profiles.currentText() or "").strip()
+        if not name:
+            return
+        val = float(self.viewer.last_dimension_value())
+        if val <= 0:
+            # tenta con ultima misura lineare
+            val = float(self.viewer.last_measure_value())
+        if val <= 0:
+            return
+        try:
+            self.profiles.upsert_profile(name, float(val))
+        except Exception:
+            pass
+        # feedback leggero (potresti aggiungere un banner in futuro)
 
 # ======================================================================
 # Subpage: Backup (sottomenu)
@@ -572,7 +670,6 @@ class BackupSubPage(QFrame):
         row.addStretch(1)
         root.addLayout(row)
 
-        # Placeholder note
         note = QLabel("Configura qui la strategia di backup (destinazione, schedulazione, retention...).")
         note.setStyleSheet("color:#7f8c8d;")
         root.addWidget(note, 0)
@@ -599,7 +696,6 @@ class ConfigSubPage(QFrame):
         root.addWidget(QLabel("Configurazione"), row, 0, 1, 2, alignment=Qt.AlignLeft)
         row += 1
 
-        # Placeholder opzioni (da collegare al backend config)
         root.addWidget(QLabel("Opzione A:"), row, 0)
         root.addWidget(QLineEdit(), row, 1)
         row += 1
@@ -612,7 +708,6 @@ class ConfigSubPage(QFrame):
         root.addWidget(QLineEdit(), row, 1)
         row += 1
 
-        # Pulsanti
         buttons = QHBoxLayout()
         btn_save = QPushButton("Salva configurazione")
         buttons.addWidget(btn_save)
@@ -639,7 +734,6 @@ class ThemesSubPage(QFrame):
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Seleziona tema:"))
-        # elenco temi placeholder
         btn_light = QPushButton("Chiaro")
         btn_dark = QPushButton("Scuro")
         row.addWidget(btn_light)
