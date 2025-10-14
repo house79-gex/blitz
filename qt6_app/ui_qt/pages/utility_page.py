@@ -7,38 +7,36 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QListWidget, QListWidgetItem,
     QLineEdit, QPushButton, QGridLayout, QSizePolicy, QAbstractItemView, QStackedWidget,
-    QFileDialog, QToolButton, QStyle, QComboBox
+    QFileDialog, QToolButton, QStyle, QComboBox, QInputDialog
 )
 
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 
-# Store profili
 try:
     from ui_qt.services.profiles_store import ProfilesStore
 except Exception:
     ProfilesStore = None
 
-# Preview popup sezione
 try:
     from ui_qt.widgets.section_preview_popup import SectionPreviewPopup
 except Exception:
     SectionPreviewPopup = None
 
-# Dialog salvataggio profilo (modale)
 try:
     from ui_qt.dialogs.profile_save_dialog import ProfileSaveDialog
 except Exception:
     ProfileSaveDialog = None
 
-# Integrazione QCAD
+# QCAD integrazione (+ bbox dal DXF)
 try:
-    from ui_qt.services.qcad_integration import suggest_qcad_paths, launch_qcad, find_export_file, parse_export_json
+    from ui_qt.services.qcad_integration import suggest_qcad_paths, launch_qcad, find_export_file, parse_export_json, compute_dxf_bbox
 except Exception:
     suggest_qcad_paths = lambda: []
     def launch_qcad(*args, **kwargs): raise RuntimeError("Modulo qcad_integration non disponibile")
     def find_export_file(workspace_dir: str): return None
     def parse_export_json(path: str): return (None, {})
+    def compute_dxf_bbox(path: str): return None
 
 STATUS_W = 260
 
@@ -55,15 +53,11 @@ class UtilityPage(QWidget):
 
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(8)
-        header = Header(self.appwin, "UTILITY")
-        root.addWidget(header, 0)
+        root.setContentsMargins(16, 16, 16, 16); root.setSpacing(8)
+        header = Header(self.appwin, "UTILITY"); root.addWidget(header, 0)
 
-        main = QHBoxLayout(); main.setSpacing(10); main.setContentsMargins(0, 0, 0, 0)
-        root.addLayout(main, 1)
+        main = QHBoxLayout(); main.setSpacing(10); main.setContentsMargins(0, 0, 0, 0); root.addLayout(main, 1)
 
-        # Menu sinistro
         menu = QFrame(); menu.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); menu.setFixedWidth(200)
         menu.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
         menu_layout = QVBoxLayout(menu); menu_layout.setContentsMargins(8, 8, 8, 8); menu_layout.setSpacing(6)
@@ -71,10 +65,8 @@ class UtilityPage(QWidget):
         for label in ("Profili", "QCAD", "Backup", "Configurazione", "Temi"):
             self.lst_menu.addItem(QListWidgetItem(label))
         self.lst_menu.setCurrentRow(0)
-        menu_layout.addWidget(QLabel("Sottomenu"))
-        menu_layout.addWidget(self.lst_menu, 1)
+        menu_layout.addWidget(QLabel("Sottomenu")); menu_layout.addWidget(self.lst_menu, 1)
 
-        # Stack centrale
         self.stack = QStackedWidget(); self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.page_profiles = ProfilesSubPage(self.appwin, self.profiles_store)
         self.page_qcad = QcadSubPage(self.appwin, self.profiles_store)
@@ -82,13 +74,12 @@ class UtilityPage(QWidget):
         self.page_config = ConfigSubPage(self.appwin)
         self.page_themes = ThemesSubPage(self.appwin)
 
-        self.stack.addWidget(self.page_profiles)  # 0
-        self.stack.addWidget(self.page_qcad)      # 1
-        self.stack.addWidget(self.page_backup)    # 2
-        self.stack.addWidget(self.page_config)    # 3
-        self.stack.addWidget(self.page_themes)    # 4
+        self.stack.addWidget(self.page_profiles)
+        self.stack.addWidget(self.page_qcad)
+        self.stack.addWidget(self.page_backup)
+        self.stack.addWidget(self.page_config)
+        self.stack.addWidget(self.page_themes)
 
-        # Status destro
         right = QFrame(); right.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); right.setFixedWidth(STATUS_W)
         right_layout = QVBoxLayout(right); right_layout.setContentsMargins(0, 0, 0, 0); right_layout.setSpacing(6)
         self.status_panel = StatusPanel(self.machine, title="STATO")
@@ -109,7 +100,6 @@ class UtilityPage(QWidget):
         except Exception: pass
 
     def _open_in_qcad_on_profile(self, dxf_path: str):
-        # Passa alla pagina QCAD e prova ad aprire sul DXF del profilo
         self.stack.setCurrentIndex(1)
         items = self.lst_menu.findItems("QCAD", Qt.MatchExactly)
         if items: self.lst_menu.setCurrentItem(items[0])
@@ -119,10 +109,8 @@ class UtilityPage(QWidget):
             pass
 
     def on_show(self):
-        try:
-            self.page_profiles.reload_profiles()
-        except Exception:
-            pass
+        try: self.page_profiles.reload_profiles()
+        except Exception: pass
 
     def hideEvent(self, ev):
         try: self.page_profiles.close_preview()
@@ -168,9 +156,7 @@ class ProfilesSubPage(QFrame):
         self.btn_save = QPushButton("Salva"); self.btn_save.clicked.connect(self._save_profile); btns.addWidget(self.btn_save)
         self.btn_delete = QPushButton("Elimina"); self.btn_delete.clicked.connect(self._delete_profile); btns.addWidget(self.btn_delete)
         self.btn_open_cad = QPushButton("Apri in QCAD"); self.btn_open_cad.setEnabled(False); self.btn_open_cad.clicked.connect(self._open_cad_for_current); btns.addWidget(self.btn_open_cad)
-        self.btn_modal = QPushButton("Salva/Modifica (modale)")
-        self.btn_modal.clicked.connect(self._open_modal_save)
-        btns.addWidget(self.btn_modal)
+        self.btn_modal = QPushButton("Salva/Modifica (modale)"); self.btn_modal.clicked.connect(self._open_modal_save); btns.addWidget(self.btn_modal)
 
         rl.addLayout(btns, row, 0, 1, 4); row += 1
 
@@ -180,16 +166,12 @@ class ProfilesSubPage(QFrame):
         root.addWidget(left, 0); root.addWidget(right, 1)
 
     def _open_modal_save(self):
-        if not (self.profiles and ProfileSaveDialog):
-            return
+        if not (self.profiles and ProfileSaveDialog): return
         name = (self.edit_prof_name.text() or "").strip()
-        try:
-            th = float((self.edit_prof_th.text() or "0").replace(",", "."))
-        except Exception:
-            th = 0.0
+        try: th = float((self.edit_prof_th.text() or "0").replace(",", "."))
+        except Exception: th = 0.0
         dlg = ProfileSaveDialog(self.profiles, self, default_name=name, default_thickness=th)
-        dlg.exec()
-        self.reload_profiles()
+        dlg.exec(); self.reload_profiles()
 
     def reload_profiles(self):
         self._profiles_index.clear()
@@ -313,14 +295,6 @@ class ProfilesSubPage(QFrame):
 
 
 class QcadSubPage(QFrame):
-    """
-    Collegamento a QCAD esterno con import/export semplice:
-    - Imposti percorso QCAD
-    - Selezioni cartella di lavoro
-    - Apri QCAD (vuoto o su DXF del profilo)
-    - Importi export.blitz.json (manuale o con monitor auto)
-    - Applica 'spessore = ultima quota' al profilo scelto
-    """
     def __init__(self, appwin, profiles_store):
         super().__init__()
         self.appwin = appwin
@@ -336,7 +310,6 @@ class QcadSubPage(QFrame):
         grid = QGridLayout(); grid.setHorizontalSpacing(8); grid.setVerticalSpacing(6)
         row = 0
 
-        # QCAD path
         grid.addWidget(QLabel("Eseguibile QCAD:"), row, 0)
         self.edit_qcad = QLineEdit()
         sugg = next((p for p in suggest_qcad_paths() if Path(p).exists()), "")
@@ -347,7 +320,6 @@ class QcadSubPage(QFrame):
         grid.addWidget(btn_qcad, row, 2)
         row += 1
 
-        # Workspace
         grid.addWidget(QLabel("Cartella di lavoro:"), row, 0)
         self.edit_ws = QLineEdit()
         grid.addWidget(self.edit_ws, row, 1)
@@ -356,9 +328,36 @@ class QcadSubPage(QFrame):
         grid.addWidget(btn_ws, row, 2)
         row += 1
 
-        # Profilo target per aggiornare spessore
         grid.addWidget(QLabel("Profilo target:"), row, 0)
         self.cmb_profile = QComboBox()
+        self._reload_profiles_combo()
+        grid.addWidget(self.cmb_profile, row, 1, 1, 2)
+        row += 1
+
+        root.addLayout(grid)
+
+        btn_row = QHBoxLayout(); btn_row.setSpacing(8)
+        self.btn_open_blank = QPushButton("Apri QCAD (vuoto)"); self.btn_open_blank.clicked.connect(self._open_qcad_blank); btn_row.addWidget(self.btn_open_blank)
+        self.btn_open_prof = QPushButton("Apri QCAD su DXF profilo"); self.btn_open_prof.clicked.connect(self._open_qcad_on_profile); btn_row.addWidget(self.btn_open_prof)
+        self.btn_import = QPushButton("Importa export.blitz.json"); self.btn_import.clicked.connect(self._import_export_now); btn_row.addWidget(self.btn_import)
+        self.btn_monitor = QPushButton("Avvia monitor"); self.btn_monitor.setCheckable(True); self.btn_monitor.clicked.connect(self._toggle_monitor); btn_row.addWidget(self.btn_monitor)
+        btn_row.addStretch(1)
+        root.addLayout(btn_row)
+
+        # Nuovi pulsanti per gestione DXF
+        assoc_row = QHBoxLayout(); assoc_row.setSpacing(8)
+        self.btn_assoc = QPushButton("Associa DXF al profilo…"); self.btn_assoc.clicked.connect(self._associate_dxf_to_profile); assoc_row.addWidget(self.btn_assoc)
+        self.btn_new_from_dxf = QPushButton("Crea profilo da DXF…"); self.btn_new_from_dxf.clicked.connect(self._create_profile_from_dxf); assoc_row.addWidget(self.btn_new_from_dxf)
+        assoc_row.addStretch(1)
+        root.addLayout(assoc_row)
+
+        self.lbl_info = QLabel("Ultima quota: —"); self.lbl_info.setStyleSheet("color:#0a0a0a;")
+        root.addWidget(self.lbl_info, 0)
+
+        root.addStretch(1)
+
+    def _reload_profiles_combo(self):
+        self.cmb_profile.clear()
         if self.profiles:
             try:
                 rows = self.profiles.list_profiles()
@@ -369,28 +368,7 @@ class QcadSubPage(QFrame):
                 pass
         if self.cmb_profile.count() == 0:
             self.cmb_profile.addItem("Nessuno")
-        grid.addWidget(self.cmb_profile, row, 1, 1, 2)
-        row += 1
 
-        root.addLayout(grid)
-
-        # Azioni
-        btn_row = QHBoxLayout(); btn_row.setSpacing(8)
-        self.btn_open_blank = QPushButton("Apri QCAD (vuoto)"); self.btn_open_blank.clicked.connect(self._open_qcad_blank); btn_row.addWidget(self.btn_open_blank)
-        self.btn_open_prof = QPushButton("Apri QCAD su DXF profilo"); self.btn_open_prof.clicked.connect(self._open_qcad_on_profile); btn_row.addWidget(self.btn_open_prof)
-        self.btn_import = QPushButton("Importa export.blitz.json"); self.btn_import.clicked.connect(self._import_export_now); btn_row.addWidget(self.btn_import)
-        self.btn_monitor = QPushButton("Avvia monitor"); self.btn_monitor.setCheckable(True); self.btn_monitor.clicked.connect(self._toggle_monitor); btn_row.addWidget(self.btn_monitor)
-        btn_row.addStretch(1)
-        root.addLayout(btn_row)
-
-        # Info import
-        self.lbl_info = QLabel("Ultima quota: —")
-        self.lbl_info.setStyleSheet("color:#0a0a0a;")
-        root.addWidget(self.lbl_info, 0)
-
-        root.addStretch(1)
-
-    # --- UI actions ---
     def _browse_qcad(self):
         path, _ = QFileDialog.getOpenFileName(self, "Seleziona QCAD", "", "Eseguibili (*)")
         if path: self.edit_qcad.setText(path)
@@ -412,7 +390,6 @@ class QcadSubPage(QFrame):
         except Exception: pass
 
     def _open_qcad_on_profile(self):
-        # Scegli DXF profilo corrente (se disponibile)
         prof = (self.cmb_profile.currentText() or "").strip()
         dxf_path = None
         if self.profiles and prof and hasattr(self.profiles, "get_profile_shape"):
@@ -422,7 +399,6 @@ class QcadSubPage(QFrame):
             except Exception:
                 dxf_path = None
         if not dxf_path:
-            # fallback: chiedi un file
             dxf_path, _ = QFileDialog.getOpenFileName(self, "Scegli DXF", "", "DXF Files (*.dxf);;Tutti i file (*)")
         self.open_qcad_with_path(dxf_path)
 
@@ -437,8 +413,7 @@ class QcadSubPage(QFrame):
             if not self._monitor_timer:
                 self._monitor_timer = QTimer(self); self._monitor_timer.setInterval(1500)
                 self._monitor_timer.timeout.connect(self._check_export)
-            self._monitor_timer.start()
-            self.btn_monitor.setText("Ferma monitor")
+            self._monitor_timer.start(); self.btn_monitor.setText("Ferma monitor")
         else:
             if self._monitor_timer: self._monitor_timer.stop()
             self.btn_monitor.setText("Avvia monitor")
@@ -463,7 +438,6 @@ class QcadSubPage(QFrame):
     def _import_export_now(self):
         p = self._export_path()
         if not p:
-            # fallback: chiedi file
             p, _ = QFileDialog.getOpenFileName(self, "Scegli export.blitz.json", self._workspace() or "", "JSON (*.json);;Tutti i file (*)")
             if not p: return
         try:
@@ -472,15 +446,69 @@ class QcadSubPage(QFrame):
             last_dim, data = None, {}
         if last_dim is not None:
             self.lbl_info.setText(f"Ultima quota: {last_dim:.3f} mm")
-            # Applica su richiesta al profilo selezionato
             prof = (self.cmb_profile.currentText() or "").strip()
             if self.profiles and prof:
-                try:
-                    self.profiles.upsert_profile(prof, float(last_dim))
-                except Exception:
-                    pass
+                try: self.profiles.upsert_profile(prof, float(last_dim))
+                except Exception: pass
         else:
             self.lbl_info.setText("Ultima quota: — (export non valido)")
+
+    # --- Nuovo: associa un DXF a un profilo esistente ---
+    def _associate_dxf_to_profile(self):
+        prof = (self.cmb_profile.currentText() or "").strip()
+        if not prof or prof == "Nessuno": return
+        dxf, _ = QFileDialog.getOpenFileName(self, "Seleziona DXF da associare", "", "DXF Files (*.dxf);;Tutti i file (*)")
+        if not dxf: return
+        bbox = compute_dxf_bbox(dxf)  # Optional
+        self._store_profile_dxf(prof, dxf, bbox)
+
+    # --- Nuovo: crea un profilo partendo da un DXF ---
+    def _create_profile_from_dxf(self):
+        dxf, _ = QFileDialog.getOpenFileName(self, "Seleziona DXF", "", "DXF Files (*.dxf);;Tutti i file (*)")
+        if not dxf: return
+        name, ok = QInputDialog.getText(self, "Nome profilo", "Inserisci il nome del profilo:")
+        if not ok or not (name or "").strip(): return
+        name = (name or "").strip()
+        # opzionale: chiedi spessore iniziale (default 0)
+        th, ok2 = QInputDialog.getDouble(self, "Spessore (mm)", "Valore iniziale:", 0.0, 0.0, 1e9, 3)
+        if not ok2: th = 0.0
+        if self.profiles and hasattr(self.profiles, "upsert_profile"):
+            try: self.profiles.upsert_profile(name, float(th))
+            except Exception: pass
+        bbox = compute_dxf_bbox(dxf)
+        self._store_profile_dxf(name, dxf, bbox)
+        self._reload_profiles_combo()
+
+    def _store_profile_dxf(self, name: str, dxf_path: str, bbox: Optional[Tuple[float, float]]):
+        if not self.profiles or not name or not dxf_path: return
+        shape: Dict[str, Any] = {"dxf_path": dxf_path}
+        if bbox:
+            shape["bbox_w"], shape["bbox_h"] = float(bbox[0]), float(bbox[1])
+        # Prova varie API possibili del ProfilesStore, per compatibilità
+        try_methods = [
+            ("set_profile_shape", (name, shape)),
+            ("set_profile_dxf", (name, dxf_path)),
+            ("upsert_profile_shape", (name, shape)),
+            ("upsert_profile_meta", (name, shape)),
+        ]
+        stored = False
+        for m, args in try_methods:
+            if hasattr(self.profiles, m):
+                try:
+                    getattr(self.profiles, m)(*args)
+                    stored = True
+                    break
+                except Exception:
+                    pass
+        # Fallback: se non c'è un metodo dedicato, prova a fondere shape nell'upsert_profile se supporta meta
+        if not stored and hasattr(self.profiles, "upsert_profile"):
+            try:
+                # upsert_profile(name, thickness, meta=None) se esiste; altrimenti ignora meta
+                getattr(self.profiles, "upsert_profile")(name, float(0.0), shape)  # type: ignore
+                stored = True
+            except Exception:
+                pass
+        # Best effort: nessuna eccezione al chiamante; la preview userà get_profile_shape(name) se disponibile
 
 
 class BackupSubPage(QFrame):
