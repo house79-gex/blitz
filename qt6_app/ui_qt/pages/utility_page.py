@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Optional, Dict, Any, List, Tuple
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QRect, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
@@ -480,6 +481,7 @@ class QcadSubPage(QFrame):
                     pass
         else:
             self.lbl_info.setText("Ultima quota: — (export non valido)")
+
 
 class BackupSubPage(QFrame):
     def __init__(self, appwin):
