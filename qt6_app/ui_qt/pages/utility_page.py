@@ -182,7 +182,7 @@ class ProfilesSubPage(QFrame):
         self._profiles_index: Dict[str, float] = {}
         self._section_popup: Optional[SectionPreviewPopup] = None
 
-        self.lst_profiles: Optional[QListWidget] = None
+        self.lst_profiles: Optional[LListWidget] = None  # type: ignore[name-defined]
         self.edit_prof_name: Optional[QLineEdit] = None
         self.edit_prof_th: Optional[QLineEdit] = None
         self.btn_open_cad: Optional[QPushButton] = None
@@ -561,7 +561,7 @@ class CadSubPage(QFrame):
         btn_dim.toggled.connect(lambda on: (on and self.viewer and self.viewer.set_tool_dim_aligned()))
         btn_rot_l.clicked.connect(lambda: self.viewer and self.viewer.rotate_view(+5.0))
         btn_rot_r.clicked.connect(lambda: self.viewer and self.viewer.rotate_view(-5.0))
-        btn_align.clicked.connect(lambda: self.viewer and self.viewer.align_vertical_to_segment_under_cursor()))
+        btn_align.clicked.connect(lambda: self.viewer and self.viewer.align_vertical_to_segment_under_cursor())
 
     # ---------- Profili ----------
     def reload_profiles_list(self):
@@ -604,7 +604,7 @@ class CadSubPage(QFrame):
         try:
             # Gestione automatica DXF/DWG
             self.viewer.load_file(path)
-        except Exception as e:
+        except Exception:
             # fallback DXF puro
             try:
                 if path.lower().endswith(".dxf"):
@@ -644,7 +644,7 @@ class CadSubPage(QFrame):
             self.profiles.upsert_profile(name, float(val))
         except Exception:
             pass
-        # feedback leggero (potresti aggiungere un banner in futuro)
+        # feedback leggero (eventuale: aggiungere un banner)
 
 # ======================================================================
 # Subpage: Backup (sottomenu)
