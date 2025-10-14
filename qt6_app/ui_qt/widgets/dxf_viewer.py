@@ -10,13 +10,18 @@ import tempfile
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal
 from PySide6.QtGui import (
     QWheelEvent, QMouseEvent, QKeyEvent, QTransform, QPen, QColor,
-    QPainterPath, QFont, QPainter
+    QPainterPath, QFont
 )
 from PySide6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsItemGroup, QGraphicsItem,
     QGraphicsLineItem, QGraphicsEllipseItem, QGraphicsPathItem,
     QGraphicsSimpleTextItem, QWidget
 )
+
+# Tolleranze per approssimazione: più piccole = più punti = più fedeltà
+FLAT_DIST_FINE = 0.05   # per curve/archi
+SPLINE_STEPS   = 960    # campionamento spline (molto fitto)
+ELLIPSE_STEPS  = 960
 
 
 def _dist(a: QPointF, b: QPointF) -> float:
@@ -68,18 +73,18 @@ class CadSegment:
 class AdvancedDxfCadView(QGraphicsView):
     """
     CAD avanzato su QGraphicsView:
-    - Import DXF robusto (ezdxf.path.from_entity + fallback; OCS→WCS; blocchi, curve, hatch, 3DFACE/TRACE/SOLID)
-    - Import DWG via converter ODA/Teigha (se configurato) -> DWG→DXF
+    - Import DXF robusto (ezdxf.path.from_entity per bulge/curve; OCS→WCS; curve/hatch/ellissi/spline/3DFACE/trace/solid)
+    - Import DWG via converter ODA/Teigha (se configurato): DWG→DXF automatico e gestione errori
     - Snap: endpoint, midpoint, intersezione
-    - Misure: distanza (G), perpendicolare (P), angolare (O) [overlay]
+    - Misure overlay: distanza (G), perpendicolare (P), angolare (O)
     - Quote persistenti:
         - Allineata (D) lungo il segmento AB
-        - Lineare (L) orizzontale/verticale (proiezione su asse)
-        - Angolare (K) tra due segmenti (arco, frecce, testo)
-    - Vista: rotazione ±5° (R/E), allinea verticale (A), sfondo chiaro
+        - Lineare (L) H/V
+        - Angolare (K) tra due segmenti
+    - Vista: sfondo chiaro, rotazione ±5° (R/E), allinea verticale (A)
     """
-    measurementChanged = Signal(float)      # misura live (overlay)
-    dimensionCommitted = Signal(float)      # valore della quota creata (allineata/lineare/angolare)
+    measurementChanged = Signal(float)
+    dimensionCommitted = Signal(float)
     viewStateChanged = Signal(dict)
 
     TOOL_DISTANCE = 1
@@ -91,14 +96,14 @@ class AdvancedDxfCadView(QGraphicsView):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing | QPainter.SmoothPixmapTransform)
+        self.setRenderHints(self.renderHints() | self.renderHints())
         self.setDragMode(QGraphicsView.NoDrag)
         self.setMouseTracking(True)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
 
-        # Sfondo chiaro
-        self.setBackgroundBrush(QColor("#f5f7fb"))
+        # Sfondo chiaro ad alto contrasto
+        self.setBackgroundBrush(QColor("#f4f7fb"))
 
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
@@ -112,7 +117,7 @@ class AdvancedDxfCadView(QGraphicsView):
         self._last_mouse_pos = QPointF()
 
         # Dati
-        self._segments: List[CadSegment] = []  # per snap/intersezioni
+        self._segments: List[CadSegment] = []
         self._intersections: List[QPointF] = []
         self._all_items: List[QGraphicsItem] = []
 
@@ -135,12 +140,11 @@ class AdvancedDxfCadView(QGraphicsView):
         self._live_text: Optional[QGraphicsSimpleTextItem] = None
         self._measure_value = 0.0
 
-        # Penne
-        self._pen_entity = QPen(QColor("#121212"), 0)   # hairline scuro
-        self._pen_highlight = QPen(QColor("#ff9800"), 0)
-        self._pen_measure = QPen(QColor("#00c853"), 0)
-        self._pen_construction = QPen(QColor("#1976d2"), 0)
-        self._pen_dimension = QPen(QColor("#1e88e5"), 0)
+        # Penne ad alto contrasto
+        self._pen_entity = QPen(QColor("#111"), 0)      # disegno
+        self._pen_measure = QPen(QColor("#0a8f08"), 0)  # overlay misure
+        self._pen_construction = QPen(QColor("#1565c0"), 0)  # snap/guide
+        self._pen_dimension = QPen(QColor("#1e88e5"), 0)     # quote
 
         # Ultima quota
         self._last_dimension_value = 0.0
@@ -165,24 +169,55 @@ class AdvancedDxfCadView(QGraphicsView):
     def _convert_dwg_to_dxf(self, dwg_path: Path) -> Path:
         exe = self._resolve_oda_converter()
         if exe is None:
-            raise RuntimeError("Converter ODA/Teigha non trovato. Imposta ODA_CONVERTER o il percorso nelle impostazioni CAD.")
+            raise RuntimeError(
+                "Converter ODA/Teigha non trovato. Imposta ODA_CONVERTER (env) oppure scegli il percorso in CAD."
+            )
         tmp_out = Path(tempfile.mkdtemp(prefix="dwg2dxf_"))
         in_dir = dwg_path.parent
         mask = dwg_path.name
+        # Formato DXF 2018 ASCII per massima compatibilità
         cmd = [exe, str(in_dir), str(tmp_out), "2018", "2018", "ascii", "-y", mask]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            res = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"ODA conversione fallita: {e.stderr or e.stdout or e}") from e
         out_dxf = tmp_out / (dwg_path.stem + ".dxf")
         if not out_dxf.exists():
             cands = list(tmp_out.glob("*.dxf"))
             if not cands:
-                raise RuntimeError("DXF non generato dal converter ODA.")
+                raise RuntimeError("DXF non generato: verifica versione DWG e impostazioni ODA.")
             out_dxf = cands[0]
         return out_dxf
 
     def _resolve_oda_converter(self) -> Optional[str]:
+        # Priorità: set_oda_converter_path -> env -> percorsi comuni
         env = os.environ.get("ODA_CONVERTER") or os.environ.get("TEIGHA_CONVERTER")
         candidates = [self._oda_converter_path, env]
+
+        # Windows percorsi tipici
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pf_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        common_win = [
+            Path(program_files) / "ODA" / "ODAFileConverter",
+            Path(pf_x86) / "ODA" / "ODAFileConverter",
+            Path(program_files) / "Teigha File Converter",
+            Path(pf_x86) / "Teigha File Converter",
+        ]
+
+        # Linux/Mac (se installati via wine o path custom)
+        common_unix = [
+            Path("/usr/local/bin"),
+            Path("/usr/bin"),
+            Path.home() / "bin",
+        ]
+
         exe_names = ["ODAFileConverter", "TeighaFileConverter", "ODAFileConverter.exe", "TeighaFileConverter.exe"]
+
+        # Aggiungi cartelle comuni
+        for base in common_win + common_unix:
+            if base.exists():
+                candidates.append(str(base))
+        # Risolvi
         for c in [x for x in candidates if x]:
             cp = Path(c)
             if cp.is_file() and os.access(str(cp), os.X_OK):
@@ -221,6 +256,7 @@ class AdvancedDxfCadView(QGraphicsView):
         msp = doc.modelspace()
 
         def to_wcs_pts(entity, pts: Iterable) -> List[QPointF]:
+            # OCS→WCS per rispettare extrusion/elevation
             try:
                 extr = entity.dxf.extrusion
             except Exception:
@@ -252,6 +288,7 @@ class AdvancedDxfCadView(QGraphicsView):
             item.setFlag(QGraphicsItem.ItemIsSelectable, selectable)
             self._root.addToGroup(item)
             self._all_items.append(item)
+            # Registra anche segmenti invisibili per snap/intersezioni
             for i in range(len(points)-1):
                 a = points[i]; b = points[i+1]
                 li = QGraphicsLineItem(a.x(), a.y(), b.x(), b.y())
@@ -267,11 +304,12 @@ class AdvancedDxfCadView(QGraphicsView):
             self._all_items.append(li)
             self._segments.append(CadSegment(a, b, li))
 
-        def flatten_by_path(e) -> bool:
+        def flatten_path_from_entity(e) -> bool:
+            # Usa path.from_entity per includere bulge/curve/ellissi/spline ecc.
             try:
                 path = ezpath.from_entity(e, segments=0)
                 if path:
-                    pts = list(path.flattening(distance=0.25))
+                    pts = list(path.flattening(distance=FLAT_DIST_FINE))
                     add_path(to_wcs_pts(e, pts))
                     return True
             except Exception:
@@ -279,14 +317,16 @@ class AdvancedDxfCadView(QGraphicsView):
             return False
 
         def flatten_generic(e):
-            if flatten_by_path(e):
+            # Fallback generico
+            if flatten_path_from_entity(e):
                 return
             try:
                 if hasattr(e, "flattening"):
-                    pts = list(e.flattening(distance=0.25))
+                    pts = list(e.flattening(distance=FLAT_DIST_FINE))
                     add_path(to_wcs_pts(e, pts))
                 elif hasattr(e, "approximate"):
-                    pts = list(e.approximate(480))
+                    steps = SPLINE_STEPS if e.dxftype() == "SPLINE" else ELLIPSE_STEPS
+                    pts = list(e.approximate(steps))
                     add_path(to_wcs_pts(e, pts))
             except Exception:
                 pass
@@ -300,7 +340,7 @@ class AdvancedDxfCadView(QGraphicsView):
                         if len(pts) >= 2:
                             add_line(pts[0], pts[1])
                     else:
-                        if not flatten_by_path(sub):
+                        if not flatten_path_from_entity(sub):
                             flatten_generic(sub)
             except Exception:
                 pass
@@ -314,22 +354,21 @@ class AdvancedDxfCadView(QGraphicsView):
             except Exception:
                 pass
 
-        # 3DFACE/TRACE/SOLID -> spigoli via virtual
-        for e in msp.query("3DFACE"): add_virtual(e)
-        for e in msp.query("TRACE"): add_virtual(e)
-        for e in msp.query("SOLID"): add_virtual(e)
-
-        # Polilinee
-        for e in msp.query("LWPOLYLINE"): add_virtual(e)
-        for e in msp.query("POLYLINE"): add_virtual(e)
+        # LWPOLYLINE / POLYLINE: prima prova path.from_entity (bulge), poi virtual_entities
+        for e in msp.query("LWPOLYLINE"):
+            if not flatten_path_from_entity(e):
+                add_virtual(e)
+        for e in msp.query("POLYLINE"):
+            if not flatten_path_from_entity(e):
+                add_virtual(e)
 
         # Curve
         for e in msp.query("ARC"):
-            if not flatten_by_path(e): flatten_generic(e)
+            if not flatten_path_from_entity(e): flatten_generic(e)
         for e in msp.query("CIRCLE"):
-            if not flatten_by_path(e):
+            if not flatten_path_from_entity(e):
                 try:
-                    pts = list(e.flattening(distance=0.25))
+                    pts = list(e.flattening(distance=FLAT_DIST_FINE))
                     pts_w = to_wcs_pts(e, pts)
                     if pts_w:
                         pts_w.append(pts_w[0])
@@ -337,11 +376,16 @@ class AdvancedDxfCadView(QGraphicsView):
                 except Exception:
                     pass
         for e in msp.query("ELLIPSE"):
-            if not flatten_by_path(e): flatten_generic(e)
+            if not flatten_path_from_entity(e): flatten_generic(e)
         for e in msp.query("SPLINE"):
-            if not flatten_by_path(e): flatten_generic(e)
+            if not flatten_path_from_entity(e): flatten_generic(e)
 
-        # HATCH
+        # 3DFACE / TRACE / SOLID via virtual
+        for e in msp.query("3DFACE"): add_virtual(e)
+        for e in msp.query("TRACE"): add_virtual(e)
+        for e in msp.query("SOLID"): add_virtual(e)
+
+        # HATCH boundaries completi
         for h in msp.query("HATCH"):
             try:
                 for path in h.paths:
@@ -352,10 +396,10 @@ class AdvancedDxfCadView(QGraphicsView):
                                 pts = to_wcs_pts(h, [edge.start, edge.end])
                                 if len(pts) >= 2: add_line(pts[0], pts[1])
                             elif et in ("ArcEdge", "EllipseEdge"):
-                                pts = list(edge.flattening(distance=0.25))
+                                pts = list(edge.flattening(distance=FLAT_DIST_FINE))
                                 add_path(to_wcs_pts(h, pts))
                             elif et == "SplineEdge":
-                                pts = list(edge.approximate(480))
+                                pts = list(edge.approximate(SPLINE_STEPS))
                                 add_path(to_wcs_pts(h, pts))
                         except Exception:
                             pass
@@ -448,8 +492,7 @@ class AdvancedDxfCadView(QGraphicsView):
     def _update_hover_snap(self, pos_scene: QPointF):
         snaps = self._candidate_snaps()
         if not snaps:
-            self._clear_hover_snap()
-            return
+            self._clear_hover_snap(); return
         radius_scene = self._snap_radius_px / max(self._scale_factor, 1e-6)
         best = None; best_d = 1e18
         for sp in snaps:
@@ -528,7 +571,8 @@ class AdvancedDxfCadView(QGraphicsView):
     def _update_distance_overlay(self, a: QPointF, b: QPointF):
         if self._shift_down:
             dx = b.x()-a.x(); dy = b.y()-a.y()
-            b = QPointF(a.x()+dx if abs(dx)>=abs(dy) else a.x(), a.y() if abs(dx)>=abs(dy) else a.y()+dy)
+            b = QPointF(a.x()+dx if abs(dx)>=abs(dy) else a.x(),
+                        a.y() if abs(dx)>=abs(dy) else a.y()+dy)
         line = self._ensure_live_line()
         line.setLine(a.x(), a.y(), b.x(), b.y())
         d = _dist(a, b)
@@ -588,8 +632,8 @@ class AdvancedDxfCadView(QGraphicsView):
         tri = QGraphicsPathItem(path); tri.setPen(pen or self._pen_dimension); tri.setBrush(QColor("#1e88e5")); tri.setZValue(8e6)
         self.scene.addItem(tri)
 
-    def _dim_text(self, value: float, pos: QPointF) -> QGraphicsSimpleTextItem:
-        txt = QGraphicsSimpleTextItem(f"{value:.2f}")
+    def _dim_text(self, value: float, pos: QPointF, suffix: str = " mm") -> QGraphicsSimpleTextItem:
+        txt = QGraphicsSimpleTextItem(f"{value:.2f}{suffix}")
         font = QFont(); font.setPointSizeF(10.0); font.setBold(True)
         txt.setFont(font); txt.setBrush(QColor("#0a0a0a")); txt.setZValue(8e6)
         txt.setPos(pos)
@@ -619,7 +663,7 @@ class AdvancedDxfCadView(QGraphicsView):
         dx = b.x()-a.x(); dy = b.y()-a.y()
         pen = self._pen_dimension
         if abs(dx) >= abs(dy):
-            # orizzontale: misura |dx|
+            # orizzontale
             yline = ((a.y()+b.y())/2.0) + offset_scene
             qa = QPointF(a.x(), yline); qb = QPointF(b.x(), yline)
             ext1 = QGraphicsLineItem(a.x(), a.y(), a.x(), yline); ext1.setPen(pen); ext1.setZValue(8e6); self.scene.addItem(ext1)
@@ -632,7 +676,7 @@ class AdvancedDxfCadView(QGraphicsView):
             self._dim_text(val, mid)
             self._last_dimension_value = float(val); self.dimensionCommitted.emit(self._last_dimension_value)
         else:
-            # verticale: misura |dy|
+            # verticale
             xline = ((a.x()+b.x())/2.0) + offset_scene
             qa = QPointF(xline, a.y()); qb = QPointF(xline, b.y())
             ext1 = QGraphicsLineItem(a.x(), a.y(), xline, a.y()); ext1.setPen(pen); ext1.setZValue(8e6); self.scene.addItem(ext1)
@@ -664,7 +708,7 @@ class AdvancedDxfCadView(QGraphicsView):
         r2 = QGraphicsLineItem(ip.x(), ip.y(), p2.x(), p2.y()); r2.setPen(pen); r2.setZValue(8e6); self.scene.addItem(r2)
 
         path = QPainterPath()
-        steps = 64
+        steps = 96
         for i in range(steps+1):
             t = ang_start + (ang_end-ang_start)*i/steps
             pt = QPointF(ip.x() + radius_scene*cos(t), ip.y() + radius_scene*sin(t))
@@ -677,8 +721,7 @@ class AdvancedDxfCadView(QGraphicsView):
 
         mid_ang = (ang_start + ang_end) / 2.0
         tpos = QPointF(ip.x() + (radius_scene+8.0)*cos(mid_ang), ip.y() + (radius_scene+8.0)*sin(mid_ang))
-        txt = self._dim_text(deg_val, tpos)
-        txt.setText(f"{deg_val:.2f}°")
+        txt = self._dim_text(deg_val, tpos, suffix="°")
 
         self._last_dimension_value = float(deg_val); self.dimensionCommitted.emit(self._last_dimension_value)
 
