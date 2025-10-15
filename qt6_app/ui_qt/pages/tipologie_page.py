@@ -11,33 +11,49 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QSizePolicy, QMessageBox
 )
 
-# Motore parametrico (obbligatorio)
-from ui_qt.services.parametric_engine import TypologyDef, Parameter, ElementDef, ParametricEngine, Part
+# Import "safe" del motore parametrico: non deve impedire il load del modulo
+try:
+    from ui_qt.services.parametric_engine import (
+        TypologyDef, Parameter, ElementDef, ParametricEngine, Part
+    )
+    _ENGINE_OK = True
+except Exception:
+    TypologyDef = Parameter = ElementDef = ParametricEngine = Part = None  # type: ignore
+    _ENGINE_OK = False
+
+# Accesso allo stesso DB profili usato da Utility/Semi-auto
+try:
+    from ui_qt.services.profiles_store import ProfilesStore
+except Exception:
+    ProfilesStore = None  # type: ignore
 
 
 class TipologiePage(QFrame):
     """
     Progettazione parametrica (separata dalla gestione commessa).
     - Carica tipologie JSON da data/typologies
-    - Editor parametri (H, L, ecc.) + mapping profili (dal ProfilesStore condiviso)
-    - Valuta e mostra anteprima elementi (qty, lunghezza, angoli A/B)
-    - Salva una configurazione istanziata (per 'Quote vani luce' o altri moduli)
+    - Editor parametri + mapping profili (dal DB profili condiviso)
+    - Valuta e mostra anteprima elementi
+    - Salva configurazioni istanziate (per 'Quote vani luce')
     """
-    def __init__(self, appwin, profiles_store, typologies_dir: Optional[str] = None):
+    def __init__(self, appwin, typologies_dir: Optional[str] = None):
         super().__init__()
         self.appwin = appwin
-        self.profiles = profiles_store
+        self.profiles_store = ProfilesStore() if ProfilesStore else None
         self.typologies_dir = typologies_dir or str(Path("data") / "typologies")
 
         self._typ_paths: Dict[str, Path] = {}
-        self._current_typ: Optional[TypologyDef] = None
+        self._current_typ = None        # type: ignore
         self._param_widgets: Dict[str, QWidget] = {}
-        self._engine: Optional[ParametricEngine] = None
-        self._parts: List[Part] = []
+        self._engine = None             # type: ignore
+        self._parts: List[Any] = []
         self._env: Dict[str, Any] = {}
 
         self._build()
         self._load_typologies_list()
+
+        if not _ENGINE_OK:
+            self._show_engine_missing_banner()
 
     # ------------------------- UI -------------------------
     def _build(self):
@@ -98,13 +114,23 @@ class TipologiePage(QFrame):
         rl.addWidget(QLabel("Anteprima elementi"), 0)
 
         self.tbl = QTableWidget(0, 8)
-        self.tbl.setHorizontalHeaderLabels(["ID", "Ruolo", "Profilo", "Q.tà", "Lunghezza (mm)", "Ang A (°)", "Ang B (°)", "Note"])
+        self.tbl.setHorizontalHeaderLabels([
+            "ID", "Ruolo", "Profilo", "Q.tà",
+            "Lunghezza (mm)", "Ang A (°)", "Ang B (°)", "Note"
+        ])
         self.tbl.horizontalHeader().setStretchLastSection(True)
         rl.addWidget(self.tbl, 1)
 
         root.addWidget(left, 0)
         root.addWidget(center, 1)
         root.addWidget(right, 1)
+
+    def _show_engine_missing_banner(self):
+        warn = QLabel("Motore parametrico non disponibile (parametric_engine). "
+                      "Installa/aggiungi ui_qt/services/parametric_engine.py.")
+        warn.setStyleSheet("color:#e67e22; font-weight:600;")
+        # Inserisci il banner sotto la label meta
+        self.lbl_meta.setText(self.lbl_meta.text() + " — Motore non disponibile")
 
     # -------------------- Tipologie load -------------------
     def _load_typologies_list(self):
@@ -113,7 +139,10 @@ class TipologiePage(QFrame):
 
         base = Path(self.typologies_dir)
         if not base.exists():
-            base.mkdir(parents=True, exist_ok=True)
+            try:
+                base.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
 
         for p in sorted(base.glob("*.json")):
             try:
@@ -128,7 +157,7 @@ class TipologiePage(QFrame):
             self.lst_typs.setCurrentRow(0)
 
     def _on_select_typology(self, cur: Optional[QListWidgetItem], prev: Optional[QListWidgetItem]):
-        if not cur:
+        if not cur or not _ENGINE_OK:
             return
         name = cur.text()
         path = self._typ_paths.get(name)
@@ -136,20 +165,20 @@ class TipologiePage(QFrame):
             return
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            typ = TypologyDef(
+            typ = TypologyDef(  # type: ignore
                 name=data.get("name", ""),
                 version=data.get("version", ""),
                 description=data.get("description", ""),
-                parameters=[Parameter(**p) for p in data.get("parameters", [])],
+                parameters=[Parameter(**p) for p in data.get("parameters", [])],  # type: ignore
                 derived=data.get("derived", {}),
-                elements=[ElementDef(**e) for e in data.get("elements", [])],
+                elements=[ElementDef(**e) for e in data.get("elements", [])],     # type: ignore
             )
         except Exception as e:
             QMessageBox.critical(self, "Errore tipologia", f"Impossibile caricare la tipologia:\n{e}")
             return
 
         self._current_typ = typ
-        self._engine = ParametricEngine(typ)
+        self._engine = ParametricEngine(typ)  # type: ignore
         self._render_param_editors()
 
     # -------------------- Param editors -------------------
@@ -181,10 +210,10 @@ class TipologiePage(QFrame):
             elif p.type == "select":
                 cb = QComboBox()
                 # Per compatibilità con il DB profili condiviso:
-                if p.name.startswith("prof_") and self.profiles:
+                if p.name.startswith("prof_") and self.profiles_store:
                     try:
                         names: List[str] = []
-                        rows = self.profiles.list_profiles()
+                        rows = self.profiles_store.list_profiles()
                         for r in rows:
                             n = str(r.get("name") or "")
                             if n:
@@ -260,10 +289,13 @@ class TipologiePage(QFrame):
     # ----------------- Eval / Anteprima -------------------
     def _evaluate(self):
         if not self._engine or not self._current_typ:
+            if not _ENGINE_OK:
+                QMessageBox.warning(self, "Motore mancante",
+                                    "parametric_engine non disponibile. Impossibile valutare.")
             return
         inputs = self._collect_inputs()
         try:
-            parts, env = self._engine.evaluate(inputs)
+            parts, env = self._engine.evaluate(inputs)  # type: ignore
         except Exception as e:
             QMessageBox.critical(self, "Errore formula", f"Errore nella valutazione:\n{e}")
             return
