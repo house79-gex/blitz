@@ -11,15 +11,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QSizePolicy, QMessageBox
 )
 
-# Motore parametrico
-try:
-    from ui_qt.services.parametric_engine import TypologyDef, Parameter, ElementDef, ParametricEngine, Part
-except Exception:
-    TypologyDef = None  # type: ignore
-    Parameter = None  # type: ignore
-    ElementDef = None  # type: ignore
-    ParametricEngine = None  # type: ignore
-    Part = None  # type: ignore
+# Motore parametrico (obbligatorio)
+from ui_qt.services.parametric_engine import TypologyDef, Parameter, ElementDef, ParametricEngine, Part
 
 
 class TipologiePage(QFrame):
@@ -135,7 +128,7 @@ class TipologiePage(QFrame):
             self.lst_typs.setCurrentRow(0)
 
     def _on_select_typology(self, cur: Optional[QListWidgetItem], prev: Optional[QListWidgetItem]):
-        if not cur or ParametricEngine is None:
+        if not cur:
             return
         name = cur.text()
         path = self._typ_paths.get(name)
