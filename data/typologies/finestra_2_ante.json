@@ -1,0 +1,143 @@
+{
+  "name": "Finestra 2 ante (battente)",
+  "version": "1.0",
+  "description": "Telaio fisso 4 lati (45°), due telai mobili (45°), riporto centrale, fermavetro per ogni anta.",
+  "parameters": [
+    {"name": "H", "type": "float", "default": 1200, "min": 200, "description": "Altezza finita (mm)"},
+    {"name": "L", "type": "float", "default": 1400, "min": 200, "description": "Larghezza finita (mm)"},
+    {"name": "df", "type": "float", "default": 20, "description": "Ingombro battuta telaio fisso (mm)"},
+    {"name": "ds", "type": "float", "default": 60, "description": "Ingombro profilo anta (mm)"},
+    {"name": "g", "type": "float", "default": 2.0, "description": "Gioco anta/telaio per lato (mm)"},
+    {"name": "gm", "type": "float", "default": 3.0, "description": "Gioco tra ante al centro (mm)"},
+    {"name": "mull_w", "type": "float", "default": 30.0, "description": "Larghezza riporto centrale (mm)"},
+    {"name": "k45_fisso", "type": "float", "default": 0.0, "description": "Correzione mitra 45° telaio fisso (mm)"},
+    {"name": "k45_anta", "type": "float", "default": 0.0, "description": "Correzione mitra 45° anta (mm)"},
+    {"name": "k45_fv", "type": "float", "default": 0.0, "description": "Correzione mitra 45° fermavetro (mm)"},
+    {"name": "fv_offset", "type": "float", "default": 18.0, "description": "Arretramento fermavetro rispetto luce anta (mm)"},
+    {"name": "toll_taglio", "type": "float", "default": 0.0, "description": "Compensazione globale taglio (mm)"},
+    {"name": "prof_telaio_fisso", "type": "select", "default": "", "description": "Profilo telaio fisso"},
+    {"name": "prof_anta", "type": "select", "default": "", "description": "Profilo telaio anta"},
+    {"name": "prof_riporto", "type": "select", "default": "", "description": "Profilo riporto centrale"},
+    {"name": "prof_fermavetro", "type": "select", "default": "", "description": "Profilo fermavetro"}
+  ],
+  "derived": {
+    "H_luce": "H - 2*(df + g)",
+    "L_luce": "L - 2*(df + g)",
+    "L_anta_luce": "(L_luce - gm - mull_w)/2",
+    "H_anta_luce": "H_luce",
+    "L_vetro": "L_anta_luce - 2*fv_offset",
+    "H_vetro": "H_anta_luce - 2*fv_offset"
+  },
+  "elements": [
+    {
+      "id": "TF-M",
+      "role": "telaio_fisso_montante",
+      "profile_var": "prof_telaio_fisso",
+      "qty_expr": "2",
+      "length_expr": "H + 2*k45_fisso + toll_taglio",
+      "angle_a_expr": "45",
+      "angle_b_expr": "45",
+      "note_expr": "'Montanti telaio fisso 45°'"
+    },
+    {
+      "id": "TF-T",
+      "role": "telaio_fisso_traverso",
+      "profile_var": "prof_telaio_fisso",
+      "qty_expr": "2",
+      "length_expr": "L + 2*k45_fisso + toll_taglio",
+      "angle_a_expr": "45",
+      "angle_b_expr": "45",
+      "note_expr": "'Traversi telaio fisso 45°'"
+    },
+    {
+      "id": "A1-M",
+      "role": "anta1_montante",
+      "profile_var": "prof_anta",
+      "qty_expr": "2",
+      "length_expr": "H_anta_luce + 2*k45_anta + toll_taglio",
+      "angle_a_expr": "45",
+      "angle_b_expr": "45",
+      "note_expr": "'Anta SX montanti 45°'"
+    },
+    {
+      "id": "A1-T",
+      "role": "anta1_traverso",
+      "profile_var": "prof_anta",
+      "qty_expr": "2",
+      "length_expr": "L_anta_luce + 2*k45_anta + toll_taglio",
+      "angle_a_expr": "45",
+      "angle_b_expr": "45",
+      "note_expr": "'Anta SX traversi 45°'"
+    },
+    {
+      "id": "A2-M",
+      "role": "anta2_montante",
+      "profile_var": "prof_anta",
+      "qty_expr": "2",
+      "length_expr": "H_anta_luce + 2*k45_anta + toll_taglio",
+      "angle_a_expr": "45",
+      "angle_b_expr": "45",
+      "note_expr": "'Anta DX montanti 45°'"
+    },
+    {
+      "id": "A2-T",
+      "role": "anta2_traverso",
+      "profile_var": "prof_anta",
+      "qty_expr": "2",
+      "length_expr": "L_anta_luce + 2*k45_anta + toll_taglio",
+      "angle_a_expr": "45",
+      "angle_b_expr": "45",
+      "note_expr": "'Anta DX traversi 45°'"
+    },
+    {
+      "id": "RIP-CEN",
+      "role": "riporto_centrale",
+      "profile_var": "prof_riporto",
+      "qty_expr": "1",
+      "length_expr": "H_luce + toll_taglio",
+      "angle_a_expr": "90",
+      "angle_b_expr": "90",
+      "note_expr": "'Riporto centrale 90° (configurabile a 45°)'"
+    },
+    {
+      "id": "FV-A1-M",
+      "role": "fermavetro_anta1_montante",
+      "profile_var": "prof_fermavetro",
+      "qty_expr": "2",
+      "length_expr": "H_vetro + 2*k45_fv",
+      "angle_a_expr": "45",
+      "angle_b_expr": "45",
+      "note_expr": "'FV anta SX montanti 45°'"
+    },
+    {
+      "id": "FV-A1-T",
+      "role": "fermavetro_anta1_traverso",
+      "profile_var": "prof_fermavetro",
+      "qty_expr": "2",
+      "length_expr": "L_vetro + 2*k45_fv",
+      "angle_a_expr": "45",
+      "angle_b_expr": "45",
+      "note_expr": "'FV anta SX traversi 45°'"
+    },
+    {
+      "id": "FV-A2-M",
+      "role": "fermavetro_anta2_montante",
+      "profile_var": "prof_fermavetro",
+      "qty_expr": "2",
+      "length_expr": "H_vetro + 2*k45_fv",
+      "angle_a_expr": "45",
+      "angle_b_expr": "45",
+      "note_expr": "'FV anta DX montanti 45°'"
+    },
+    {
+      "id": "FV-A2-T",
+      "role": "fermavetro_anta2_traverso",
+      "profile_var": "prof_fermavetro",
+      "qty_expr": "2",
+      "length_expr": "L_vetro + 2*k45_fv",
+      "angle_a_expr": "45",
+      "angle_b_expr": "45",
+      "note_expr": "'FV anta DX traversi 45°'"
+    }
+  ]
+}
