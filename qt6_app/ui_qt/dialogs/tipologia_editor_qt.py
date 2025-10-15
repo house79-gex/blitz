@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
 
 from ui_qt.services.legacy_formula import scan_variables, eval_formula, sanitize_name
 
-# Usa lo stesso DB profili di Utility
 try:
     from ui_qt.services.profiles_store import ProfilesStore
 except Exception:
@@ -34,14 +33,6 @@ def _profiles_map() -> Dict[str, float]:
 
 
 class ComponentEditorDialog(QDialog):
-    """
-    Editor di un componente singolo (nome, profilo, qta, angoli, formula, offset, note).
-    - Token rapidi H/L
-    - Legenda C_Rx dei componenti precedenti
-    - Test formula (analizza/valuta)
-    - Token profilo calcolato da nome (sanitize_name)
-    - Pulsanti rapidi angoli 0°/45° e scorciatoie Alt+0 (entrambi 0°) e Alt+5 (entrambi 45°)
-    """
     def __init__(self, parent, base: Dict[str, Any], prev_components: List[Dict[str, Any]], profiles: Dict[str, float]):
         super().__init__(parent)
         self.setWindowTitle("Componente")
@@ -60,126 +51,72 @@ class ComponentEditorDialog(QDialog):
     def _build(self):
         root = QVBoxLayout(self)
 
-        g = QGridLayout()
-        g.setHorizontalSpacing(12)
-        g.setVerticalSpacing(8)
+        g = QGridLayout(); g.setHorizontalSpacing(12); g.setVerticalSpacing(8)
         row = 0
 
         g.addWidget(QLabel("ID riga:"), row, 0)
-        self.ed_id = QLineEdit(self.base.get("id_riga", ""))
-        self.ed_id.setReadOnly(True)
-        g.addWidget(self.ed_id, row, 1)
-        row += 1
+        self.ed_id = QLineEdit(self.base.get("id_riga", "")); self.ed_id.setReadOnly(True)
+        g.addWidget(self.ed_id, row, 1); row += 1
 
         g.addWidget(QLabel("Nome:"), row, 0)
-        self.ed_name = QLineEdit(self.base.get("nome", ""))
-        g.addWidget(self.ed_name, row, 1, 1, 3)
-        row += 1
+        self.ed_name = QLineEdit(self.base.get("nome", "")); g.addWidget(self.ed_name, row, 1, 1, 3); row += 1
 
         g.addWidget(QLabel("Profilo:"), row, 0)
         self.cmb_prof = QComboBox()
-        names = sorted(self.profiles.keys())
-        self.cmb_prof.addItem("")
-        for n in names:
-            self.cmb_prof.addItem(n)
+        names = sorted(self.profiles.keys()); self.cmb_prof.addItem("")
+        for n in names: self.cmb_prof.addItem(n)
         if self.base.get("profilo_nome"):
-            idx = self.cmb_prof.findText(self.base["profilo_nome"])
-            if idx >= 0:
-                self.cmb_prof.setCurrentIndex(idx)
+            idx = self.cmb_prof.findText(self.base["profilo_nome"]); 
+            if idx >= 0: self.cmb_prof.setCurrentIndex(idx)
         g.addWidget(self.cmb_prof, row, 1)
-
-        self.lbl_token = QLabel("")  # token profilo
-        self.lbl_token.setStyleSheet("color:#7f8c8d;")
-        g.addWidget(self.lbl_token, row, 2, 1, 2)
-        row += 1
+        self.lbl_token = QLabel(""); self.lbl_token.setStyleSheet("color:#7f8c8d;")
+        g.addWidget(self.lbl_token, row, 2, 1, 2); row += 1
 
         g.addWidget(QLabel("Quantità:"), row, 0)
-        self.sp_qta = QSpinBox()
-        self.sp_qta.setRange(0, 999)
-        self.sp_qta.setValue(int(self.base.get("quantita", 1) or 1))
-        g.addWidget(self.sp_qta, row, 1)
-        row += 1
+        self.sp_qta = QSpinBox(); self.sp_qta.setRange(0, 999); self.sp_qta.setValue(int(self.base.get("quantita", 1) or 1))
+        g.addWidget(self.sp_qta, row, 1); row += 1
 
-        # Angoli con pulsanti rapidi
         g.addWidget(QLabel("Angolo SX (°):"), row, 0)
-        self.sp_ang_sx = QDoubleSpinBox()
-        self.sp_ang_sx.setRange(0.0, 90.0)
-        self.sp_ang_sx.setDecimals(2)
-        self.sp_ang_sx.setSingleStep(0.5)
-        self.sp_ang_sx.setValue(float(self.base.get("ang_sx", 0.0) or 0.0))
-        g.addWidget(self.sp_ang_sx, row, 1)
-
-        btns_sx = QHBoxLayout()
-        b0sx = QPushButton("0°"); b0sx.setToolTip("Imposta angolo SX a 0°")
-        b45sx = QPushButton("45°"); b45sx.setToolTip("Imposta angolo SX a 45°")
-        b0sx.clicked.connect(lambda: self.sp_ang_sx.setValue(0.0))
-        b45sx.clicked.connect(lambda: self.sp_ang_sx.setValue(45.0))
-        btns_sx.addWidget(b0sx); btns_sx.addWidget(b45sx); btns_sx.addStretch(1)
-        g.addLayout(btns_sx, row, 2, 1, 2)
-        row += 1
+        self.sp_ang_sx = QDoubleSpinBox(); self.sp_ang_sx.setRange(0.0, 90.0); self.sp_ang_sx.setDecimals(2); self.sp_ang_sx.setSingleStep(0.5)
+        self.sp_ang_sx.setValue(float(self.base.get("ang_sx", 0.0) or 0.0)); g.addWidget(self.sp_ang_sx, row, 1)
+        row_sx = QHBoxLayout(); b0sx = QPushButton("0°"); b45sx = QPushButton("45°")
+        b0sx.clicked.connect(lambda: self.sp_ang_sx.setValue(0.0)); b45sx.clicked.connect(lambda: self.sp_ang_sx.setValue(45.0))
+        row_sx.addWidget(b0sx); row_sx.addWidget(b45sx); row_sx.addStretch(1)
+        g.addLayout(row_sx, row, 2, 1, 2); row += 1
 
         g.addWidget(QLabel("Angolo DX (°):"), row, 0)
-        self.sp_ang_dx = QDoubleSpinBox()
-        self.sp_ang_dx.setRange(0.0, 90.0)
-        self.sp_ang_dx.setDecimals(2)
-        self.sp_ang_dx.setSingleStep(0.5)
-        self.sp_ang_dx.setValue(float(self.base.get("ang_dx", 0.0) or 0.0))
-        g.addWidget(self.sp_ang_dx, row, 1)
-
-        btns_dx = QHBoxLayout()
-        b0dx = QPushButton("0°"); b0dx.setToolTip("Imposta angolo DX a 0°")
-        b45dx = QPushButton("45°"); b45dx.setToolTip("Imposta angolo DX a 45°")
-        b0dx.clicked.connect(lambda: self.sp_ang_dx.setValue(0.0))
-        b45dx.clicked.connect(lambda: self.sp_ang_dx.setValue(45.0))
-        btns_dx.addWidget(b0dx); btns_dx.addWidget(b45dx); btns_dx.addStretch(1)
-        g.addLayout(btns_dx, row, 2, 1, 2)
-        row += 1
+        self.sp_ang_dx = QDoubleSpinBox(); self.sp_ang_dx.setRange(0.0, 90.0); self.sp_ang_dx.setDecimals(2); self.sp_ang_dx.setSingleStep(0.5)
+        self.sp_ang_dx.setValue(float(self.base.get("ang_dx", 0.0) or 0.0)); g.addWidget(self.sp_ang_dx, row, 1)
+        row_dx = QHBoxLayout(); b0dx = QPushButton("0°"); b45dx = QPushButton("45°")
+        b0dx.clicked.connect(lambda: self.sp_ang_dx.setValue(0.0)); b45dx.clicked.connect(lambda: self.sp_ang_dx.setValue(45.0))
+        row_dx.addWidget(b0dx); row_dx.addWidget(b45dx); row_dx.addStretch(1)
+        g.addLayout(row_dx, row, 2, 1, 2); row += 1
 
         g.addWidget(QLabel("Offset (mm):"), row, 0)
-        self.sp_off = QDoubleSpinBox()
-        self.sp_off.setRange(-1e6, 1e6)
-        self.sp_off.setDecimals(3)
-        self.sp_off.setSingleStep(0.1)
-        self.sp_off.setValue(float(self.base.get("offset_mm", 0.0) or 0.0))
-        g.addWidget(self.sp_off, row, 1)
-        row += 1
+        self.sp_off = QDoubleSpinBox(); self.sp_off.setRange(-1e6, 1e6); self.sp_off.setDecimals(3); self.sp_off.setSingleStep(0.1)
+        self.sp_off.setValue(float(self.base.get("offset_mm", 0.0) or 0.0)); g.addWidget(self.sp_off, row, 1); row += 1
 
         g.addWidget(QLabel("Formula lunghezza:"), row, 0)
-        self.ed_formula = QLineEdit(self.base.get("formula_lunghezza", "H"))
-        g.addWidget(self.ed_formula, row, 1, 1, 3)
-        row += 1
+        self.ed_formula = QLineEdit(self.base.get("formula_lunghezza", "H")); g.addWidget(self.ed_formula, row, 1, 1, 3); row += 1
 
-        # Token rapidi e legenda componenti precedenti
-        quick = QHBoxLayout()
-        qlab = QLabel("Token rapidi:"); qlab.setStyleSheet("color:#7f8c8d;")
-        quick.addWidget(qlab)
+        quick = QHBoxLayout(); quick.addWidget(QLabel("Token rapidi:"))
         for t in ("H", "L"):
-            b = QPushButton(t)
-            b.clicked.connect(lambda _=None, v=t: self._ins_token(v))
-            quick.addWidget(b)
-
+            b = QPushButton(t); b.clicked.connect(lambda _=None, v=t: self._ins_token(v)); quick.addWidget(b)
         quick.addWidget(QLabel("Componenti prec.:"))
         for c in self.prev_components:
-            rid = c.get("id_riga", "")
+            rid = c.get("id_riga",""); 
             if rid:
-                t = f"C_{rid}"
-                b = QPushButton(t)
-                b.clicked.connect(lambda _=None, v=t: self._ins_token(v))
+                t = f"C_{rid}"; b = QPushButton(t); b.clicked.connect(lambda _=None, v=t: self._ins_token(v))
                 quick.addWidget(b)
         quick.addStretch(1)
 
-        root.addLayout(g)
-        root.addLayout(quick)
+        root.addLayout(g); root.addLayout(quick)
 
-        # Test formula
         test_box = QGroupBox("Test formula")
         tb = QVBoxLayout(test_box)
         tb.addWidget(QLabel("Valori test es: H=1500; L=900; TOKEN_PROFILO=60"))
-        self.ed_test = QLineEdit()
-        tb.addWidget(self.ed_test)
-        self.lbl_test = QLabel("Risultato: —")
-        tb.addWidget(self.lbl_test)
-
+        self.ed_test = QLineEdit(); tb.addWidget(self.ed_test)
+        self.lbl_test = QLabel("Risultato: —"); tb.addWidget(self.lbl_test)
         rowt = QHBoxLayout()
         btn_an = QPushButton("Analizza"); btn_an.clicked.connect(self._analyze)
         btn_ts = QPushButton("Valuta"); btn_ts.clicked.connect(self._try_eval)
@@ -187,12 +124,9 @@ class ComponentEditorDialog(QDialog):
         tb.addLayout(rowt)
         root.addWidget(test_box)
 
-        # Note
         root.addWidget(QLabel("Note:"))
-        self.ed_note = QLineEdit(self.base.get("note", ""))
-        root.addWidget(self.ed_note)
+        self.ed_note = QLineEdit(self.base.get("note", "")); root.addWidget(self.ed_note)
 
-        # Azioni
         acts = QHBoxLayout()
         btn_cancel = QPushButton("Annulla"); btn_cancel.clicked.connect(self.reject)
         btn_ok = QPushButton("Salva"); btn_ok.clicked.connect(self._save)
@@ -203,48 +137,36 @@ class ComponentEditorDialog(QDialog):
         self.cmb_prof.currentIndexChanged.connect(self._update_prof_token)
 
     def _install_shortcuts(self):
-        # Alt+0: imposta entrambi gli angoli a 0°
         sc0 = QShortcut(QKeySequence("Alt+0"), self)
         sc0.activated.connect(lambda: (self.sp_ang_sx.setValue(0.0), self.sp_ang_dx.setValue(0.0)))
-        # Alt+5: imposta entrambi gli angoli a 45°
         sc45 = QShortcut(QKeySequence("Alt+5"), self)
         sc45.activated.connect(lambda: (self.sp_ang_sx.setValue(45.0), self.sp_ang_dx.setValue(45.0)))
 
     def _ins_token(self, tok: str):
-        if not tok:
-            return
+        if not tok: return
         t = self.ed_formula.text() or ""
-        sep = "" if (not t or t.endswith(("+", "-", "*", "/", "(", " "))) else ""
+        sep = "" if (not t or t.endswith(("+","-","*","/","("," "))) else ""
         self.ed_formula.setText(t + sep + tok)
 
     def _update_prof_token(self):
         p = self.cmb_prof.currentText().strip()
-        if p:
-            self.lbl_token.setText(f"Token profilo: {sanitize_name(p)}")
-        else:
-            self.lbl_token.setText("")
+        self.lbl_token.setText(f"Token profilo: {sanitize_name(p)}" if p else "")
 
     def _build_env(self) -> Dict[str, Any]:
         env: Dict[str, Any] = {"H": 1000.0, "L": 1000.0}
-        # Token profilo scelto
         p = self.cmb_prof.currentText().strip()
         if p and p in self.profiles:
             env[sanitize_name(p)] = float(self.profiles[p])
-        # Componenti precedenti
         for c in self.prev_components:
-            rid = c.get("id_riga", "")
-            if rid:
-                env[f"C_{rid}"] = 1000.0
-        # Override da input test
+            rid = c.get("id_riga","")
+            if rid: env[f"C_{rid}"] = 1000.0
         raw = (self.ed_test.text() or "").strip()
         if raw:
             for pair in [x.strip() for x in raw.split(";") if x.strip()]:
                 if "=" in pair:
                     k, v = pair.split("=", 1)
-                    try:
-                        env[k.strip()] = float(v.strip().replace(",", "."))
-                    except Exception:
-                        pass
+                    try: env[k.strip()] = float(v.strip().replace(",", "."))
+                    except Exception: pass
         return env
 
     def _analyze(self):
@@ -255,9 +177,8 @@ class ComponentEditorDialog(QDialog):
             self.lbl_test.setText(f"Errore parse: {e}")
 
     def _try_eval(self):
-        env = self._build_env()
         try:
-            val = eval_formula(self.ed_formula.text().strip(), env)
+            val = eval_formula(self.ed_formula.text().strip(), self._build_env())
             self.lbl_test.setText(f"Risultato: {val:.3f}")
         except Exception as e:
             self.lbl_test.setText(f"Errore: {e}")
@@ -271,20 +192,12 @@ class ComponentEditorDialog(QDialog):
         offs = float(self.sp_off.value())
         form = (self.ed_formula.text() or "H").strip()
         note = (self.ed_note.text() or "").strip()
-
         if not (0.0 <= angsx <= 90.0 and 0.0 <= angdx <= 90.0):
-            QMessageBox.warning(self, "Angoli", "Angoli fuori range (0-90).")
-            return
-
+            QMessageBox.warning(self, "Angoli", "Angoli fuori range (0-90)."); return
         self.base.update({
-            "nome": name,
-            "profilo_nome": prof,
-            "quantita": qta,
-            "ang_sx": angsx,
-            "ang_dx": angdx,
-            "formula_lunghezza": form,
-            "offset_mm": offs,
-            "note": note
+            "nome": name, "profilo_nome": prof, "quantita": qta,
+            "ang_sx": angsx, "ang_dx": angdx, "formula_lunghezza": form,
+            "offset_mm": offs, "note": note
         })
         self.created = True
         self.accept()
@@ -294,11 +207,6 @@ class ComponentEditorDialog(QDialog):
 
 
 class TipologiaEditorDialog(QDialog):
-    """
-    Editor completo tipologia (formato 'legacy'):
-    { nome, categoria, materiale, riferimento_quota, extra_detrazione_mm, pezzi_totali, note,
-      variabili_locali: {k: num}, componenti: [ {id_riga,...} ] }
-    """
     def __init__(self, parent, base: Optional[Dict[str, Any]] = None, is_new: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Nuova Tipologia" if is_new else "Modifica Tipologia")
@@ -316,57 +224,39 @@ class TipologiaEditorDialog(QDialog):
     def _build(self):
         root = QVBoxLayout(self)
 
-        meta = QGridLayout()
-        meta.setHorizontalSpacing(12)
-        meta.setVerticalSpacing(6)
-        row = 0
-
+        meta = QGridLayout(); meta.setHorizontalSpacing(12); meta.setVerticalSpacing(6); row = 0
         meta.addWidget(QLabel("Nome tipologia:"), row, 0)
         self.ed_name = QLineEdit(); meta.addWidget(self.ed_name, row, 1, 1, 3); row += 1
-
         meta.addWidget(QLabel("Categoria:"), row, 0)
         self.ed_cat = QLineEdit(); meta.addWidget(self.ed_cat, row, 1, 1, 3); row += 1
-
         meta.addWidget(QLabel("Materiale:"), row, 0)
         self.ed_mat = QLineEdit(); meta.addWidget(self.ed_mat, row, 1, 1, 3); row += 1
-
         meta.addWidget(QLabel("Riferimento quota:"), row, 0)
-        self.cmb_rif = QComboBox(); self.cmb_rif.addItems(["esterna", "interna"])
-        meta.addWidget(self.cmb_rif, row, 1)
-
+        self.cmb_rif = QComboBox(); self.cmb_rif.addItems(["esterna","interna"]); meta.addWidget(self.cmb_rif, row, 1)
         meta.addWidget(QLabel("Extra detrazione (mm):"), row, 2)
-        self.sp_extra = QDoubleSpinBox(); self.sp_extra.setRange(-1e6, 1e6); self.sp_extra.setDecimals(3)
-        meta.addWidget(self.sp_extra, row, 3); row += 1
-
+        self.sp_extra = QDoubleSpinBox(); self.sp_extra.setRange(-1e6, 1e6); self.sp_extra.setDecimals(3); meta.addWidget(self.sp_extra, row, 3); row += 1
         meta.addWidget(QLabel("Pezzi totali:"), row, 0)
-        self.sp_pezzi = QSpinBox(); self.sp_pezzi.setRange(1, 999)
-        meta.addWidget(self.sp_pezzi, row, 1)
-
+        self.sp_pezzi = QSpinBox(); self.sp_pezzi.setRange(1, 999); meta.addWidget(self.sp_pezzi, row, 1)
         meta.addWidget(QLabel("Note:"), row, 2)
-        self.ed_note = QLineEdit()
-        meta.addWidget(self.ed_note, row, 3); row += 1
-
+        self.ed_note = QLineEdit(); meta.addWidget(self.ed_note, row, 3); row += 1
         root.addLayout(meta)
 
-        # Variabili locali
         root.addWidget(QLabel("Variabili locali (nome → valore):"))
         self.tbl_vars = QTableWidget(0, 2)
-        self.tbl_vars.setHorizontalHeaderLabels(["Nome", "Valore"])
+        self.tbl_vars.setHorizontalHeaderLabels(["Nome","Valore"])
         self.tbl_vars.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tbl_vars.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         root.addWidget(self.tbl_vars)
 
         rowv = QHBoxLayout()
         btn_add_v = QPushButton("Aggiungi variabile"); btn_add_v.clicked.connect(self._add_var)
-        btn_edit_v = QPushButton("Modifica"); btn_edit_v.setEnabled(False)  # editing inline
         btn_del_v = QPushButton("Elimina"); btn_del_v.clicked.connect(self._del_var)
-        rowv.addWidget(btn_add_v); rowv.addWidget(btn_edit_v); rowv.addWidget(btn_del_v); rowv.addStretch(1)
+        rowv.addWidget(btn_add_v); rowv.addWidget(btn_del_v); rowv.addStretch(1)
         root.addLayout(rowv)
 
-        # Componenti
         root.addWidget(QLabel("Componenti (doppio click per modificare):"))
         self.tbl_comp = QTableWidget(0, 9)
-        self.tbl_comp.setHorizontalHeaderLabels(["ID", "Nome", "Profilo", "Spess.", "Q.tà", "Ang SX", "Ang DX", "Formula", "Offset"])
+        self.tbl_comp.setHorizontalHeaderLabels(["ID","Nome","Profilo","Spess.","Q.tà","Ang SX","Ang DX","Formula","Offset"])
         hdr = self.tbl_comp.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -388,7 +278,6 @@ class TipologiaEditorDialog(QDialog):
         rowc.addWidget(btn_add_c); rowc.addWidget(btn_edit_c); rowc.addWidget(btn_dup_c); rowc.addWidget(btn_del_c); rowc.addStretch(1)
         root.addLayout(rowc)
 
-        # Azioni finali
         acts = QHBoxLayout()
         btn_cancel = QPushButton("Annulla"); btn_cancel.clicked.connect(self.reject)
         btn_save = QPushButton("Salva tipologia"); btn_save.clicked.connect(self._save)
@@ -397,37 +286,29 @@ class TipologiaEditorDialog(QDialog):
 
     def _load_base(self):
         b = self.base
-        self.ed_name.setText(str(b.get("nome", "")))
-        self.ed_cat.setText(str(b.get("categoria", "")))
-        self.ed_mat.setText(str(b.get("materiale", "")))
-        rif = str(b.get("riferimento_quota", "esterna")).lower()
-        idx = self.cmb_rif.findText(rif) if rif else 0
+        self.ed_name.setText(str(b.get("nome",""))); self.ed_cat.setText(str(b.get("categoria",""))); self.ed_mat.setText(str(b.get("materiale","")))
+        rif = str(b.get("riferimento_quota","esterna")).lower(); idx = self.cmb_rif.findText(rif) if rif else 0
         self.cmb_rif.setCurrentIndex(idx if idx >= 0 else 0)
-        self.sp_extra.setValue(float(b.get("extra_detrazione_mm", 0.0) or 0.0))
-        self.sp_pezzi.setValue(int(b.get("pezzi_totali", 1) or 1))
-        self.ed_note.setText(str(b.get("note", "")))
-
+        self.sp_extra.setValue(float(b.get("extra_detrazione_mm",0.0) or 0.0))
+        self.sp_pezzi.setValue(int(b.get("pezzi_totali",1) or 1))
+        self.ed_note.setText(str(b.get("note","")))
         for k, v in sorted((b.get("variabili_locali") or {}).items()):
             self._vars_insert_row(k, float(v))
         for c in (b.get("componenti") or []):
             self._comp_insert_row(c)
 
     def _vars_insert_row(self, k: str, v: float):
-        r = self.tbl_vars.rowCount()
-        self.tbl_vars.insertRow(r)
+        r = self.tbl_vars.rowCount(); self.tbl_vars.insertRow(r)
         self.tbl_vars.setItem(r, 0, QTableWidgetItem(k))
         self.tbl_vars.setItem(r, 1, QTableWidgetItem(f"{float(v):.3f}"))
 
     def _add_var(self):
-        r = self.tbl_vars.rowCount()
-        self.tbl_vars.insertRow(r)
-        self.tbl_vars.setItem(r, 0, QTableWidgetItem(""))
-        self.tbl_vars.setItem(r, 1, QTableWidgetItem("0"))
+        r = self.tbl_vars.rowCount(); self.tbl_vars.insertRow(r)
+        self.tbl_vars.setItem(r, 0, QTableWidgetItem("")); self.tbl_vars.setItem(r, 1, QTableWidgetItem("0"))
 
     def _del_var(self):
         r = self.tbl_vars.currentRow()
-        if r >= 0:
-            self.tbl_vars.removeRow(r)
+        if r >= 0: self.tbl_vars.removeRow(r)
 
     def _next_component_id(self) -> str:
         ids = set()
@@ -446,9 +327,7 @@ class TipologiaEditorDialog(QDialog):
             def gi(c): return self.tbl_comp.item(r, c).text() if self.tbl_comp.item(r, c) else ""
             try:
                 comps.append({
-                    "id_riga": gi(0),
-                    "nome": gi(1),
-                    "profilo_nome": gi(2),
+                    "id_riga": gi(0), "nome": gi(1), "profilo_nome": gi(2),
                     "quantita": int(float(gi(4) or "0")),
                     "ang_sx": float(gi(5) or "0"),
                     "ang_dx": float(gi(6) or "0"),
@@ -462,24 +341,20 @@ class TipologiaEditorDialog(QDialog):
 
     def _comp_insert_row(self, c: Dict[str, Any], row: Optional[int] = None):
         r = self.tbl_comp.rowCount() if row is None else row
-        if row is None:
-            self.tbl_comp.insertRow(r)
+        if row is None: self.tbl_comp.insertRow(r)
         sp = ""
-        prof = c.get("profilo_nome", "")
-        if prof in self.profiles:
-            sp = f"{float(self.profiles[prof]):.3f}"
-        vals = [
-            c.get("id_riga", ""), c.get("nome", ""), prof, sp,
-            str(c.get("quantita", 0)), f"{float(c.get('ang_sx', 0.0)):.2f}",
-            f"{float(c.get('ang_dx', 0.0)):.2f}", c.get("formula_lunghezza", ""),
-            f"{float(c.get('offset_mm', 0.0)):.3f}"
-        ]
+        prof = c.get("profilo_nome","")
+        if prof in self.profiles: sp = f"{float(self.profiles[prof]):.3f}"
+        vals = [c.get("id_riga",""), c.get("nome",""), prof, sp,
+                str(c.get("quantita",0)), f"{float(c.get('ang_sx',0.0)):.2f}",
+                f"{float(c.get('ang_dx',0.0)):.2f}", c.get("formula_lunghezza",""),
+                f"{float(c.get('offset_mm',0.0)):.3f}"]
         for i, v in enumerate(vals):
             self.tbl_comp.setItem(r, i, QTableWidgetItem(v))
 
     def _add_comp(self):
         rid = self._next_component_id()
-        comps_before = self._collect_components_list()  # tutti valgono come 'precedenti' per la legenda
+        comps_before = self._collect_components_list()
         dlg = ComponentEditorDialog(self, {
             "id_riga": rid, "nome": "", "profilo_nome": "", "quantita": 1,
             "ang_sx": 0.0, "ang_dx": 0.0, "formula_lunghezza": "H", "offset_mm": 0.0, "note": ""
@@ -493,15 +368,12 @@ class TipologiaEditorDialog(QDialog):
 
     def _edit_comp(self):
         row = self.tbl_comp.currentRow()
-        if row >= 0:
-            self._edit_row_index(row)
+        if row >= 0: self._edit_row_index(row)
 
     def _edit_row_index(self, row: int):
         comps = self._collect_components_list()
-        if not (0 <= row < len(comps)):
-            return
-        comp = comps[row]
-        prev = comps[:row]
+        if not (0 <= row < len(comps)): return
+        comp = comps[row]; prev = comps[:row]
         dlg = ComponentEditorDialog(self, comp, prev_components=prev, profiles=self.profiles)
         from PySide6.QtWidgets import QDialog as _QDialog
         if dlg.exec() == _QDialog.DialogCode.Accepted and dlg.created:
@@ -509,46 +381,34 @@ class TipologiaEditorDialog(QDialog):
 
     def _dup_comp(self):
         row = self.tbl_comp.currentRow()
-        if row < 0:
-            return
+        if row < 0: return
         comps = self._collect_components_list()
-        if not (0 <= row < len(comps)):
-            return
-        comp = dict(comps[row])
-        comp["id_riga"] = self._next_component_id()
-        comp["nome"] = (comp.get("nome") or "") + " (copia)"
+        if not (0 <= row < len(comps)): return
+        comp = dict(comps[row]); comp["id_riga"] = self._next_component_id(); comp["nome"] = (comp.get("nome") or "") + " (copia)"
         self._comp_insert_row(comp)
 
     def _del_comp(self):
         row = self.tbl_comp.currentRow()
-        if row >= 0:
-            self.tbl_comp.removeRow(row)
+        if row >= 0: self.tbl_comp.removeRow(row)
 
     def _save(self):
         name = (self.ed_name.text() or "").strip()
         if not name:
-            QMessageBox.warning(self, "Dati", "Inserisci un nome tipologia.")
-            return
-        # variabili locali
+            QMessageBox.warning(self, "Dati", "Inserisci un nome tipologia."); return
         local_vars: Dict[str, float] = {}
         for r in range(self.tbl_vars.rowCount()):
             k = self.tbl_vars.item(r, 0).text() if self.tbl_vars.item(r, 0) else ""
             v = self.tbl_vars.item(r, 1).text() if self.tbl_vars.item(r, 1) else "0"
             k = (k or "").strip()
-            if not k:
-                continue
-            try:
-                local_vars[k] = float((v or "0").replace(",", "."))
+            if not k: continue
+            try: local_vars[k] = float((v or "0").replace(",", "."))
             except Exception:
-                QMessageBox.warning(self, "Variabili", f"Valore non numerico per '{k}'.")
-                return
-
-        # componenti
+                QMessageBox.warning(self, "Variabili", f"Valore non numerico per '{k}'."); return
         comps = self._collect_components_list()
         if len(comps) == 0:
-            if QMessageBox.question(self, "Conferma", "Nessun componente. Salvare comunque?") != QMessageBox.Yes:
+            from PySide6.QtWidgets import QMessageBox as _MB
+            if _MB.question(self, "Conferma", "Nessun componente. Salvare comunque?") != _MB.Yes:
                 return
-
         self.base = {
             "nome": name,
             "categoria": (self.ed_cat.text() or "").strip(),
