@@ -4,98 +4,60 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QGridLayout, QLabel, QListWidget, QListWidgetItem,
-    QWidget, QScrollArea, QPushButton, QFileDialog, QTableWidget, QTableWidgetItem,
-    QSizePolicy, QLineEdit, QToolButton, QStyle, QMessageBox, QHeaderView, QInputDialog
+    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
+    QLineEdit, QToolButton, QStyle, QMessageBox,
+    QTreeWidget, QTreeWidgetItem
 )
 
 from ui_qt.dialogs.tipologia_editor_qt import TipologiaEditorDialog
-
-# Import lazy e gestito dello store (così la pagina si apre anche se manca il modulo)
-def _load_store(db_path: str):
-    try:
-        from ui_qt.services.typologies_store import TypologiesStore
-        return TypologiesStore(db_path)
-    except Exception as e:
-        return e  # restituisco l'eccezione per mostrarla in UI
+from ui_qt.services.typologies_store import TypologiesStore, default_db_path
 
 class TipologiePage(QFrame):
     """
-    Tipologie su SQLite:
-    - Scegli/crea DB (.db)
-    - Lista tipologie dal DB
+    Vista semplificata:
+    - Elenco tipologie raggruppate per categoria (albero)
+    - Ricerca veloce
     - Nuova / Modifica / Duplica / Elimina
-    - Pulsante Home
+    Nessun riepilogo componenti in questa pagina.
     """
     def __init__(self, appwin, db_path: Optional[str] = None):
         super().__init__()
         self.appwin = appwin
-        self._db_edit: Optional[QLineEdit] = None
-        self._store = None  # TypologiesStore oppure Exception
+        self._store = TypologiesStore(str(default_db_path()))
         self._build()
-        path = Path(db_path) if db_path else Path(__file__).resolve().parents[2] / "data" / "typologies.db"
-        try: path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception: pass
-        self._db_edit.setText(str(path))
-        self._open_store()
         self._reload()
 
     def _build(self):
         self.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
-        root = QHBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(10)
+        root = QVBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(8)
 
-        # SX
-        left = QFrame(); left.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); left.setFixedWidth(420)
-        ll = QVBoxLayout(left); ll.setContentsMargins(6,6,6,6); ll.setSpacing(6)
+        # Barra comandi
+        top = QHBoxLayout()
+        btn_home = QPushButton("Home"); btn_home.clicked.connect(self._go_home); top.addWidget(btn_home)
+        top.addSpacing(8)
+        top.addWidget(QLabel("Cerca:"))
+        self.ed_search = QLineEdit(); self.ed_search.setPlaceholderText("Filtra per nome o categoria")
+        self.ed_search.textChanged.connect(self._reload)
+        top.addWidget(self.ed_search, 1)
 
-        rowp = QHBoxLayout()
-        btn_home = QPushButton("Home"); btn_home.clicked.connect(self._go_home); rowp.addWidget(btn_home, 0)
-        rowp.addWidget(QLabel("Database tipologie (.db):"), 0)
-        self._db_edit = QLineEdit(); self._db_edit.setPlaceholderText("Percorso file SQLite (.db)")
-        rowp.addWidget(self._db_edit, 1)
-        btn_pick = QToolButton(); btn_pick.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
-        btn_pick.clicked.connect(self._browse_db); rowp.addWidget(btn_pick, 0)
-        btn_open = QToolButton(); btn_open.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
-        btn_open.setToolTip("Apri/crea DB"); btn_open.clicked.connect(self._open_store); rowp.addWidget(btn_open, 0)
-        ll.addLayout(rowp)
-
-        self.lst = QListWidget(); self.lst.currentItemChanged.connect(self._on_select)
-        ll.addWidget(self.lst, 1)
-
-        actions = QHBoxLayout()
         self.btn_new = QPushButton("Nuova…"); self.btn_new.clicked.connect(self._new)
         self.btn_edit = QPushButton("Modifica…"); self.btn_edit.clicked.connect(self._edit)
         self.btn_dup = QPushButton("Duplica"); self.btn_dup.clicked.connect(self._dup)
         self.btn_del = QPushButton("Elimina"); self.btn_del.clicked.connect(self._del)
-        actions.addWidget(self.btn_new); actions.addWidget(self.btn_edit); actions.addWidget(self.btn_dup); actions.addWidget(self.btn_del); actions.addStretch(1)
-        ll.addLayout(actions)
+        top.addWidget(self.btn_new); top.addWidget(self.btn_edit); top.addWidget(self.btn_dup); top.addWidget(self.btn_del)
+        root.addLayout(top)
 
-        # CX
-        center = QFrame(); center.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        cl = QVBoxLayout(center); cl.setContentsMargins(6,6,6,6); cl.setSpacing(6)
-        self.lbl_meta = QLabel("Seleziona una tipologia"); self.lbl_meta.setStyleSheet("color:#ced6e0;")
-        cl.addWidget(self.lbl_meta)
-        self.scr = QScrollArea(); self.scr.setWidgetResizable(True)
-        self.meta_host = QWidget(); self.grid = QGridLayout(self.meta_host)
-        self.grid.setContentsMargins(4,4,4,4); self.grid.setHorizontalSpacing(8); self.grid.setVerticalSpacing(6)
-        self.scr.setWidget(self.meta_host)
-        cl.addWidget(self.scr, 1)
+        # Albero categorie -> tipologie
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Categoria / Tipologia"])
+        self.tree.setColumnCount(1)
+        self.tree.itemDoubleClicked.connect(self._edit_on_double)
+        root.addWidget(self.tree, 1)
 
-        # DX
-        right = QFrame(); rl = QVBoxLayout(right); rl.setContentsMargins(6,6,6,6); rl.setSpacing(6)
-        rl.addWidget(QLabel("Dettagli"), 0)
-        self.tbl = QTableWidget(0, 6)
-        self.tbl.setHorizontalHeaderLabels(["Campo","Valore 1","Valore 2","Valore 3","Valore 4","Altro"])
-        hdr = self.tbl.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(3, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(5, QHeaderView.Stretch)
-        rl.addWidget(self.tbl, 1)
-
-        root.addWidget(left, 0); root.addWidget(center, 1); root.addWidget(right, 1)
+        # Nota
+        note = QLabel("Suggerimento: doppio click su una tipologia per modificarla. Le categorie sono generate dinamicamente.")
+        note.setStyleSheet("color:#7f8c8d;")
+        root.addWidget(note)
 
     def _go_home(self):
         try:
@@ -103,76 +65,38 @@ class TipologiePage(QFrame):
             elif hasattr(self.appwin, "go_home"): self.appwin.go_home()
         except Exception: pass
 
-    def _browse_db(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Scegli o crea database tipologie", self._db_edit.text() or "", "SQLite DB (*.db)")
-        if not path: return
-        self._db_edit.setText(path)
-        self._open_store()
-        self._reload()
-
-    def _open_store(self):
-        dbp = self._db_edit.text().strip()
-        self._store = _load_store(dbp)
-        if isinstance(self._store, Exception):
-            self.lbl_meta.setText(f"Errore DB: {self._store}")
-        else:
-            self.lbl_meta.setText(f"DB: {Path(dbp).name}")
-
     def _reload(self):
-        self.lst.clear()
-        self._clear_preview("Seleziona una tipologia")
-        if isinstance(self._store, Exception) or not self._store:
-            return
+        self.tree.clear()
         rows = self._store.list_typologies()
+        q = (self.ed_search.text() or "").lower().strip()
+        # group by category
+        groups: Dict[str, List[Dict[str, Any]]] = {}
         for r in rows:
-            it = QListWidgetItem(f"{r['name']}")
-            it.setData(Qt.UserRole, r["id"])
-            self.lst.addItem(it)
-        if self.lst.count() > 0:
-            self.lst.setCurrentRow(0)
-
-    def _clear_preview(self, msg: str):
-        for i in reversed(range(self.grid.count())):
-            w = self.grid.itemAt(i).widget()
-            if w: w.deleteLater()
-        self.tbl.setRowCount(0)
-        self.lbl_meta.setText(msg)
-
-    def _on_select(self, cur: Optional[QListWidgetItem], prev: Optional[QListWidgetItem]):
-        self._clear_preview("Seleziona una tipologia")
-        if not cur or isinstance(self._store, Exception) or not self._store:
-            return
-        tid = int(cur.data(Qt.UserRole))
-        data = self._store.get_typology_full(tid)
-        if not data:
-            self.lbl_meta.setText("Tipologia non trovata"); return
-        self._render_legacy(data)
-
-    def _render_legacy(self, d: Dict[str,Any]):
-        nome = str(d.get("nome","")); cat = str(d.get("categoria",""))
-        rif = str(d.get("riferimento_quota","")); pezzi = int(d.get("pezzi_totali",1) or 1)
-        extra = float(d.get("extra_detrazione_mm",0.0) or 0.0); note = str(d.get("note",""))
-        self.lbl_meta.setText(f"{nome}")
-        row = 0
-        for label, val in (("Categoria",cat),("Riferimento quota",rif),("Pezzi totali",str(pezzi)),("Extra detrazione (mm)",f"{extra:.3f}"),("Note",note)):
-            lab = QLabel(label + ":"); self.grid.addWidget(lab, row, 0)
-            v = QLabel(val); v.setWordWrap(True); v.setStyleSheet("color:#0a0a0a;")
-            self.grid.addWidget(v, row, 1, 1, 3); row += 1
-
-        self.tbl.setRowCount(0)
-        for c in d.get("componenti", []):
-            r = self.tbl.rowCount(); self.tbl.insertRow(r)
-            self.tbl.setItem(r, 0, QTableWidgetItem(c.get("id_riga","")))
-            self.tbl.setItem(r, 1, QTableWidgetItem(c.get("nome","")))
-            self.tbl.setItem(r, 2, QTableWidgetItem(c.get("profilo_nome","")))
-            self.tbl.setItem(r, 3, QTableWidgetItem(str(c.get("quantita",0))))
-            self.tbl.setItem(r, 4, QTableWidgetItem(f"AngSX:{c.get('ang_sx',0)} AngDX:{c.get('ang_dx',0)}"))
-            self.tbl.setItem(r, 5, QTableWidgetItem(c.get("formula_lunghezza","")))
+            if q:
+                name = (r["name"] or "").lower()
+                cat = (r["category"] or "").lower()
+                if q not in name and q not in cat:
+                    continue
+            cat = r["category"] or "(senza categoria)"
+            groups.setdefault(cat, []).append(r)
+        # build tree
+        for cat, items in sorted(groups.items(), key=lambda kv: kv[0].lower()):
+            root = QTreeWidgetItem([cat])
+            root.setFlags(root.flags() & ~Qt.ItemIsSelectable)
+            self.tree.addTopLevelItem(root)
+            for r in sorted(items, key=lambda x: (x["name"] or "").lower()):
+                leaf = QTreeWidgetItem([r["name"]])
+                leaf.setData(0, Qt.UserRole, int(r["id"]))
+                root.addChild(leaf)
+            root.setExpanded(True)
 
     def _current_id(self) -> Optional[int]:
-        it = self.lst.currentItem()
-        if not it: return None
-        return int(it.data(Qt.UserRole))
+        it = self.tree.currentItem()
+        if not it:
+            return None
+        # se è una categoria, non ha UserRole
+        val = it.data(0, Qt.UserRole)
+        return int(val) if val is not None else None
 
     def _new(self):
         dlg = TipologiaEditorDialog(self, is_new=True)
@@ -180,54 +104,50 @@ class TipologiePage(QFrame):
         if dlg.exec() == _QDialog.DialogCode.Accepted:
             data = dlg.result_tipologia()
             try:
-                new_id = self._store.create_typology(data)  # type: ignore
+                self._store.create_typology(data)
                 self._reload()
-                for i in range(self.lst.count()):
-                    if int(self.lst.item(i).data(Qt.UserRole)) == int(new_id):
-                        self.lst.setCurrentRow(i); break
             except Exception as e:
                 QMessageBox.critical(self, "Errore salvataggio", str(e))
 
     def _edit(self):
         tid = self._current_id()
         if not tid: return
-        data = self._store.get_typology_full(tid)  # type: ignore
+        data = self._store.get_typology_full(tid)
         if not data: return
         dlg = TipologiaEditorDialog(self, base=data, is_new=False)
         from PySide6.QtWidgets import QDialog as _QDialog
         if dlg.exec() == _QDialog.DialogCode.Accepted:
             out = dlg.result_tipologia()
             try:
-                self._store.update_typology(tid, out)  # type: ignore
+                self._store.update_typology(tid, out)
                 self._reload()
-                for i in range(self.lst.count()):
-                    if int(self.lst.item(i).data(Qt.UserRole)) == int(tid):
-                        self.lst.setCurrentRow(i); break
             except Exception as e:
                 QMessageBox.critical(self, "Errore salvataggio", str(e))
+
+    def _edit_on_double(self, item: QTreeWidgetItem, _col: int):
+        if item and item.data(0, Qt.UserRole) is not None:
+            self._edit()
 
     def _dup(self):
         tid = self._current_id()
         if not tid: return
+        from PySide6.QtWidgets import QInputDialog
         new_name, ok = QInputDialog.getText(self, "Duplica tipologia", "Nuovo nome:")
         if not ok or not (new_name or "").strip(): return
         try:
-            new_id = self._store.duplicate_typology(tid, (new_name or "").strip())  # type: ignore
-            if new_id:
-                self._reload()
-                for i in range(self.lst.count()):
-                    if int(self.lst.item(i).data(Qt.UserRole)) == int(new_id):
-                        self.lst.setCurrentRow(i); break
+            self._store.duplicate_typology(tid, (new_name or "").strip())
+            self._reload()
         except Exception as e:
             QMessageBox.critical(self, "Errore duplicazione", str(e))
 
     def _del(self):
         tid = self._current_id()
         if not tid: return
-        if QMessageBox.question(self, "Elimina", "Eliminare la tipologia selezionata?") != QMessageBox.Yes:
+        from PySide6.QtWidgets import QMessageBox as _MB
+        if _MB.question(self, "Elimina", "Eliminare la tipologia selezionata?") != _MB.Yes:
             return
         try:
-            self._store.delete_typology(tid)  # type: ignore
+            self._store.delete_typology(tid)
             self._reload()
         except Exception as e:
             QMessageBox.critical(self, "Errore eliminazione", str(e))
