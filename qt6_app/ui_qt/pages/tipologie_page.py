@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout, QGridLayout, QLabel, QListWidget, QListWidgetItem,
     QWidget, QScrollArea, QPushButton, QFileDialog, QTableWidget, QTableWidgetItem,
-    QSizePolicy, QLineEdit, QToolButton, QStyle, QMessageBox
+    QSizePolicy, QLineEdit, QToolButton, QStyle, QMessageBox, QHeaderView
 )
 
 from ui_qt.dialogs.tipologia_editor_qt import TipologiaEditorDialog
@@ -25,8 +25,9 @@ class TipologiePage(QFrame):
     """
     Gestione tipologie (formato legacy JSON):
     - Selettore cartella .json
-    - Lista file (riconosce anche schema parametric 'engine' ma mostra solo)
-    - Nuova/Modifica/Duplica/Elimina (editor Qt completo)
+    - Lista file (riconosce anche schema 'engine' ma è read-only qui)
+    - Nuova / Modifica / Duplica / Elimina
+    - Pulsante Home per tornare alla Home
     """
     def __init__(self, appwin, typologies_dir: Optional[str] = None):
         super().__init__()
@@ -50,10 +51,15 @@ class TipologiePage(QFrame):
         root = QHBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(10)
 
         # SX: cartella + lista
-        left = QFrame(); left.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); left.setFixedWidth(360)
+        left = QFrame(); left.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); left.setFixedWidth(400)
         ll = QVBoxLayout(left); ll.setContentsMargins(6,6,6,6); ll.setSpacing(6)
 
         rowp = QHBoxLayout()
+        btn_home = QPushButton("Home")
+        btn_home.setToolTip("Torna alla Home")
+        btn_home.clicked.connect(self._go_home)
+        rowp.addWidget(btn_home, 0)
+
         rowp.addWidget(QLabel("Cartella tipologie:"), 0)
         self._dir_edit = QLineEdit(); rowp.addWidget(self._dir_edit, 1)
         btn_dir = QToolButton(); btn_dir.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
@@ -89,10 +95,25 @@ class TipologiePage(QFrame):
         rl.addWidget(QLabel("Dettagli"), 0)
         self.tbl = QTableWidget(0, 6)
         self.tbl.setHorizontalHeaderLabels(["Tipo","ID/Param","Nome/Ruolo","Profilo","Qty/Default","Altro"])
-        self.tbl.horizontalHeader().setStretchLastSection(True)
+        hdr = self.tbl.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(3, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(5, QHeaderView.Stretch)
         rl.addWidget(self.tbl, 1)
 
         root.addWidget(left, 0); root.addWidget(center, 1); root.addWidget(right, 1)
+
+    def _go_home(self):
+        try:
+            if hasattr(self.appwin, "show_page"):
+                self.appwin.show_page("home")
+            elif hasattr(self.appwin, "go_home"):
+                self.appwin.go_home()
+        except Exception:
+            pass
 
     def _browse_dir(self):
         path = QFileDialog.getExistingDirectory(self, "Seleziona cartella tipologie", self._dir_edit.text() or "")
@@ -101,10 +122,12 @@ class TipologiePage(QFrame):
 
     def _reload(self):
         base = Path(self._dir_edit.text().strip() or ".")
-        self.lst.clear(); 
+        self.lst.clear()
         if not base.exists():
-            self.lbl_meta.setText("Cartella inesistente"); return
+            self._clear_preview("Cartella inesistente"); return
         files = sorted(base.glob("*.json"))
+        if not files:
+            self._clear_preview("Nessuna tipologia trovata in questa cartella")
         for p in files:
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
@@ -128,8 +151,6 @@ class TipologiePage(QFrame):
                 self.lst.addItem(it)
         if self.lst.count() > 0:
             self.lst.setCurrentRow(0)
-        else:
-            self._clear_preview("Nessuna tipologia trovata")
 
     def _clear_preview(self, msg: str):
         for i in reversed(range(self.grid.count())):
@@ -167,8 +188,8 @@ class TipologiePage(QFrame):
         self.lbl_meta.setText(f"{nome} [legacy] — {path.name}")
         row = 0
         for label, val in (("Categoria",cat),("Riferimento quota",rif),("Pezzi totali",str(pezzi)),("Extra detrazione (mm)",f"{extra:.3f}"),("Note",note)):
-            self.grid.addWidget(QLabel(label+":"), row, 0)
-            v = QLabel(val); v.setStyleSheet("color:#0a0a0a;")
+            lab = QLabel(label + ":"); self.grid.addWidget(lab, row, 0)
+            v = QLabel(val); v.setWordWrap(True); v.setStyleSheet("color:#0a0a0a;")
             self.grid.addWidget(v, row, 1, 1, 3); row += 1
 
         self.tbl.setRowCount(0)
@@ -186,8 +207,8 @@ class TipologiePage(QFrame):
         self.lbl_meta.setText(f"{name} [engine] — {path.name}")
         row = 0
         for label, val in (("Versione",ver),("Descrizione",desc)):
-            self.grid.addWidget(QLabel(label+":"), row, 0)
-            v = QLabel(val); v.setStyleSheet("color:#0a0a0a;")
+            lab = QLabel(label + ":"); self.grid.addWidget(lab, row, 0)
+            v = QLabel(val); v.setWordWrap(True); v.setStyleSheet("color:#0a0a0a;")
             self.grid.addWidget(v, row, 1, 1, 3); row += 1
         self.tbl.setRowCount(0)
         for p in d.get("parameters", [])[:12]:
@@ -217,7 +238,8 @@ class TipologiePage(QFrame):
 
     def _new(self):
         dlg = TipologiaEditorDialog(self, is_new=True)
-        if dlg.exec() == dlg.Accepted:
+        from PySide6.QtWidgets import QDialog as _QDialog
+        if dlg.exec() == _QDialog.DialogCode.Accepted:
             data = dlg.result_tipologia()
             base = Path(self._dir_edit.text().strip() or ".")
             base.mkdir(parents=True, exist_ok=True)
@@ -242,15 +264,16 @@ class TipologiePage(QFrame):
         except Exception as e:
             QMessageBox.critical(self, "Errore", f"JSON non leggibile:\n{e}"); return
         if "componenti" not in data:
-            QMessageBox.information(self, "Schema", "Questa tipologia non è legacy (engine). Modifica non supportata qui.")
+            QMessageBox.information(self, "Schema", "Questa tipologia è 'engine'. La modifica non è supportata qui.")
             return
         dlg = TipologiaEditorDialog(self, base=data, is_new=False)
-        if dlg.exec() == dlg.Accepted:
+        from PySide6.QtWidgets import QDialog as _QDialog
+        if dlg.exec() == _QDialog.DialogCode.Accepted:
             out = dlg.result_tipologia()
             try:
                 p.write_text(json.dumps(out, indent=2), encoding="utf-8")
                 self._reload()
-                # riposiziona selezione sul file
+                # riposiziona selezione
                 for i in range(self.lst.count()):
                     en = self.lst.item(i).data(Qt.UserRole) or {}
                     if Path(en.get("path","")) == p:
