@@ -2,350 +2,284 @@ from __future__ import annotations
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 import json
-from dataclasses import asdict
+import shutil
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout, QGridLayout, QLabel, QListWidget, QListWidgetItem,
-    QWidget, QScrollArea, QLineEdit, QComboBox, QPushButton, QFileDialog, QTableWidget,
-    QTableWidgetItem, QSizePolicy, QMessageBox
+    QWidget, QScrollArea, QPushButton, QFileDialog, QTableWidget, QTableWidgetItem,
+    QSizePolicy, QLineEdit, QToolButton, QStyle, QMessageBox
 )
 
-# Import "safe" del motore parametrico: non deve impedire il load del modulo
-try:
-    from ui_qt.services.parametric_engine import (
-        TypologyDef, Parameter, ElementDef, ParametricEngine, Part
-    )
-    _ENGINE_OK = True
-except Exception:
-    TypologyDef = Parameter = ElementDef = ParametricEngine = Part = None  # type: ignore
-    _ENGINE_OK = False
+from ui_qt.dialogs.tipologia_editor_qt import TipologiaEditorDialog
 
-# Accesso allo stesso DB profili usato da Utility/Semi-auto
-try:
-    from ui_qt.services.profiles_store import ProfilesStore
-except Exception:
-    ProfilesStore = None  # type: ignore
-
+def _default_dirs() -> List[Path]:
+    me = Path(__file__).resolve()
+    return [
+        me.parents[2] / "data" / "typologies",
+        Path.cwd() / "data" / "typologies",
+        Path.home() / "blitz" / "typologies"
+    ]
 
 class TipologiePage(QFrame):
     """
-    Progettazione parametrica (separata dalla gestione commessa).
-    - Carica tipologie JSON da data/typologies
-    - Editor parametri + mapping profili (dal DB profili condiviso)
-    - Valuta e mostra anteprima elementi
-    - Salva configurazioni istanziate (per 'Quote vani luce')
+    Gestione tipologie (formato legacy JSON):
+    - Selettore cartella .json
+    - Lista file (riconosce anche schema parametric 'engine' ma mostra solo)
+    - Nuova/Modifica/Duplica/Elimina (editor Qt completo)
     """
     def __init__(self, appwin, typologies_dir: Optional[str] = None):
         super().__init__()
         self.appwin = appwin
-        self.profiles_store = ProfilesStore() if ProfilesStore else None
-        self.typologies_dir = typologies_dir or str(Path("data") / "typologies")
-
-        self._typ_paths: Dict[str, Path] = {}
-        self._current_typ = None        # type: ignore
-        self._param_widgets: Dict[str, QWidget] = {}
-        self._engine = None             # type: ignore
-        self._parts: List[Any] = []
-        self._env: Dict[str, Any] = {}
-
+        self._dir_edit: Optional[QLineEdit] = None
         self._build()
-        self._load_typologies_list()
+        base = Path(typologies_dir) if typologies_dir else None
+        if not base:
+            for d in _default_dirs():
+                if d.exists():
+                    base = d; break
+        if not base:
+            base = _default_dirs()[0]
+        try: base.mkdir(parents=True, exist_ok=True)
+        except Exception: pass
+        self._dir_edit.setText(str(base))
+        self._reload()
 
-        if not _ENGINE_OK:
-            self._show_engine_missing_banner()
-
-    # ------------------------- UI -------------------------
     def _build(self):
         self.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
-        root = QHBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(10)
+        root = QHBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(10)
 
-        # Colonna sinistra: elenco tipologie
-        left = QFrame()
-        left.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        left.setFixedWidth(260)
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(6, 6, 6, 6)
-        ll.setSpacing(6)
-        ll.addWidget(QLabel("Tipologie"))
-        self.lst_typs = QListWidget()
-        self.lst_typs.currentItemChanged.connect(self._on_select_typology)
-        ll.addWidget(self.lst_typs, 1)
+        # SX: cartella + lista
+        left = QFrame(); left.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); left.setFixedWidth(360)
+        ll = QVBoxLayout(left); ll.setContentsMargins(6,6,6,6); ll.setSpacing(6)
 
-        # Colonna centrale: editor parametri
-        center = QFrame()
-        center.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        cl = QVBoxLayout(center)
-        cl.setContentsMargins(6, 6, 6, 6)
-        cl.setSpacing(6)
+        rowp = QHBoxLayout()
+        rowp.addWidget(QLabel("Cartella tipologie:"), 0)
+        self._dir_edit = QLineEdit(); rowp.addWidget(self._dir_edit, 1)
+        btn_dir = QToolButton(); btn_dir.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
+        btn_dir.clicked.connect(self._browse_dir); rowp.addWidget(btn_dir, 0)
+        btn_reload = QToolButton(); btn_reload.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        btn_reload.clicked.connect(self._reload); rowp.addWidget(btn_reload, 0)
+        ll.addLayout(rowp)
 
-        self.lbl_meta = QLabel("Seleziona una tipologia")
-        self.lbl_meta.setStyleSheet("color:#ced6e0;")
+        self.lst = QListWidget(); self.lst.currentItemChanged.connect(self._on_select)
+        ll.addWidget(self.lst, 1)
+
+        actions = QHBoxLayout()
+        self.btn_new = QPushButton("Nuova…"); self.btn_new.clicked.connect(self._new)
+        self.btn_edit = QPushButton("Modifica…"); self.btn_edit.clicked.connect(self._edit)
+        self.btn_dup = QPushButton("Duplica"); self.btn_dup.clicked.connect(self._dup)
+        self.btn_del = QPushButton("Elimina"); self.btn_del.clicked.connect(self._del)
+        actions.addWidget(self.btn_new); actions.addWidget(self.btn_edit); actions.addWidget(self.btn_dup); actions.addWidget(self.btn_del); actions.addStretch(1)
+        ll.addLayout(actions)
+
+        # CX: meta
+        center = QFrame(); center.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        cl = QVBoxLayout(center); cl.setContentsMargins(6,6,6,6); cl.setSpacing(6)
+        self.lbl_meta = QLabel("Seleziona una tipologia"); self.lbl_meta.setStyleSheet("color:#ced6e0;")
         cl.addWidget(self.lbl_meta)
-
-        self.scr = QScrollArea()
-        self.scr.setWidgetResizable(True)
-        self.param_host = QWidget()
-        self.grid = QGridLayout(self.param_host)
-        self.grid.setContentsMargins(4, 4, 4, 4)
-        self.grid.setHorizontalSpacing(8)
-        self.grid.setVerticalSpacing(6)
-        self.scr.setWidget(self.param_host)
+        self.scr = QScrollArea(); self.scr.setWidgetResizable(True)
+        self.meta_host = QWidget(); self.grid = QGridLayout(self.meta_host)
+        self.grid.setContentsMargins(4,4,4,4); self.grid.setHorizontalSpacing(8); self.grid.setVerticalSpacing(6)
+        self.scr.setWidget(self.meta_host)
         cl.addWidget(self.scr, 1)
 
-        btn_row = QHBoxLayout()
-        self.btn_eval = QPushButton("Valuta")
-        self.btn_eval.clicked.connect(self._evaluate)
-        btn_row.addWidget(self.btn_eval)
-
-        self.btn_save_cfg = QPushButton("Salva configurazione…")
-        self.btn_save_cfg.clicked.connect(self._save_configuration)
-        btn_row.addWidget(self.btn_save_cfg)
-        btn_row.addStretch(1)
-        cl.addLayout(btn_row)
-
-        # Colonna destra: anteprima tabellare elementi
-        right = QFrame()
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(6, 6, 6, 6)
-        rl.setSpacing(6)
-        rl.addWidget(QLabel("Anteprima elementi"), 0)
-
-        self.tbl = QTableWidget(0, 8)
-        self.tbl.setHorizontalHeaderLabels([
-            "ID", "Ruolo", "Profilo", "Q.tà",
-            "Lunghezza (mm)", "Ang A (°)", "Ang B (°)", "Note"
-        ])
+        # DX: dettagli
+        right = QFrame(); rl = QVBoxLayout(right); rl.setContentsMargins(6,6,6,6); rl.setSpacing(6)
+        rl.addWidget(QLabel("Dettagli"), 0)
+        self.tbl = QTableWidget(0, 6)
+        self.tbl.setHorizontalHeaderLabels(["Tipo","ID/Param","Nome/Ruolo","Profilo","Qty/Default","Altro"])
         self.tbl.horizontalHeader().setStretchLastSection(True)
         rl.addWidget(self.tbl, 1)
 
-        root.addWidget(left, 0)
-        root.addWidget(center, 1)
-        root.addWidget(right, 1)
+        root.addWidget(left, 0); root.addWidget(center, 1); root.addWidget(right, 1)
 
-    def _show_engine_missing_banner(self):
-        warn = QLabel("Motore parametrico non disponibile (parametric_engine). "
-                      "Installa/aggiungi ui_qt/services/parametric_engine.py.")
-        warn.setStyleSheet("color:#e67e22; font-weight:600;")
-        # Inserisci il banner sotto la label meta
-        self.lbl_meta.setText(self.lbl_meta.text() + " — Motore non disponibile")
+    def _browse_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "Seleziona cartella tipologie", self._dir_edit.text() or "")
+        if not path: return
+        self._dir_edit.setText(path); self._reload()
 
-    # -------------------- Tipologie load -------------------
-    def _load_typologies_list(self):
-        self.lst_typs.clear()
-        self._typ_paths.clear()
-
-        base = Path(self.typologies_dir)
+    def _reload(self):
+        base = Path(self._dir_edit.text().strip() or ".")
+        self.lst.clear(); 
         if not base.exists():
-            try:
-                base.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-
-        for p in sorted(base.glob("*.json")):
+            self.lbl_meta.setText("Cartella inesistente"); return
+        files = sorted(base.glob("*.json"))
+        for p in files:
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
-                name = str(data.get("name") or p.stem)
-                self.lst_typs.addItem(QListWidgetItem(name))
-                self._typ_paths[name] = p
             except Exception:
-                continue
+                it = QListWidgetItem(f"{p.stem} (JSON non valido)")
+                it.setData(Qt.UserRole, {"type":"invalid","path":str(p)})
+                self.lst.addItem(it); continue
+            if "componenti" in data:
+                name = str(data.get("nome") or p.stem)
+                it = QListWidgetItem(f"{name}  [legacy]")
+                it.setData(Qt.UserRole, {"type":"legacy","path":str(p)})
+                self.lst.addItem(it)
+            elif "parameters" in data and "elements" in data:
+                name = str(data.get("name") or p.stem)
+                it = QListWidgetItem(f"{name}  [engine]")
+                it.setData(Qt.UserRole, {"type":"engine","path":str(p)})
+                self.lst.addItem(it)
+            else:
+                it = QListWidgetItem(f"{p.stem} (schema non riconosciuto)")
+                it.setData(Qt.UserRole, {"type":"unknown","path":str(p)})
+                self.lst.addItem(it)
+        if self.lst.count() > 0:
+            self.lst.setCurrentRow(0)
+        else:
+            self._clear_preview("Nessuna tipologia trovata")
 
-        if self.lst_typs.count() > 0:
-            self.lst_typs.setCurrentRow(0)
-
-    def _on_select_typology(self, cur: Optional[QListWidgetItem], prev: Optional[QListWidgetItem]):
-        if not cur or not _ENGINE_OK:
-            return
-        name = cur.text()
-        path = self._typ_paths.get(name)
-        if not path:
-            return
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            typ = TypologyDef(  # type: ignore
-                name=data.get("name", ""),
-                version=data.get("version", ""),
-                description=data.get("description", ""),
-                parameters=[Parameter(**p) for p in data.get("parameters", [])],  # type: ignore
-                derived=data.get("derived", {}),
-                elements=[ElementDef(**e) for e in data.get("elements", [])],     # type: ignore
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Errore tipologia", f"Impossibile caricare la tipologia:\n{e}")
-            return
-
-        self._current_typ = typ
-        self._engine = ParametricEngine(typ)  # type: ignore
-        self._render_param_editors()
-
-    # -------------------- Param editors -------------------
-    def _render_param_editors(self):
-        # Pulisci griglia
+    def _clear_preview(self, msg: str):
         for i in reversed(range(self.grid.count())):
             w = self.grid.itemAt(i).widget()
-            if w:
-                w.deleteLater()
-        self._param_widgets.clear()
-
-        if not self._current_typ:
-            self.lbl_meta.setText("Seleziona una tipologia")
-            return
-
-        t = self._current_typ
-        self.lbl_meta.setText(f"{t.name} v{t.version} — {t.description}")
-
-        row = 0
-        # Parametri base
-        for p in t.parameters:
-            self.grid.addWidget(QLabel(p.name + ":"), row, 0)
-            # Widget per tipo
-            if p.type == "bool":
-                cb = QComboBox()
-                cb.addItems(["False", "True"])
-                cb.setCurrentIndex(1 if bool(p.default) else 0)
-                w = cb
-            elif p.type == "select":
-                cb = QComboBox()
-                # Per compatibilità con il DB profili condiviso:
-                if p.name.startswith("prof_") and self.profiles_store:
-                    try:
-                        names: List[str] = []
-                        rows = self.profiles_store.list_profiles()
-                        for r in rows:
-                            n = str(r.get("name") or "")
-                            if n:
-                                names.append(n)
-                        cb.addItem("")  # nessuno
-                        for n in sorted(names):
-                            cb.addItem(n)
-                    except Exception:
-                        cb.addItem("")
-                else:
-                    cb.addItem("")
-                    for c in (getattr(p, "choices", None) or []):
-                        cb.addItem(str(c))
-                if p.default:
-                    idx = cb.findText(str(p.default))
-                    if idx >= 0:
-                        cb.setCurrentIndex(idx)
-                w = cb
-            else:
-                # float/int come line edit semplice (conversione alla valutazione)
-                edit = QLineEdit()
-                edit.setPlaceholderText(str(p.default))
-                if p.default not in (None, ""):
-                    edit.setText(str(p.default))
-                w = edit
-
-            self.grid.addWidget(w, row, 1, 1, 2)
-            desc = QLabel(getattr(p, "description", "") or "")
-            desc.setStyleSheet("color:#7f8c8d;")
-            self.grid.addWidget(desc, row, 3)
-            self._param_widgets[p.name] = w
-            row += 1
-
-        # Sezione variabili derivate (valorizzate dopo 'Valuta')
-        self.grid.addWidget(QLabel("Variabili derivate (dopo valutazione):"), row, 0, 1, 4)
-        row += 1
-        self._derived_labels: Dict[str, QLabel] = {}
-        for k in sorted(t.derived.keys()):
-            self.grid.addWidget(QLabel(f"{k}:"), row, 0)
-            lab = QLabel("—")
-            lab.setStyleSheet("color:#0a0a0a;")
-            self.grid.addWidget(lab, row, 1, 1, 3)
-            self._derived_labels[k] = lab
-            row += 1
-
-    def _collect_inputs(self) -> Dict[str, Any]:
-        vals: Dict[str, Any] = {}
-        if not self._current_typ:
-            return vals
-        for p in self._current_typ.parameters:
-            w = self._param_widgets.get(p.name)
-            if not w:
-                vals[p.name] = getattr(p, "default", None)
-                continue
-            if p.type == "bool":
-                vals[p.name] = (w.currentText() == "True")  # type: ignore
-            elif p.type == "int":
-                s = (w.text() if hasattr(w, "text") else "").strip()  # type: ignore
-                try:
-                    vals[p.name] = int(float(s.replace(",", "."))) if s else int(getattr(p, "default", 0) or 0)
-                except Exception:
-                    vals[p.name] = int(getattr(p, "default", 0) or 0)
-            elif p.type == "select":
-                vals[p.name] = w.currentText()  # type: ignore
-            else:
-                s = (w.text() if hasattr(w, "text") else "").strip()  # type: ignore
-                try:
-                    vals[p.name] = float(s.replace(",", ".")) if s else float(getattr(p, "default", 0.0) or 0.0)
-                except Exception:
-                    vals[p.name] = float(getattr(p, "default", 0.0) or 0.0)
-        return vals
-
-    # ----------------- Eval / Anteprima -------------------
-    def _evaluate(self):
-        if not self._engine or not self._current_typ:
-            if not _ENGINE_OK:
-                QMessageBox.warning(self, "Motore mancante",
-                                    "parametric_engine non disponibile. Impossibile valutare.")
-            return
-        inputs = self._collect_inputs()
-        try:
-            parts, env = self._engine.evaluate(inputs)  # type: ignore
-        except Exception as e:
-            QMessageBox.critical(self, "Errore formula", f"Errore nella valutazione:\n{e}")
-            return
-        self._parts = parts
-        self._env = env
-
-        # Aggiorna derivate
-        for k, lab in getattr(self, "_derived_labels", {}).items():
-            val = env.get(k, "—")
-            try:
-                lab.setText(f"{float(val):.3f}")
-            except Exception:
-                lab.setText(str(val))
-
-        # Aggiorna tabella
-        self._fill_table()
-
-    def _fill_table(self):
+            if w: w.deleteLater()
         self.tbl.setRowCount(0)
-        for p in self._parts:
-            r = self.tbl.rowCount()
-            self.tbl.insertRow(r)
-            self.tbl.setItem(r, 0, QTableWidgetItem(str(p.id)))
-            self.tbl.setItem(r, 1, QTableWidgetItem(str(p.role)))
-            self.tbl.setItem(r, 2, QTableWidgetItem(str(p.profile)))
-            self.tbl.setItem(r, 3, QTableWidgetItem(str(p.qty)))
-            self.tbl.setItem(r, 4, QTableWidgetItem(f"{p.length:.3f}"))
-            self.tbl.setItem(r, 5, QTableWidgetItem(f"{p.angle_a:.2f}"))
-            self.tbl.setItem(r, 6, QTableWidgetItem(f"{p.angle_b:.2f}"))
-            self.tbl.setItem(r, 7, QTableWidgetItem(str(p.note or "")))
+        self.lbl_meta.setText(msg)
 
-    # ----------------- Salva configurazione ----------------
-    def _save_configuration(self):
-        if not self._current_typ:
+    def _on_select(self, cur: Optional[QListWidgetItem], prev: Optional[QListWidgetItem]):
+        self._clear_preview("Seleziona una tipologia")
+        if not cur: return
+        entry = cur.data(Qt.UserRole) or {}
+        fpath = Path(entry.get("path",""))
+        ftype = entry.get("type","")
+        if not fpath.exists():
+            self.lbl_meta.setText("File non presente"); return
+        try:
+            data = json.loads(fpath.read_text(encoding="utf-8"))
+        except Exception as e:
+            self.lbl_meta.setText(f"JSON non leggibile: {e}"); return
+
+        if ftype == "legacy" and "componenti" in data:
+            self._render_legacy(data, fpath)
+        elif ftype == "engine" and "parameters" in data and "elements" in data:
+            self._render_engine(data, fpath)
+        elif ftype == "invalid":
+            self.lbl_meta.setText("JSON non valido")
+        else:
+            self.lbl_meta.setText("Schema non riconosciuto")
+
+    def _render_legacy(self, d: Dict[str,Any], path: Path):
+        nome = str(d.get("nome","")); cat = str(d.get("categoria",""))
+        rif = str(d.get("riferimento_quota","")); pezzi = int(d.get("pezzi_totali",1) or 1)
+        extra = float(d.get("extra_detrazione_mm",0.0) or 0.0); note = str(d.get("note",""))
+        self.lbl_meta.setText(f"{nome} [legacy] — {path.name}")
+        row = 0
+        for label, val in (("Categoria",cat),("Riferimento quota",rif),("Pezzi totali",str(pezzi)),("Extra detrazione (mm)",f"{extra:.3f}"),("Note",note)):
+            self.grid.addWidget(QLabel(label+":"), row, 0)
+            v = QLabel(val); v.setStyleSheet("color:#0a0a0a;")
+            self.grid.addWidget(v, row, 1, 1, 3); row += 1
+
+        self.tbl.setRowCount(0)
+        for c in d.get("componenti", []):
+            r = self.tbl.rowCount(); self.tbl.insertRow(r)
+            self.tbl.setItem(r, 0, QTableWidgetItem("comp"))
+            self.tbl.setItem(r, 1, QTableWidgetItem(c.get("id_riga","")))
+            self.tbl.setItem(r, 2, QTableWidgetItem(c.get("nome","")))
+            self.tbl.setItem(r, 3, QTableWidgetItem(c.get("profilo_nome","")))
+            self.tbl.setItem(r, 4, QTableWidgetItem(str(c.get("quantita",0))))
+            self.tbl.setItem(r, 5, QTableWidgetItem(f"AngSX:{c.get('ang_sx',0)} AngDX:{c.get('ang_dx',0)} | {c.get('formula_lunghezza','')}"))
+
+    def _render_engine(self, d: Dict[str,Any], path: Path):
+        name = str(d.get("name","")); desc = str(d.get("description","")); ver = str(d.get("version",""))
+        self.lbl_meta.setText(f"{name} [engine] — {path.name}")
+        row = 0
+        for label, val in (("Versione",ver),("Descrizione",desc)):
+            self.grid.addWidget(QLabel(label+":"), row, 0)
+            v = QLabel(val); v.setStyleSheet("color:#0a0a0a;")
+            self.grid.addWidget(v, row, 1, 1, 3); row += 1
+        self.tbl.setRowCount(0)
+        for p in d.get("parameters", [])[:12]:
+            r = self.tbl.rowCount(); self.tbl.insertRow(r)
+            self.tbl.setItem(r, 0, QTableWidgetItem("param"))
+            self.tbl.setItem(r, 1, QTableWidgetItem(p.get("name","")))
+            self.tbl.setItem(r, 2, QTableWidgetItem(p.get("type","")))
+            self.tbl.setItem(r, 3, QTableWidgetItem(str(p.get("default",""))))
+            self.tbl.setItem(r, 4, QTableWidgetItem(""))
+            self.tbl.setItem(r, 5, QTableWidgetItem(p.get("description","")))
+        for e in d.get("elements", [])[:20]:
+            r = self.tbl.rowCount(); self.tbl.insertRow(r)
+            self.tbl.setItem(r, 0, QTableWidgetItem("elem"))
+            self.tbl.setItem(r, 1, QTableWidgetItem(e.get("id","")))
+            self.tbl.setItem(r, 2, QTableWidgetItem(e.get("role","")))
+            self.tbl.setItem(r, 3, QTableWidgetItem(e.get("profile_var","")))
+            self.tbl.setItem(r, 4, QTableWidgetItem(e.get("qty_expr","")))
+            self.tbl.setItem(r, 5, QTableWidgetItem(e.get("length_expr","")))
+
+    # -------- CRUD --------
+    def _current_path(self) -> Optional[Path]:
+        it = self.lst.currentItem()
+        if not it: return None
+        entry = it.data(Qt.UserRole) or {}
+        p = Path(entry.get("path",""))
+        return p if p.exists() else None
+
+    def _new(self):
+        dlg = TipologiaEditorDialog(self, is_new=True)
+        if dlg.exec() == dlg.Accepted:
+            data = dlg.result_tipologia()
+            base = Path(self._dir_edit.text().strip() or ".")
+            base.mkdir(parents=True, exist_ok=True)
+            safe = "".join(ch for ch in data.get("nome","") if ch.isalnum() or ch in (" ","-","_")).strip().replace(" ","_") or "tipologia"
+            out = base / f"{safe}.json"
+            try:
+                out.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                self._reload()
+                # seleziona appena creato
+                for i in range(self.lst.count()):
+                    en = self.lst.item(i).data(Qt.UserRole) or {}
+                    if Path(en.get("path","")) == out:
+                        self.lst.setCurrentRow(i); break
+            except Exception as e:
+                QMessageBox.critical(self, "Errore salvataggio", str(e))
+
+    def _edit(self):
+        p = self._current_path()
+        if not p: return
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"JSON non leggibile:\n{e}"); return
+        if "componenti" not in data:
+            QMessageBox.information(self, "Schema", "Questa tipologia non è legacy (engine). Modifica non supportata qui.")
             return
-        if not self._parts:
-            self._evaluate()
-            if not self._parts:
-                return
-        cfg = {
-            "typology": self._current_typ.name,
-            "version": self._current_typ.version,
-            "inputs": self._collect_inputs(),
-            "env": self._env,
-            "parts": [asdict(p) for p in self._parts],
-        }
-        path, _ = QFileDialog.getSaveFileName(self, "Salva configurazione", "", "JSON (*.json)")
-        if not path:
+        dlg = TipologiaEditorDialog(self, base=data, is_new=False)
+        if dlg.exec() == dlg.Accepted:
+            out = dlg.result_tipologia()
+            try:
+                p.write_text(json.dumps(out, indent=2), encoding="utf-8")
+                self._reload()
+                # riposiziona selezione sul file
+                for i in range(self.lst.count()):
+                    en = self.lst.item(i).data(Qt.UserRole) or {}
+                    if Path(en.get("path","")) == p:
+                        self.lst.setCurrentRow(i); break
+            except Exception as e:
+                QMessageBox.critical(self, "Errore salvataggio", str(e))
+
+    def _dup(self):
+        p = self._current_path()
+        if not p: return
+        base = Path(self._dir_edit.text().strip() or ".")
+        dst = base / f"{p.stem}_copia.json"
+        try:
+            shutil.copyfile(p, dst)
+            self._reload()
+            for i in range(self.lst.count()):
+                en = self.lst.item(i).data(Qt.UserRole) or {}
+                if Path(en.get("path","")) == dst:
+                    self.lst.setCurrentRow(i); break
+        except Exception as e:
+            QMessageBox.critical(self, "Errore duplicazione", str(e))
+
+    def _del(self):
+        p = self._current_path()
+        if not p: return
+        if QMessageBox.question(self, "Elimina", f"Eliminare '{p.name}'?") != QMessageBox.Yes:
             return
         try:
-            Path(path).write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+            p.unlink(missing_ok=True)
+            self._reload()
         except Exception as e:
-            QMessageBox.critical(self, "Errore salvataggio", f"Impossibile salvare il file:\n{e}")
+            QMessageBox.critical(self, "Errore eliminazione", str(e))
