@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -7,42 +7,55 @@ from PySide6.QtGui import QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QTableWidget, QTableWidgetItem, QSpinBox, QDoubleSpinBox,
-    QGroupBox, QMessageBox, QHeaderView
+    QGroupBox, QMessageBox, QHeaderView, QCheckBox
 )
 
 from ui_qt.services.legacy_formula import scan_variables, eval_formula, sanitize_name
 
+# DB profili (spessori)
 try:
     from ui_qt.services.profiles_store import ProfilesStore
 except Exception:
     ProfilesStore = None  # type: ignore
 
+# DB tipologie (per lamelle/opzioni)
+try:
+    from ui_qt.services.typologies_store import TypologiesStore, default_db_path
+except Exception:
+    TypologiesStore = None  # type: ignore
+    default_db_path = lambda: Path.cwd() / "typologies.db"  # type: ignore
+
 
 def _profiles_map() -> Dict[str, float]:
     try:
         store = ProfilesStore()
-        out: Dict[str, float] = {}
-        for r in store.list_profiles():
-            n = str(r.get("name") or "")
-            th = float(r.get("thickness") or 0.0)
-            if n:
-                out[n] = th
-        return out
+        return {str(r.get("name") or ""): float(r.get("thickness") or 0.0) for r in store.list_profiles()}
     except Exception:
         return {}
 
 
 class ComponentEditorDialog(QDialog):
-    def __init__(self, parent, base: Dict[str, Any], prev_components: List[Dict[str, Any]], profiles: Dict[str, float]):
+    """
+    Editor di un componente (Qt), ora con:
+    - Var provider: include variabili locali dell'editor padre nell'ambiente di test
+    - Token rapidi H/L, token variabili locali, token profilo, token componenti C_Rx
+    - Tooltips con descrizione/valore dei token
+    - Pulsanti 0°/45° e scorciatoie Alt+0 / Alt+5
+    """
+    def __init__(self, parent, base: Dict[str, Any],
+                 prev_components: List[Dict[str, Any]],
+                 profiles: Dict[str, float],
+                 var_provider: Optional[Callable[[], Dict[str, float]]] = None):
         super().__init__(parent)
         self.setWindowTitle("Componente")
         self.setModal(True)
-        self.resize(900, 600)
-        self.setMinimumSize(820, 540)
+        self.resize(940, 640)
+        self.setMinimumSize(860, 560)
 
         self.base = dict(base)
         self.prev_components = prev_components
         self.profiles = profiles
+        self.var_provider = var_provider
         self.created = False
 
         self._build()
@@ -80,6 +93,7 @@ class ComponentEditorDialog(QDialog):
         self.sp_ang_sx = QDoubleSpinBox(); self.sp_ang_sx.setRange(0.0, 90.0); self.sp_ang_sx.setDecimals(2); self.sp_ang_sx.setSingleStep(0.5)
         self.sp_ang_sx.setValue(float(self.base.get("ang_sx", 0.0) or 0.0)); g.addWidget(self.sp_ang_sx, row, 1)
         row_sx = QHBoxLayout(); b0sx = QPushButton("0°"); b45sx = QPushButton("45°")
+        b0sx.setToolTip("Imposta 0°"); b45sx.setToolTip("Imposta 45°")
         b0sx.clicked.connect(lambda: self.sp_ang_sx.setValue(0.0)); b45sx.clicked.connect(lambda: self.sp_ang_sx.setValue(45.0))
         row_sx.addWidget(b0sx); row_sx.addWidget(b45sx); row_sx.addStretch(1)
         g.addLayout(row_sx, row, 2, 1, 2); row += 1
@@ -88,6 +102,7 @@ class ComponentEditorDialog(QDialog):
         self.sp_ang_dx = QDoubleSpinBox(); self.sp_ang_dx.setRange(0.0, 90.0); self.sp_ang_dx.setDecimals(2); self.sp_ang_dx.setSingleStep(0.5)
         self.sp_ang_dx.setValue(float(self.base.get("ang_dx", 0.0) or 0.0)); g.addWidget(self.sp_ang_dx, row, 1)
         row_dx = QHBoxLayout(); b0dx = QPushButton("0°"); b45dx = QPushButton("45°")
+        b0dx.setToolTip("Imposta 0°"); b45dx.setToolTip("Imposta 45°")
         b0dx.clicked.connect(lambda: self.sp_ang_dx.setValue(0.0)); b45dx.clicked.connect(lambda: self.sp_ang_dx.setValue(45.0))
         row_dx.addWidget(b0dx); row_dx.addWidget(b45dx); row_dx.addStretch(1)
         g.addLayout(row_dx, row, 2, 1, 2); row += 1
@@ -99,18 +114,34 @@ class ComponentEditorDialog(QDialog):
         g.addWidget(QLabel("Formula lunghezza:"), row, 0)
         self.ed_formula = QLineEdit(self.base.get("formula_lunghezza", "H")); g.addWidget(self.ed_formula, row, 1, 1, 3); row += 1
 
-        quick = QHBoxLayout(); quick.addWidget(QLabel("Token rapidi:"))
-        for t in ("H", "L"):
-            b = QPushButton(t); b.clicked.connect(lambda _=None, v=t: self._ins_token(v)); quick.addWidget(b)
-        quick.addWidget(QLabel("Componenti prec.:"))
+        # Token bar: H/L, var locali, C_Rx
+        token_bar = QHBoxLayout()
+        lbl = QLabel("Token:"); lbl.setStyleSheet("color:#7f8c8d;"); token_bar.addWidget(lbl)
+        # H/L
+        for t, tip in (("H","Altezza finita"), ("L","Larghezza finita")):
+            b = QPushButton(t); b.setToolTip(tip); b.clicked.connect(lambda _=None, v=t: self._ins_token(v)); token_bar.addWidget(b)
+        # Variabili locali
+        token_bar.addWidget(QLabel("Variabili:"))
+        for k in sorted((self.var_provider() or {}).keys() if self.var_provider else []):
+            b = QPushButton(k)
+            val = self.var_provider().get(k, None) if self.var_provider else None
+            b.setToolTip(f"Variabile locale: {k} = {val if val is not None else '(n/d)'}")
+            b.clicked.connect(lambda _=None, v=k: self._ins_token(v))
+            token_bar.addWidget(b)
+        # Componenti precedenti
+        token_bar.addWidget(QLabel("Componenti prec.:"))
         for c in self.prev_components:
-            rid = c.get("id_riga",""); 
+            rid = c.get("id_riga",""); nm = c.get("nome","")
             if rid:
-                t = f"C_{rid}"; b = QPushButton(t); b.clicked.connect(lambda _=None, v=t: self._ins_token(v))
-                quick.addWidget(b)
-        quick.addStretch(1)
+                t = f"C_{rid}"
+                b = QPushButton(t)
+                b.setToolTip(f"{t} → {nm}")
+                b.clicked.connect(lambda _=None, v=t: self._ins_token(v))
+                token_bar.addWidget(b)
 
-        root.addLayout(g); root.addLayout(quick)
+        token_bar.addStretch(1)
+
+        root.addLayout(g); root.addLayout(token_bar)
 
         test_box = QGroupBox("Test formula")
         tb = QVBoxLayout(test_box)
@@ -150,16 +181,30 @@ class ComponentEditorDialog(QDialog):
 
     def _update_prof_token(self):
         p = self.cmb_prof.currentText().strip()
-        self.lbl_token.setText(f"Token profilo: {sanitize_name(p)}" if p else "")
+        if p:
+            th = self.profiles.get(p, None)
+            tip = f"Token profilo: {sanitize_name(p)}"
+            if th is not None: tip += f" (spessore={th} mm)"
+            self.lbl_token.setText(tip)
+        else:
+            self.lbl_token.setText("")
+
+    def _env_vars(self) -> Dict[str, float]:
+        return dict(self.var_provider() or {})
 
     def _build_env(self) -> Dict[str, Any]:
         env: Dict[str, Any] = {"H": 1000.0, "L": 1000.0}
+        # Variabili locali dall'editor padre
+        env.update(self._env_vars())
+        # Token profilo scelto
         p = self.cmb_prof.currentText().strip()
         if p and p in self.profiles:
             env[sanitize_name(p)] = float(self.profiles[p])
+        # Componenti precedenti
         for c in self.prev_components:
             rid = c.get("id_riga","")
             if rid: env[f"C_{rid}"] = 1000.0
+        # Override input test
         raw = (self.ed_test.text() or "").strip()
         if raw:
             for pair in [x.strip() for x in raw.split(";") if x.strip()]:
@@ -207,16 +252,28 @@ class ComponentEditorDialog(QDialog):
 
 
 class TipologiaEditorDialog(QDialog):
+    """
+    Editor completo tipologia (legacy) con:
+    - variabili locali CRUD (ora viste nel Component Editor)
+    - opzioni: schema lamelle (persiana), calcolo astine (battente)
+    - UI ottimizzata per evitare troncamenti
+    """
     def __init__(self, parent, base: Optional[Dict[str, Any]] = None, is_new: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Nuova Tipologia" if is_new else "Modifica Tipologia")
         self.setModal(True)
-        self.resize(1100, 820)
-        self.setMinimumSize(1000, 720)
+        self.resize(1180, 860)
+        self.setMinimumSize(1080, 760)
 
         self.base = dict(base or {})
         self.is_new = is_new
         self.profiles = _profiles_map()
+
+        # Store per lamelle/opzioni
+        try:
+            self._store = TypologiesStore(str(default_db_path()))
+        except Exception:
+            self._store = None
 
         self._build()
         self._load_base()
@@ -225,22 +282,37 @@ class TipologiaEditorDialog(QDialog):
         root = QVBoxLayout(self)
 
         meta = QGridLayout(); meta.setHorizontalSpacing(12); meta.setVerticalSpacing(6); row = 0
-        meta.addWidget(QLabel("Nome tipologia:"), row, 0)
+        lbl_nome = QLabel("Nome tipologia:"); lbl_nome.setWordWrap(True); meta.addWidget(lbl_nome, row, 0)
         self.ed_name = QLineEdit(); meta.addWidget(self.ed_name, row, 1, 1, 3); row += 1
+
         meta.addWidget(QLabel("Categoria:"), row, 0)
-        self.ed_cat = QLineEdit(); meta.addWidget(self.ed_cat, row, 1, 1, 3); row += 1
-        meta.addWidget(QLabel("Materiale:"), row, 0)
-        self.ed_mat = QLineEdit(); meta.addWidget(self.ed_mat, row, 1, 1, 3); row += 1
+        self.ed_cat = QLineEdit(); meta.addWidget(self.ed_cat, row, 1)
+        meta.addWidget(QLabel("Materiale:"), row, 2)
+        self.ed_mat = QLineEdit(); meta.addWidget(self.ed_mat, row, 3); row += 1
+
         meta.addWidget(QLabel("Riferimento quota:"), row, 0)
         self.cmb_rif = QComboBox(); self.cmb_rif.addItems(["esterna","interna"]); meta.addWidget(self.cmb_rif, row, 1)
         meta.addWidget(QLabel("Extra detrazione (mm):"), row, 2)
         self.sp_extra = QDoubleSpinBox(); self.sp_extra.setRange(-1e6, 1e6); self.sp_extra.setDecimals(3); meta.addWidget(self.sp_extra, row, 3); row += 1
+
         meta.addWidget(QLabel("Pezzi totali:"), row, 0)
         self.sp_pezzi = QSpinBox(); self.sp_pezzi.setRange(1, 999); meta.addWidget(self.sp_pezzi, row, 1)
         meta.addWidget(QLabel("Note:"), row, 2)
         self.ed_note = QLineEdit(); meta.addWidget(self.ed_note, row, 3); row += 1
-        root.addLayout(meta)
 
+        # Opzioni categoria-specifiche
+        self.grp_opts = QGroupBox("Opzioni categoria"); og = QGridLayout(self.grp_opts); og.setHorizontalSpacing(10); og.setVerticalSpacing(6)
+        self.cmb_lamella = QComboBox()
+        self.cmb_lamella.setToolTip("Schema lamelle per persiane (range H → numero lamelle)")
+        self.chk_astine = QCheckBox("Calcola astine anta-ribalta (categoria: battente)")
+        og.addWidget(QLabel("Schema lamelle:"), 0, 0); og.addWidget(self.cmb_lamella, 0, 1)
+        og.addWidget(self.chk_astine, 1, 0, 1, 2)
+        self.grp_opts.setVisible(False)
+
+        root.addLayout(meta)
+        root.addWidget(self.grp_opts)
+
+        # Variabili locali
         root.addWidget(QLabel("Variabili locali (nome → valore):"))
         self.tbl_vars = QTableWidget(0, 2)
         self.tbl_vars.setHorizontalHeaderLabels(["Nome","Valore"])
@@ -254,6 +326,7 @@ class TipologiaEditorDialog(QDialog):
         rowv.addWidget(btn_add_v); rowv.addWidget(btn_del_v); rowv.addStretch(1)
         root.addLayout(rowv)
 
+        # Componenti
         root.addWidget(QLabel("Componenti (doppio click per modificare):"))
         self.tbl_comp = QTableWidget(0, 9)
         self.tbl_comp.setHorizontalHeaderLabels(["ID","Nome","Profilo","Spess.","Q.tà","Ang SX","Ang DX","Formula","Offset"])
@@ -284,6 +357,31 @@ class TipologiaEditorDialog(QDialog):
         acts.addWidget(btn_cancel); acts.addWidget(btn_save); acts.addStretch(1)
         root.addLayout(acts)
 
+        # Reagisci al cambio categoria per mostrare opzioni
+        self.ed_cat.textChanged.connect(self._refresh_options_group)
+
+    def _refresh_options_group(self):
+        cat = (self.ed_cat.text() or "").strip().lower()
+        show = (cat in ("persiana", "battente"))
+        self.grp_opts.setVisible(show)
+        # Carica schemi lamelle se persiana
+        if cat == "persiana" and self._store:
+            self.cmb_lamella.clear()
+            try:
+                names = self._store.list_lamella_rulesets("persiana")
+                if not names:
+                    self.cmb_lamella.addItem("— Nessuno —", "")
+                else:
+                    for n in names: self.cmb_lamella.addItem(n, n)
+            except Exception:
+                self.cmb_lamella.addItem("— Errore DB —", "")
+        else:
+            self.cmb_lamella.clear()
+            self.cmb_lamella.addItem("— N/D —", "")
+
+        # Astine solo per battente (flag)
+        self.chk_astine.setVisible(cat == "battente")
+
     def _load_base(self):
         b = self.base
         self.ed_name.setText(str(b.get("nome",""))); self.ed_cat.setText(str(b.get("categoria",""))); self.ed_mat.setText(str(b.get("materiale","")))
@@ -292,6 +390,18 @@ class TipologiaEditorDialog(QDialog):
         self.sp_extra.setValue(float(b.get("extra_detrazione_mm",0.0) or 0.0))
         self.sp_pezzi.setValue(int(b.get("pezzi_totali",1) or 1))
         self.ed_note.setText(str(b.get("note","")))
+
+        # Opzioni (se presenti)
+        opts = b.get("options") or {}
+        self._refresh_options_group()
+        # schema lamelle
+        lam = opts.get("lamelle_ruleset","")
+        if lam:
+            i = self.cmb_lamella.findData(lam)
+            if i >= 0: self.cmb_lamella.setCurrentIndex(i)
+        # astine
+        self.chk_astine.setChecked(str(opts.get("calc_astine_anta_ribalta","0")) == "1")
+
         for k, v in sorted((b.get("variabili_locali") or {}).items()):
             self._vars_insert_row(k, float(v))
         for c in (b.get("componenti") or []):
@@ -302,9 +412,21 @@ class TipologiaEditorDialog(QDialog):
         self.tbl_vars.setItem(r, 0, QTableWidgetItem(k))
         self.tbl_vars.setItem(r, 1, QTableWidgetItem(f"{float(v):.3f}"))
 
+    def _collect_vars_map(self) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+        for r in range(self.tbl_vars.rowCount()):
+            k = self.tbl_vars.item(r, 0).text() if self.tbl_vars.item(r, 0) else ""
+            v = self.tbl_vars.item(r, 1).text() if self.tbl_vars.item(r, 1) else "0"
+            k = (k or "").strip()
+            if not k: continue
+            try: out[k] = float((v or "0").replace(",", "."))
+            except Exception: out[k] = 0.0
+        return out
+
     def _add_var(self):
         r = self.tbl_vars.rowCount(); self.tbl_vars.insertRow(r)
-        self.tbl_vars.setItem(r, 0, QTableWidgetItem("")); self.tbl_vars.setItem(r, 1, QTableWidgetItem("0"))
+        self.tbl_vars.setItem(r, 0, QTableWidgetItem(""))
+        self.tbl_vars.setItem(r, 1, QTableWidgetItem("0"))
 
     def _del_var(self):
         r = self.tbl_vars.currentRow()
@@ -352,39 +474,39 @@ class TipologiaEditorDialog(QDialog):
         for i, v in enumerate(vals):
             self.tbl_comp.setItem(r, i, QTableWidgetItem(v))
 
+    def _new_component_dialog(self, base_comp: Dict[str, Any], row_to_replace: Optional[int] = None):
+        comps_before = self._collect_components_list() if row_to_replace is None else self._collect_components_list()[:row_to_replace]
+        # provider delle variabili sempre aggiornate
+        var_provider: Callable[[], Dict[str, float]] = lambda: self._collect_vars_map()
+        from PySide6.QtWidgets import QDialog as _QDialog
+        dlg = ComponentEditorDialog(self, base_comp, prev_components=comps_before, profiles=self.profiles, var_provider=var_provider)
+        if dlg.exec() == _QDialog.DialogCode.Accepted and dlg.created:
+            if row_to_replace is None:
+                self._comp_insert_row(dlg.result_component())
+            else:
+                self._comp_insert_row(dlg.result_component(), row=row_to_replace)
+
     def _add_comp(self):
         rid = self._next_component_id()
-        comps_before = self._collect_components_list()
-        dlg = ComponentEditorDialog(self, {
-            "id_riga": rid, "nome": "", "profilo_nome": "", "quantita": 1,
-            "ang_sx": 0.0, "ang_dx": 0.0, "formula_lunghezza": "H", "offset_mm": 0.0, "note": ""
-        }, prev_components=comps_before, profiles=self.profiles)
-        from PySide6.QtWidgets import QDialog as _QDialog
-        if dlg.exec() == _QDialog.DialogCode.Accepted and dlg.created:
-            self._comp_insert_row(dlg.result_component())
+        base_comp = {"id_riga": rid, "nome": "", "profilo_nome": "", "quantita": 1,
+                     "ang_sx": 0.0, "ang_dx": 0.0, "formula_lunghezza": "H", "offset_mm": 0.0, "note": ""}
+        self._new_component_dialog(base_comp, row_to_replace=None)
 
     def _edit_comp_row(self, row: int, _col: int):
-        self._edit_row_index(row)
+        comps = self._collect_components_list()
+        if not (0 <= row < len(comps)): return
+        self._new_component_dialog(comps[row], row_to_replace=row)
 
     def _edit_comp(self):
         row = self.tbl_comp.currentRow()
-        if row >= 0: self._edit_row_index(row)
-
-    def _edit_row_index(self, row: int):
-        comps = self._collect_components_list()
-        if not (0 <= row < len(comps)): return
-        comp = comps[row]; prev = comps[:row]
-        dlg = ComponentEditorDialog(self, comp, prev_components=prev, profiles=self.profiles)
-        from PySide6.QtWidgets import QDialog as _QDialog
-        if dlg.exec() == _QDialog.DialogCode.Accepted and dlg.created:
-            self._comp_insert_row(dlg.result_component(), row=row)
+        if row >= 0: self._edit_comp_row(row, 0)
 
     def _dup_comp(self):
         row = self.tbl_comp.currentRow()
         if row < 0: return
-        comps = self._collect_components_list()
-        if not (0 <= row < len(comps)): return
-        comp = dict(comps[row]); comp["id_riga"] = self._next_component_id(); comp["nome"] = (comp.get("nome") or "") + " (copia)"
+        comp = dict(self._collect_components_list()[row])
+        comp["id_riga"] = self._next_component_id()
+        comp["nome"] = (comp.get("nome") or "") + " (copia)"
         self._comp_insert_row(comp)
 
     def _del_comp(self):
@@ -395,20 +517,22 @@ class TipologiaEditorDialog(QDialog):
         name = (self.ed_name.text() or "").strip()
         if not name:
             QMessageBox.warning(self, "Dati", "Inserisci un nome tipologia."); return
-        local_vars: Dict[str, float] = {}
-        for r in range(self.tbl_vars.rowCount()):
-            k = self.tbl_vars.item(r, 0).text() if self.tbl_vars.item(r, 0) else ""
-            v = self.tbl_vars.item(r, 1).text() if self.tbl_vars.item(r, 1) else "0"
-            k = (k or "").strip()
-            if not k: continue
-            try: local_vars[k] = float((v or "0").replace(",", "."))
-            except Exception:
-                QMessageBox.warning(self, "Variabili", f"Valore non numerico per '{k}'."); return
+        vars_map = self._collect_vars_map()
         comps = self._collect_components_list()
         if len(comps) == 0:
             from PySide6.QtWidgets import QMessageBox as _MB
             if _MB.question(self, "Conferma", "Nessun componente. Salvare comunque?") != _MB.Yes:
                 return
+
+        # Opzioni da salvare
+        opts: Dict[str, str] = {}
+        cat = (self.ed_cat.text() or "").strip().lower()
+        if cat == "persiana":
+            sel = self.cmb_lamella.currentData()
+            if sel: opts["lamelle_ruleset"] = str(sel)
+        if cat == "battente":
+            opts["calc_astine_anta_ribalta"] = "1" if self.chk_astine.isChecked() else "0"
+
         self.base = {
             "nome": name,
             "categoria": (self.ed_cat.text() or "").strip(),
@@ -417,7 +541,8 @@ class TipologiaEditorDialog(QDialog):
             "extra_detrazione_mm": float(self.sp_extra.value()),
             "pezzi_totali": int(self.sp_pezzi.value()),
             "note": (self.ed_note.text() or "").strip(),
-            "variabili_locali": local_vars,
+            "variabili_locali": vars_map,
+            "options": opts,
             "componenti": comps
         }
         self.accept()
