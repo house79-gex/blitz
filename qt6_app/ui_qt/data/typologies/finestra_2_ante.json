@@ -1,7 +1,7 @@
 {
   "name": "Finestra 2 ante (battente)",
   "version": "1.0",
-  "description": "Telaio fisso 4 lati (45°), due telai mobili (45°), riporto centrale, fermavetri per ante.",
+  "description": "Telaio fisso 4 lati (45°), due telai mobili (45°), riporto centrale, fermavetro per ogni anta.",
   "parameters": [
     {"name": "H", "type": "float", "default": 1200, "min": 200, "description": "Altezza finita (mm)"},
     {"name": "L", "type": "float", "default": 1400, "min": 200, "description": "Larghezza finita (mm)"},
@@ -30,7 +30,7 @@
   },
   "elements": [
     {
-      "id": "TF-M-SX",
+      "id": "TF-M",
       "role": "telaio_fisso_montante",
       "profile_var": "prof_telaio_fisso",
       "qty_expr": "2",
@@ -40,7 +40,7 @@
       "note_expr": "'Montanti telaio fisso 45°'"
     },
     {
-      "id": "TF-T-ALTO",
+      "id": "TF-T",
       "role": "telaio_fisso_traverso",
       "profile_var": "prof_telaio_fisso",
       "qty_expr": "2",
@@ -97,7 +97,7 @@
       "length_expr": "H_luce + toll_taglio",
       "angle_a_expr": "90",
       "angle_b_expr": "90",
-      "note_expr": "'Riporto centrale 90° (configurabile a 45° se richiesto)'"
+      "note_expr": "'Riporto centrale 90° (configurabile a 45°)'"
     },
     {
       "id": "FV-A1-M",
