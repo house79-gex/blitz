@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Optional, Dict, Any, List
-from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -8,11 +7,11 @@ from PySide6.QtWidgets import (
     QLineEdit, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
 )
 
-# Header opzionale (se esiste nella tua codebase)
+# Header opzionale (se il tuo progetto lo include)
 try:
     from ui_qt.widgets.header import Header
 except Exception:
-    Header = None  # fallback, useremo una semplice QLabel
+    Header = None  # fallback
 
 # Store tipologie su SQLite (se presente)
 def _try_load_typologies_store():
@@ -27,9 +26,9 @@ class QuoteVaniPage(QFrame):
     Scheletro 'Quote vani luce'
     - Pulsante Home
     - Campi H / L
-    - Selettore tipologia (letti dal DB SQLite tipologie, se disponibile)
-    - Tabella placeholder distinta
-    Nota: al momento 'Genera distinta' è uno stub (non computa ancora).
+    - Selettore tipologia (dal DB tipologie, se disponibile)
+    - Tabella placeholder 'distinta'
+    Nota: 'Genera distinta' è uno stub (da implementare nei prossimi step).
     """
     def __init__(self, appwin):
         super().__init__()
@@ -52,7 +51,7 @@ class QuoteVaniPage(QFrame):
             title.setStyleSheet("font-size:18px; font-weight:700;")
             root.addWidget(title, 0)
 
-        # Riga comandi principali
+        # Barra comandi
         top = QHBoxLayout()
         btn_home = QPushButton("Home")
         btn_home.setToolTip("Torna alla Home")
@@ -63,31 +62,31 @@ class QuoteVaniPage(QFrame):
         top.addWidget(QLabel("H (mm):"))
         self.ed_h = QLineEdit()
         self.ed_h.setPlaceholderText("Altezza")
-        self.ed_h.setFixedWidth(100)
+        self.ed_h.setFixedWidth(110)
         top.addWidget(self.ed_h)
 
         top.addWidget(QLabel("L (mm):"))
         self.ed_l = QLineEdit()
         self.ed_l.setPlaceholderText("Larghezza")
-        self.ed_l.setFixedWidth(100)
+        self.ed_l.setFixedWidth(110)
         top.addWidget(self.ed_l)
 
         top.addSpacing(10)
         top.addWidget(QLabel("Tipologia:"))
         self.cmb_typ = QComboBox()
+        self.cmb_typ.setMinimumWidth(280)
         self._reload_typologies()
-        self.cmb_typ.setMinimumWidth(260)
         top.addWidget(self.cmb_typ, 1)
 
         self.btn_gen = QPushButton("Genera distinta")
-        self.btn_gen.setEnabled(False)  # stub: disabilitato finché non implementiamo la logica
-        self.btn_gen.setToolTip("Stub: la generazione della distinta verrà implementata qui")
+        self.btn_gen.setEnabled(False)  # stub
+        self.btn_gen.setToolTip("Stub: calcolo distinta verrà implementato qui")
         self.btn_gen.clicked.connect(self._generate_stub)
         top.addWidget(self.btn_gen)
 
         root.addLayout(top)
 
-        # Tabella placeholder distinta
+        # Tabella placeholder
         self.tbl = QTableWidget(0, 6)
         self.tbl.setHorizontalHeaderLabels(["ID", "Ruolo/Nome", "Profilo", "Q.tà", "Lunghezza (mm)", "Angoli (°)"])
         hdr = self.tbl.horizontalHeader()
@@ -99,8 +98,7 @@ class QuoteVaniPage(QFrame):
         hdr.setSectionResizeMode(5, QHeaderView.Stretch)
         root.addWidget(self.tbl, 1)
 
-        # Nota informativa
-        note = QLabel("Nota: questa è una pagina segnaposto. La logica di 'Genera distinta' verrà implementata qui.")
+        note = QLabel("Nota: questa è una pagina segnaposto. La logica di 'Genera distinta' sarà implementata qui.")
         note.setStyleSheet("color:#7f8c8d;")
         root.addWidget(note, 0)
 
@@ -132,5 +130,5 @@ class QuoteVaniPage(QFrame):
             pass
 
     def on_show(self):
-        # refresh lista tipologie ogni volta che si apre
+        # refresh tipologie ogni volta che apri la pagina
         self._reload_typologies()
