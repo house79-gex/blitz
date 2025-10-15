@@ -1,7 +1,7 @@
 from __future__ import annotations
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import time
 import contextlib
 
@@ -14,6 +14,7 @@ DEFAULT_DB_CANDIDATES = [
 SCHEMA = """
 PRAGMA foreign_keys=ON;
 
+-- Tipologie (legacy)
 CREATE TABLE IF NOT EXISTS typology (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     name             TEXT NOT NULL UNIQUE,
@@ -49,7 +50,7 @@ CREATE TABLE IF NOT EXISTS typology_component (
     note         TEXT
 );
 
--- Opzioni/feature per tipologia: chiave/valore testuale (booleane: "0"/"1")
+-- Opzioni/feature per tipologia (k/v)
 CREATE TABLE IF NOT EXISTS typology_option (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     typology_id  INTEGER NOT NULL REFERENCES typology(id) ON DELETE CASCADE,
@@ -67,6 +68,55 @@ CREATE TABLE IF NOT EXISTS lamella_rule (
     h_max     REAL NOT NULL,
     count     INTEGER,         -- numero lamelle
     pitch_mm  REAL             -- passo tra lamelle (se noto)
+);
+
+-- Catalogo ferramenta (marca/serie/maniglia/bracci/formule astina)
+CREATE TABLE IF NOT EXISTS hw_brand (
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name  TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS hw_series (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id  INTEGER NOT NULL REFERENCES hw_brand(id) ON DELETE CASCADE,
+    name      TEXT NOT NULL,
+    UNIQUE(brand_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS hw_handle_type (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id          INTEGER NOT NULL REFERENCES hw_brand(id) ON DELETE CASCADE,
+    series_id         INTEGER NOT NULL REFERENCES hw_series(id) ON DELETE CASCADE,
+    code              TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    handle_offset_mm  REAL NOT NULL DEFAULT 0.0,
+    UNIQUE(brand_id, series_id, code)
+);
+
+-- Regole bracci per anta-ribalta (selezione in base a L e sottocategoria anta)
+CREATE TABLE IF NOT EXISTS hw_arm_rule (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id     INTEGER NOT NULL REFERENCES hw_brand(id) ON DELETE CASCADE,
+    series_id    INTEGER NOT NULL REFERENCES hw_series(id) ON DELETE CASCADE,
+    sash_subcat  TEXT NOT NULL,   -- es. "battente_standard", "battente_pesante"
+    w_min        REAL NOT NULL,
+    w_max        REAL NOT NULL,
+    arm_code     TEXT NOT NULL,
+    arm_name     TEXT,
+    UNIQUE(brand_id, series_id, sash_subcat, w_min, w_max)
+);
+
+-- Formula astina per combinazione (marca/serie/sottocategoria/braccio)
+-- formula può usare: H, L, handle_offset, arm_code (solo confronto/if), più eventuali parametri futuri
+CREATE TABLE IF NOT EXISTS hw_astina_formula (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id     INTEGER NOT NULL REFERENCES hw_brand(id) ON DELETE CASCADE,
+    series_id    INTEGER NOT NULL REFERENCES hw_series(id) ON DELETE CASCADE,
+    sash_subcat  TEXT NOT NULL,
+    arm_code     TEXT,            -- NULL = vale per tutti i bracci della sottocategoria
+    formula      TEXT NOT NULL,
+    note         TEXT,
+    UNIQUE(brand_id, series_id, sash_subcat, arm_code)
 );
 
 CREATE INDEX IF NOT EXISTS idx_typology_comp_typ ON typology_component(typology_id, ord);
@@ -94,7 +144,7 @@ class TypologiesStore:
         self._conn: Optional[sqlite3.Connection] = None
         self._open()
         self._ensure_schema()
-        self._maybe_seed_lamelle()
+        self._maybe_seed()
 
     def _open(self):
         self._conn = sqlite3.connect(str(self.db_path))
@@ -111,7 +161,7 @@ class TypologiesStore:
                 self._conn.close()
         self._conn = None
 
-    # -------- Tipologie (CRUD) --------
+    # ----------------- Tipologie (CRUD) -----------------
     def list_typologies(self) -> List[Dict[str, Any]]:
         cur = self._conn.execute(
             "SELECT id, name, category, material, pezzi_totali, updated_at FROM typology ORDER BY name ASC"
@@ -244,7 +294,7 @@ class TypologiesStore:
                 typology_id
             )
         )
-        # replace vars/options/components (semplicità)
+        # replace vars/options/components
         self._conn.execute("DELETE FROM typology_var WHERE typology_id=?", (typology_id,))
         self._conn.execute("DELETE FROM typology_option WHERE typology_id=?", (typology_id,))
         self._conn.execute("DELETE FROM typology_component WHERE typology_id=?", (typology_id,))
@@ -290,7 +340,6 @@ class TypologiesStore:
         src["nome"] = new_name
         return self.create_typology(src)
 
-    # -------- Opzioni tipologia --------
     def set_option(self, typology_id: int, key: str, value: str) -> None:
         self._conn.execute(
             "INSERT INTO typology_option(typology_id, opt_key, opt_value) VALUES(?,?,?) "
@@ -319,21 +368,100 @@ class TypologiesStore:
         )
         return [{"h_min": r[0], "h_max": r[1], "count": r[2], "pitch_mm": r[3]} for r in cur.fetchall()]
 
-    def _maybe_seed_lamelle(self):
-        # Seed minimale solo se la tabella è vuota
-        cur = self._conn.execute("SELECT COUNT(*) FROM lamella_rule")
-        n = int(cur.fetchone()[0])
-        if n > 0:
-            return
-        # Esempio: schema "Lamella45" per persiana
-        demo = [
-            ( "Lamella45", "persiana", 300, 600, 6,  None),
-            ( "Lamella45", "persiana", 600, 900, 8,  None),
-            ( "Lamella45", "persiana", 900, 1200, 10, None),
-            ( "Lamella45", "persiana", 1200, 1500, 12, None),
-        ]
-        self._conn.executemany(
-            "INSERT INTO lamella_rule(name, category, h_min, h_max, count, pitch_mm) VALUES(?,?,?,?,?,?)",
-            demo
+    # -------- Catalogo ferramenta (HW) --------
+    def list_hw_brands(self) -> List[Dict[str, Any]]:
+        cur = self._conn.execute("SELECT id, name FROM hw_brand ORDER BY name ASC")
+        return [{"id": r[0], "name": r[1]} for r in cur.fetchall()]
+
+    def list_hw_series(self, brand_id: int) -> List[Dict[str, Any]]:
+        cur = self._conn.execute("SELECT id, name FROM hw_series WHERE brand_id=? ORDER BY name ASC", (brand_id,))
+        return [{"id": r[0], "name": r[1]} for r in cur.fetchall()]
+
+    def list_hw_handle_types(self, brand_id: int, series_id: int) -> List[Dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT id, code, name, handle_offset_mm FROM hw_handle_type WHERE brand_id=? AND series_id=? ORDER BY name ASC",
+            (brand_id, series_id)
         )
-        self._conn.commit()
+        return [{"id": r[0], "code": r[1], "name": r[2], "handle_offset_mm": float(r[3] or 0.0)} for r in cur.fetchall()]
+
+    def list_hw_sash_subcats(self, brand_id: int, series_id: int) -> List[str]:
+        cur = self._conn.execute(
+            "SELECT DISTINCT sash_subcat FROM hw_arm_rule WHERE brand_id=? AND series_id=? ORDER BY sash_subcat ASC",
+            (brand_id, series_id)
+        )
+        return [r[0] for r in cur.fetchall()]
+
+    def pick_arm_for_width(self, brand_id: int, series_id: int, sash_subcat: str, width_L: float) -> Optional[Dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT arm_code, arm_name FROM hw_arm_rule WHERE brand_id=? AND series_id=? AND sash_subcat=? AND ? BETWEEN w_min AND w_max",
+            (brand_id, series_id, sash_subcat, float(width_L))
+        )
+        r = cur.fetchone()
+        if not r:
+            return None
+        return {"arm_code": r[0], "arm_name": r[1]}
+
+    def get_astina_formula(self, brand_id: int, series_id: int, sash_subcat: str, arm_code: Optional[str]) -> Optional[str]:
+        # preferisci formula specifica per arm_code, altrimenti generica per sottocategoria
+        cur = None
+        if arm_code:
+            cur = self._conn.execute(
+                "SELECT formula FROM hw_astina_formula WHERE brand_id=? AND series_id=? AND sash_subcat=? AND arm_code=?",
+                (brand_id, series_id, sash_subcat, arm_code)
+            ).fetchone()
+            if cur:
+                return cur[0]
+        cur2 = self._conn.execute(
+            "SELECT formula FROM hw_astina_formula WHERE brand_id=? AND series_id=? AND sash_subcat=? AND arm_code IS NULL",
+            (brand_id, series_id, sash_subcat)
+        ).fetchone()
+        return cur2[0] if cur2 else None
+
+    # -------- Seed demo --------
+    def _maybe_seed(self):
+        # lamelle seed se vuoto
+        cur = self._conn.execute("SELECT COUNT(*) FROM lamella_rule")
+        if int(cur.fetchone()[0]) == 0:
+            demo = [
+                ( "Lamella45", "persiana", 300, 600, 6,  None),
+                ( "Lamella45", "persiana", 600, 900, 8,  None),
+                ( "Lamella45", "persiana", 900, 1200, 10, None),
+                ( "Lamella45", "persiana", 1200, 1500, 12, None),
+            ]
+            self._conn.executemany(
+                "INSERT INTO lamella_rule(name, category, h_min, h_max, count, pitch_mm) VALUES(?,?,?,?,?,?)",
+                demo
+            )
+            self._conn.commit()
+
+        # hardware seed se vuoto
+        cur = self._conn.execute("SELECT COUNT(*) FROM hw_brand")
+        if int(cur.fetchone()[0]) == 0:
+            # Brand / Series
+            self._conn.execute("INSERT INTO hw_brand(name) VALUES(?)", ("DemoHW",))
+            brand_id = self._conn.execute("SELECT id FROM hw_brand WHERE name=?", ("DemoHW",)).fetchone()[0]
+            self._conn.execute("INSERT INTO hw_series(brand_id,name) VALUES(?,?)", (brand_id, "TT-100"))
+            series_id = self._conn.execute("SELECT id FROM hw_series WHERE brand_id=? AND name=?", (brand_id, "TT-100")).fetchone()[0]
+            # Handle types
+            self._conn.executemany(
+                "INSERT INTO hw_handle_type(brand_id,series_id,code,name,handle_offset_mm) VALUES(?,?,?,?,?)",
+                [
+                    (brand_id, series_id, "H-A", "Maniglia A", 102.0),
+                    (brand_id, series_id, "H-B", "Maniglia B", 125.0),
+                ]
+            )
+            # Arm rules: sottocategoria "battente_standard"
+            self._conn.executemany(
+                "INSERT INTO hw_arm_rule(brand_id,series_id,sash_subcat,w_min,w_max,arm_code,arm_name) VALUES(?,?,?,?,?,?,?)",
+                [
+                    (brand_id, series_id, "battente_standard", 350.0, 600.0,  "ARM-1", "Braccio 1"),
+                    (brand_id, series_id, "battente_standard", 600.01, 900.0, "ARM-2", "Braccio 2"),
+                    (brand_id, series_id, "battente_standard", 900.01, 1200.0,"ARM-3", "Braccio 3"),
+                ]
+            )
+            # Astina formula: generica per sottocategoria (usa handle_offset)
+            self._conn.execute(
+                "INSERT INTO hw_astina_formula(brand_id,series_id,sash_subcat,arm_code,formula,note) VALUES(?,?,?,?,?,?)",
+                (brand_id, series_id, "battente_standard", None, "max(200, min(H - handle_offset - 70, 1200))", "Formula base")
+            )
+            self._conn.commit()
