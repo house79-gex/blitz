@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-import json
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -11,53 +10,53 @@ from PySide6.QtWidgets import (
 )
 
 from ui_qt.dialogs.tipologia_editor_qt import TipologiaEditorDialog
-from ui_qt.services.typologies_store import TypologiesStore, default_db_path
+
+# Import lazy e gestito dello store (così la pagina si apre anche se manca il modulo)
+def _load_store(db_path: str):
+    try:
+        from ui_qt.services.typologies_store import TypologiesStore
+        return TypologiesStore(db_path)
+    except Exception as e:
+        return e  # restituisco l'eccezione per mostrarla in UI
 
 class TipologiePage(QFrame):
     """
-    Gestione tipologie su SQLite:
-    - Selezione file DB (.db), creazione automatica schema
+    Tipologie su SQLite:
+    - Scegli/crea DB (.db)
     - Lista tipologie dal DB
     - Nuova / Modifica / Duplica / Elimina
-    - Home per tornare alla pagina principale
+    - Pulsante Home
     """
     def __init__(self, appwin, db_path: Optional[str] = None):
         super().__init__()
         self.appwin = appwin
         self._db_edit: Optional[QLineEdit] = None
-        self._store: Optional[TypologiesStore] = None
+        self._store = None  # TypologiesStore oppure Exception
         self._build()
-        path = Path(db_path) if db_path else default_db_path()
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        path = Path(db_path) if db_path else Path(__file__).resolve().parents[2] / "data" / "typologies.db"
+        try: path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception: pass
         self._db_edit.setText(str(path))
         self._open_store()
         self._reload()
 
-    # ------------ UI ------------
     def _build(self):
         self.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
         root = QHBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(10)
 
-        # SX: DB + lista
+        # SX
         left = QFrame(); left.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding); left.setFixedWidth(420)
         ll = QVBoxLayout(left); ll.setContentsMargins(6,6,6,6); ll.setSpacing(6)
 
         rowp = QHBoxLayout()
-        btn_home = QPushButton("Home"); btn_home.setToolTip("Torna alla Home")
-        btn_home.clicked.connect(self._go_home)
-        rowp.addWidget(btn_home, 0)
-
+        btn_home = QPushButton("Home"); btn_home.clicked.connect(self._go_home); rowp.addWidget(btn_home, 0)
         rowp.addWidget(QLabel("Database tipologie (.db):"), 0)
         self._db_edit = QLineEdit(); self._db_edit.setPlaceholderText("Percorso file SQLite (.db)")
         rowp.addWidget(self._db_edit, 1)
-        btn_dir = QToolButton(); btn_dir.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
-        btn_dir.clicked.connect(self._browse_db); rowp.addWidget(btn_dir, 0)
+        btn_pick = QToolButton(); btn_pick.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
+        btn_pick.clicked.connect(self._browse_db); rowp.addWidget(btn_pick, 0)
         btn_open = QToolButton(); btn_open.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
-        btn_open.setToolTip("Apri/crea DB"); btn_open.clicked.connect(self._open_store)
-        rowp.addWidget(btn_open, 0)
+        btn_open.setToolTip("Apri/crea DB"); btn_open.clicked.connect(self._open_store); rowp.addWidget(btn_open, 0)
         ll.addLayout(rowp)
 
         self.lst = QListWidget(); self.lst.currentItemChanged.connect(self._on_select)
@@ -71,7 +70,7 @@ class TipologiePage(QFrame):
         actions.addWidget(self.btn_new); actions.addWidget(self.btn_edit); actions.addWidget(self.btn_dup); actions.addWidget(self.btn_del); actions.addStretch(1)
         ll.addLayout(actions)
 
-        # CX: meta
+        # CX
         center = QFrame(); center.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         cl = QVBoxLayout(center); cl.setContentsMargins(6,6,6,6); cl.setSpacing(6)
         self.lbl_meta = QLabel("Seleziona una tipologia"); self.lbl_meta.setStyleSheet("color:#ced6e0;")
@@ -82,7 +81,7 @@ class TipologiePage(QFrame):
         self.scr.setWidget(self.meta_host)
         cl.addWidget(self.scr, 1)
 
-        # DX: dettagli
+        # DX
         right = QFrame(); rl = QVBoxLayout(right); rl.setContentsMargins(6,6,6,6); rl.setSpacing(6)
         rl.addWidget(QLabel("Dettagli"), 0)
         self.tbl = QTableWidget(0, 6)
@@ -98,36 +97,31 @@ class TipologiePage(QFrame):
 
         root.addWidget(left, 0); root.addWidget(center, 1); root.addWidget(right, 1)
 
-    # ------------ Store/DB ------------
+    def _go_home(self):
+        try:
+            if hasattr(self.appwin, "show_page"): self.appwin.show_page("home")
+            elif hasattr(self.appwin, "go_home"): self.appwin.go_home()
+        except Exception: pass
+
     def _browse_db(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Scegli o crea database tipologie", str(self._db_edit.text() or default_db_path()), "SQLite DB (*.db)")
-        if not path:
-            return
+        path, _ = QFileDialog.getSaveFileName(self, "Scegli o crea database tipologie", self._db_edit.text() or "", "SQLite DB (*.db)")
+        if not path: return
         self._db_edit.setText(path)
         self._open_store()
         self._reload()
 
     def _open_store(self):
-        if self._store:
-            self._store.close()
-            self._store = None
-        dbp = Path(self._db_edit.text().strip() or default_db_path())
-        try:
-            dbp.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
-        try:
-            self._store = TypologiesStore(str(dbp))
-            self.lbl_meta.setText(f"DB: {dbp.name}")
-        except Exception as e:
-            QMessageBox.critical(self, "Errore DB", f"Impossibile aprire/creare il DB:\n{e}")
-            self._store = None
+        dbp = self._db_edit.text().strip()
+        self._store = _load_store(dbp)
+        if isinstance(self._store, Exception):
+            self.lbl_meta.setText(f"Errore DB: {self._store}")
+        else:
+            self.lbl_meta.setText(f"DB: {Path(dbp).name}")
 
-    # ------------ Lista/preview ------------
     def _reload(self):
         self.lst.clear()
         self._clear_preview("Seleziona una tipologia")
-        if not self._store:
+        if isinstance(self._store, Exception) or not self._store:
             return
         rows = self._store.list_typologies()
         for r in rows:
@@ -146,13 +140,12 @@ class TipologiePage(QFrame):
 
     def _on_select(self, cur: Optional[QListWidgetItem], prev: Optional[QListWidgetItem]):
         self._clear_preview("Seleziona una tipologia")
-        if not cur or not self._store:
+        if not cur or isinstance(self._store, Exception) or not self._store:
             return
         tid = int(cur.data(Qt.UserRole))
         data = self._store.get_typology_full(tid)
         if not data:
-            self.lbl_meta.setText("Tipologia non trovata")
-            return
+            self.lbl_meta.setText("Tipologia non trovata"); return
         self._render_legacy(data)
 
     def _render_legacy(self, d: Dict[str,Any]):
@@ -176,14 +169,6 @@ class TipologiePage(QFrame):
             self.tbl.setItem(r, 4, QTableWidgetItem(f"AngSX:{c.get('ang_sx',0)} AngDX:{c.get('ang_dx',0)}"))
             self.tbl.setItem(r, 5, QTableWidgetItem(c.get("formula_lunghezza","")))
 
-    # ------------ Azioni ------------
-    def _go_home(self):
-        try:
-            if hasattr(self.appwin, "show_page"): self.appwin.show_page("home")
-            elif hasattr(self.appwin, "go_home"): self.appwin.go_home()
-        except Exception:
-            pass
-
     def _current_id(self) -> Optional[int]:
         it = self.lst.currentItem()
         if not it: return None
@@ -197,7 +182,6 @@ class TipologiePage(QFrame):
             try:
                 new_id = self._store.create_typology(data)  # type: ignore
                 self._reload()
-                # seleziona nuova
                 for i in range(self.lst.count()):
                     if int(self.lst.item(i).data(Qt.UserRole)) == int(new_id):
                         self.lst.setCurrentRow(i); break
@@ -208,8 +192,7 @@ class TipologiePage(QFrame):
         tid = self._current_id()
         if not tid: return
         data = self._store.get_typology_full(tid)  # type: ignore
-        if not data:
-            return
+        if not data: return
         dlg = TipologiaEditorDialog(self, base=data, is_new=False)
         from PySide6.QtWidgets import QDialog as _QDialog
         if dlg.exec() == _QDialog.DialogCode.Accepted:
@@ -217,7 +200,6 @@ class TipologiePage(QFrame):
             try:
                 self._store.update_typology(tid, out)  # type: ignore
                 self._reload()
-                # riposiziona selezione
                 for i in range(self.lst.count()):
                     if int(self.lst.item(i).data(Qt.UserRole)) == int(tid):
                         self.lst.setCurrentRow(i); break
@@ -228,8 +210,7 @@ class TipologiePage(QFrame):
         tid = self._current_id()
         if not tid: return
         new_name, ok = QInputDialog.getText(self, "Duplica tipologia", "Nuovo nome:")
-        if not ok or not (new_name or "").strip():
-            return
+        if not ok or not (new_name or "").strip(): return
         try:
             new_id = self._store.duplicate_typology(tid, (new_name or "").strip())  # type: ignore
             if new_id:
