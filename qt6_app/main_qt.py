@@ -1,4 +1,6 @@
 import sys
+import logging
+import traceback
 from typing import Optional
 
 from PySide6.QtWidgets import (
@@ -15,6 +17,62 @@ except Exception:
 # Stack che non impone minime eccessive e wrapper che ignora min-size
 from ui_qt.widgets.min_stack import MinimalStacked
 from ui_qt.widgets.size_ignorer import SizeIgnorer
+
+
+def _setup_logging():
+    """
+    Inizializza logging su stderr e su file (utente).
+    Log file: %USERPROFILE%/blitz/logs/blitz.log (Windows) o ~/blitz/logs/blitz.log
+    """
+    try:
+        from pathlib import Path
+        log_dir = Path.home() / "blitz" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "blitz.log"
+    except Exception:
+        log_file = None
+
+    logger = logging.getLogger("blitz")
+    logger.setLevel(logging.INFO)
+
+    # Evita duplicati se richiamato più volte
+    if logger.handlers:
+        return logger
+
+    fmt = logging.Formatter(
+        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    sh = logging.StreamHandler(sys.stderr)
+    sh.setLevel(logging.INFO)
+    sh.setFormatter(fmt)
+    logger.addHandler(sh)
+
+    if log_file is not None:
+        try:
+            fh = logging.FileHandler(log_file, encoding="utf-8")
+            fh.setLevel(logging.INFO)
+            fh.setFormatter(fmt)
+            logger.addHandler(fh)
+        except Exception:
+            # Se fallisce il file, continuiamo solo con stderr
+            pass
+
+    # Hook globale per eccezioni non gestite
+    def _global_excepthook(exctype, value, tb):
+        try:
+            logger.error("Uncaught exception", exc_info=(exctype, value, tb))
+        except Exception:
+            pass
+        # Stampa comunque lo stack su stderr per debugging immediato
+        try:
+            traceback.print_exception(exctype, value, tb, file=sys.stderr)
+        except Exception:
+            pass
+
+    sys.excepthook = _global_excepthook
+    return logger
 
 
 # --- Fallback DummyMachineState (sviluppo) con movimento/encoder simulati ---
@@ -182,7 +240,8 @@ class MainWindow(QMainWindow):
         try:
             from ui.shared.machine_state import MachineState as RealMachineState
             return RealMachineState()
-        except Exception:
+        except Exception as e:
+            logging.getLogger("blitz").warning(f"MachineState reale non disponibile, uso Dummy: {e}")
             return DummyMachineState()
 
     def add_page(self, key: str, widget):
@@ -192,19 +251,31 @@ class MainWindow(QMainWindow):
         self._pages[key] = (wrapper, idx, widget)
 
     def _try_add_page(self, key: str, mod_name: str, cls_name: str):
+        logger = logging.getLogger("blitz")
         try:
             import importlib
             mod = importlib.import_module(mod_name)
             cls = getattr(mod, cls_name)
             self.add_page(key, cls(self))
-        except Exception:
-            pass
+            logger.info(f"Pagina caricata: {key} ({mod_name}.{cls_name})")
+        except Exception as e:
+            # Log completo con stacktrace su file e stderr
+            logger.exception(f"Errore caricando pagina '{key}' ({mod_name}.{cls_name}): {e}")
+            # Messaggio visivo non bloccante
+            try:
+                self.toast.show(f"Errore pagina '{key}' (vedi log)", "warn", 4000)
+            except Exception:
+                pass
 
     def show_page(self, key: str):
+        logger = logging.getLogger("blitz")
         rec = self._pages.get(key)
         if not rec:
-            if hasattr(self, "toast"):
+            try:
                 self.toast.show(f"Pagina '{key}' non disponibile", "warn", 2000)
+            except Exception:
+                pass
+            logger.warning(f"Tentativo di aprire pagina non registrata: {key}")
             return
         wrapper, idx, page = rec
         self.stack.setCurrentIndex(idx)
@@ -213,7 +284,11 @@ class MainWindow(QMainWindow):
             try:
                 page.on_show()
             except Exception:
-                pass
+                logger.exception(f"Errore in on_show() della pagina '{key}'")
+                try:
+                    self.toast.show(f"Errore on_show in '{key}' (vedi log)", "warn", 3000)
+                except Exception:
+                    pass
 
     def go_home(self): self.show_page("home")
     def show_home(self): self.show_page("home")
@@ -221,12 +296,14 @@ class MainWindow(QMainWindow):
     def home(self): self.show_page("home")
 
     def reset_current_page(self):
+        logger = logging.getLogger("blitz")
         if hasattr(self.machine, "reset") and callable(getattr(self.machine, "reset")):
             try:
                 self.machine.reset()
                 self.toast.show("Reset eseguito", "ok", 1500)
+                logger.info("Reset macchina eseguito")
             except Exception:
-                pass
+                logger.exception("Errore durante reset macchina")
 
     def reset_all(self):
         self.reset_current_page()
@@ -234,15 +311,23 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # Logging prima di creare l'app Qt
+    _setup_logging()
+    logger = logging.getLogger("blitz")
+    logger.info("Avvio BLITZ 3")
+
     app = QApplication(sys.argv)
     try:
         apply_global_stylesheet(app)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger("blitz").warning(f"apply_global_stylesheet fallita: {e}")
+
     win = MainWindow()
     # Apertura massimizzata (nessuna setGeometry manuale)
     win.showMaximized()
-    sys.exit(app.exec())
+    rc = app.exec()
+    logging.getLogger("blitz").info(f"Chiusura BLITZ 3 (exit code {rc})")
+    sys.exit(rc)
 
 
 if __name__ == "__main__":
