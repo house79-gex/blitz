@@ -15,16 +15,16 @@ SCHEMA = """
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS typology (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    name            TEXT NOT NULL UNIQUE,
-    category        TEXT,
-    material        TEXT,
-    ref_quota       TEXT CHECK (ref_quota IN ('esterna','interna')) DEFAULT 'esterna',
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    name             TEXT NOT NULL UNIQUE,
+    category         TEXT,
+    material         TEXT,
+    ref_quota        TEXT CHECK (ref_quota IN ('esterna','interna')) DEFAULT 'esterna',
     extra_detrazione REAL DEFAULT 0.0,
-    pezzi_totali    INTEGER DEFAULT 1,
-    note            TEXT,
-    created_at      INTEGER,
-    updated_at      INTEGER
+    pezzi_totali     INTEGER DEFAULT 1,
+    note             TEXT,
+    created_at       INTEGER,
+    updated_at       INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS typology_var (
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS typology_component (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     typology_id  INTEGER NOT NULL REFERENCES typology(id) ON DELETE CASCADE,
     ord          INTEGER NOT NULL DEFAULT 0,
-    row_id       TEXT,
+    row_id       TEXT,          -- "R1", "R2", ...
     name         TEXT,
     profile_name TEXT,
     quantity     INTEGER DEFAULT 0,
@@ -49,8 +49,29 @@ CREATE TABLE IF NOT EXISTS typology_component (
     note         TEXT
 );
 
+-- Opzioni/feature per tipologia: chiave/valore testuale (booleane: "0"/"1")
+CREATE TABLE IF NOT EXISTS typology_option (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    typology_id  INTEGER NOT NULL REFERENCES typology(id) ON DELETE CASCADE,
+    opt_key      TEXT NOT NULL,
+    opt_value    TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_typology_option_uk ON typology_option(typology_id, opt_key);
+
+-- Regole lamelle persiane (range su H, conteggio e/o passo)
+CREATE TABLE IF NOT EXISTS lamella_rule (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    name      TEXT NOT NULL,   -- es. "Lamella45"
+    category  TEXT,            -- es. "persiana"
+    h_min     REAL NOT NULL,
+    h_max     REAL NOT NULL,
+    count     INTEGER,         -- numero lamelle
+    pitch_mm  REAL             -- passo tra lamelle (se noto)
+);
+
 CREATE INDEX IF NOT EXISTS idx_typology_comp_typ ON typology_component(typology_id, ord);
-CREATE INDEX IF NOT EXISTS idx_typology_var_typ ON typology_var(typology_id);
+CREATE INDEX IF NOT EXISTS idx_typology_var_typ  ON typology_var(typology_id);
+CREATE INDEX IF NOT EXISTS idx_lamella_name_cat  ON lamella_rule(name, category);
 """
 
 def _now_ts() -> int:
@@ -73,6 +94,7 @@ class TypologiesStore:
         self._conn: Optional[sqlite3.Connection] = None
         self._open()
         self._ensure_schema()
+        self._maybe_seed_lamelle()
 
     def _open(self):
         self._conn = sqlite3.connect(str(self.db_path))
@@ -89,22 +111,16 @@ class TypologiesStore:
                 self._conn.close()
         self._conn = None
 
-    # --- CRUD ---
+    # -------- Tipologie (CRUD) --------
     def list_typologies(self) -> List[Dict[str, Any]]:
         cur = self._conn.execute(
             "SELECT id, name, category, material, pezzi_totali, updated_at FROM typology ORDER BY name ASC"
         )
-        out = []
-        for row in cur.fetchall():
-            out.append({
-                "id": row[0],
-                "name": row[1],
-                "category": row[2],
-                "material": row[3],
-                "pezzi_totali": row[4],
-                "updated_at": row[5],
-            })
-        return out
+        return [
+            {"id": row[0], "name": row[1], "category": row[2], "material": row[3],
+             "pezzi_totali": row[4], "updated_at": row[5]}
+            for row in cur.fetchall()
+        ]
 
     def get_typology_full(self, typology_id: int) -> Optional[Dict[str, Any]]:
         cur = self._conn.execute(
@@ -119,6 +135,11 @@ class TypologiesStore:
             "SELECT name, value FROM typology_var WHERE typology_id = ? ORDER BY id ASC", (typology_id,)
         )
         vars_map = {r[0]: float(r[1]) for r in cur.fetchall()}
+        # opts
+        cur = self._conn.execute(
+            "SELECT opt_key, opt_value FROM typology_option WHERE typology_id = ?", (typology_id,)
+        )
+        opts = {r[0]: r[1] for r in cur.fetchall()}
         # comps
         cur = self._conn.execute(
             "SELECT row_id, name, profile_name, quantity, ang_sx, ang_dx, formula, offset, note "
@@ -148,6 +169,7 @@ class TypologiesStore:
             "pezzi_totali": int(row[6] or 1),
             "note": row[7] or "",
             "variabili_locali": vars_map,
+            "options": opts,
             "componenti": comps,
             "created_at": row[8],
             "updated_at": row[9],
@@ -177,6 +199,12 @@ class TypologiesStore:
             self._conn.execute(
                 "INSERT INTO typology_var(typology_id, name, value) VALUES(?,?,?)",
                 (typ_id, k, vv)
+            )
+        # options
+        for ok, ov in (data.get("options") or {}).items():
+            self._conn.execute(
+                "INSERT INTO typology_option(typology_id, opt_key, opt_value) VALUES(?,?,?)",
+                (typ_id, ok, str(ov) if ov is not None else "")
             )
         # comps
         for idx, c in enumerate(data.get("componenti") or []):
@@ -216,7 +244,9 @@ class TypologiesStore:
                 typology_id
             )
         )
+        # replace vars/options/components (semplicità)
         self._conn.execute("DELETE FROM typology_var WHERE typology_id=?", (typology_id,))
+        self._conn.execute("DELETE FROM typology_option WHERE typology_id=?", (typology_id,))
         self._conn.execute("DELETE FROM typology_component WHERE typology_id=?", (typology_id,))
         for k, v in (data.get("variabili_locali") or {}).items():
             try: vv = float(v)
@@ -224,6 +254,11 @@ class TypologiesStore:
             self._conn.execute(
                 "INSERT INTO typology_var(typology_id, name, value) VALUES(?,?,?)",
                 (typology_id, k, vv)
+            )
+        for ok, ov in (data.get("options") or {}).items():
+            self._conn.execute(
+                "INSERT INTO typology_option(typology_id, opt_key, opt_value) VALUES(?,?,?)",
+                (typology_id, ok, str(ov) if ov is not None else "")
             )
         for idx, c in enumerate(data.get("componenti") or []):
             self._conn.execute(
@@ -254,3 +289,51 @@ class TypologiesStore:
             return None
         src["nome"] = new_name
         return self.create_typology(src)
+
+    # -------- Opzioni tipologia --------
+    def set_option(self, typology_id: int, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO typology_option(typology_id, opt_key, opt_value) VALUES(?,?,?) "
+            "ON CONFLICT(typology_id, opt_key) DO UPDATE SET opt_value=excluded.opt_value",
+            (typology_id, key, value)
+        )
+        self._conn.commit()
+
+    def get_options(self, typology_id: int) -> Dict[str, str]:
+        cur = self._conn.execute(
+            "SELECT opt_key, opt_value FROM typology_option WHERE typology_id=?", (typology_id,)
+        )
+        return {r[0]: r[1] for r in cur.fetchall()}
+
+    # -------- Lamelle persiane --------
+    def list_lamella_rulesets(self, category: str = "persiana") -> List[str]:
+        cur = self._conn.execute(
+            "SELECT DISTINCT name FROM lamella_rule WHERE category=? ORDER BY name ASC", (category,)
+        )
+        return [r[0] for r in cur.fetchall()]
+
+    def list_lamella_rules(self, name: str, category: str = "persiana") -> List[Dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT h_min, h_max, count, pitch_mm FROM lamella_rule WHERE name=? AND category=? ORDER BY h_min ASC",
+            (name, category)
+        )
+        return [{"h_min": r[0], "h_max": r[1], "count": r[2], "pitch_mm": r[3]} for r in cur.fetchall()]
+
+    def _maybe_seed_lamelle(self):
+        # Seed minimale solo se la tabella è vuota
+        cur = self._conn.execute("SELECT COUNT(*) FROM lamella_rule")
+        n = int(cur.fetchone()[0])
+        if n > 0:
+            return
+        # Esempio: schema "Lamella45" per persiana
+        demo = [
+            ( "Lamella45", "persiana", 300, 600, 6,  None),
+            ( "Lamella45", "persiana", 600, 900, 8,  None),
+            ( "Lamella45", "persiana", 900, 1200, 10, None),
+            ( "Lamella45", "persiana", 1200, 1500, 12, None),
+        ]
+        self._conn.executemany(
+            "INSERT INTO lamella_rule(name, category, h_min, h_max, count, pitch_mm) VALUES(?,?,?,?,?,?)",
+            demo
+        )
+        self._conn.commit()
