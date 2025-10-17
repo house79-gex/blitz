@@ -24,7 +24,6 @@ try:
 except Exception:
     ProfilesStore = None
 
-# Modali per aggiungere riga
 from ui_qt.dialogs.order_row_typology_qt import OrderRowTypologyDialog
 from ui_qt.dialogs.order_row_dims_qt import OrderRowDimsDialog
 from ui_qt.dialogs.order_row_hw_qt import OrderRowHardwareDialog
@@ -75,7 +74,6 @@ class QuoteVaniPage(QFrame):
         actions_top.addWidget(btn_exp)
         root.addLayout(actions_top)
 
-        # Tabella righe commessa
         self.tbl_rows = QTableWidget(0, 6)
         self.tbl_rows.setHorizontalHeaderLabels(["#", "Tipologia", "Pezzi", "H", "L", "Ferramenta"])
         hdr = self.tbl_rows.horizontalHeader()
@@ -93,14 +91,12 @@ class QuoteVaniPage(QFrame):
         row_actions.addWidget(btn_del); row_actions.addWidget(btn_clr); row_actions.addStretch(1)
         root.addLayout(row_actions)
 
-        # Calcolo/Invio
         act = QHBoxLayout()
         btn_calc = QPushButton("Calcola lista taglio"); btn_calc.clicked.connect(self._calc_and_aggregate)
         btn_send = QPushButton("Invia ad Automatico"); btn_send.clicked.connect(self._send_to_automatico)
         act.addWidget(btn_calc); act.addWidget(btn_send); act.addStretch(1)
         root.addLayout(act)
 
-        # Elenco taglio
         self.tbl_cut = QTableWidget(0, 6)
         self.tbl_cut.setHorizontalHeaderLabels(["Profilo", "Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà", "Note"])
         h2 = self.tbl_cut.horizontalHeader()
@@ -116,7 +112,6 @@ class QuoteVaniPage(QFrame):
         hint.setStyleSheet("color:#7f8c8d;")
         root.addWidget(hint, 0)
 
-    # ----- Wizard add row -----
     def _add_row_wizard(self):
         d1 = OrderRowTypologyDialog(self, self._store)
         if not d1.exec():
@@ -128,7 +123,7 @@ class QuoteVaniPage(QFrame):
             return
 
         d3 = OrderRowHardwareDialog(self, self._store, typ_id)
-        d3.exec()  # opzionale
+        d3.exec()
 
         row = {
             "tid": typ_id,
@@ -170,13 +165,11 @@ class QuoteVaniPage(QFrame):
         self._refresh_rows_table()
         self.tbl_cut.setRowCount(0)
 
-    # ----- Calcolo / aggregazione -----
     def _calc_and_aggregate(self):
         self.tbl_cut.setRowCount(0)
         if not self._rows:
             QMessageBox.information(self, "Commessa", "Aggiungi almeno una riga."); return
 
-        # token profili (spessori)
         prof_tokens: Dict[str, float] = {}
         if self._profiles:
             try:
@@ -197,7 +190,6 @@ class QuoteVaniPage(QFrame):
             env_base.update(r.get("vars") or {})
             env_base.update(prof_tokens)
 
-            # opzione ferramenta (per eventuali formule override che la usano)
             hw_opt_id = r.get("hw_option_id")
             if hw_opt_id:
                 opt = self._store.get_typology_hw_option(int(hw_opt_id))
@@ -210,7 +202,6 @@ class QuoteVaniPage(QFrame):
                     if pick:
                         env_base["arm_code"] = str(pick["arm_code"])
 
-            # Componenti con override per-opzione
             comps = t.get("componenti") or []
             c_values: Dict[str, float] = {}
             for c in comps:
@@ -237,7 +228,6 @@ class QuoteVaniPage(QFrame):
                 if rid:
                     c_values[f"C_{rid}"] = length
 
-        # riempi tabella per profilo, lunghezza desc
         self.tbl_cut.setRowCount(0)
         for prof in sorted(aggregated.keys()):
             lines = [(length, ax, ad, q) for (length, ax, ad), q in aggregated[prof].items()]
@@ -251,7 +241,6 @@ class QuoteVaniPage(QFrame):
                 self.tbl_cut.setItem(ri, 4, QTableWidgetItem(str(q)))
                 self.tbl_cut.setItem(ri, 5, QTableWidgetItem(""))
 
-    # ----- Export/Import -----
     def _export_order(self):
         if not self._rows:
             QMessageBox.information(self, "Esporta", "La commessa è vuota."); return
@@ -281,7 +270,6 @@ class QuoteVaniPage(QFrame):
         rows = data.get("rows") or []
         if not isinstance(rows, list):
             QMessageBox.critical(self, "Errore import", "Formato righe non valido."); return
-        # opzionale: validazione minimale campi
         self._rows = []
         for r in rows:
             try:
@@ -297,7 +285,6 @@ class QuoteVaniPage(QFrame):
                 continue
         self._refresh_rows_table()
 
-    # ----- Invio ad Automatico -----
     def _send_to_automatico(self):
         rows = []
         for r in range(self.tbl_cut.rowCount()):
