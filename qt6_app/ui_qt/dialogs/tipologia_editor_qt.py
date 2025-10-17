@@ -7,30 +7,16 @@ from PySide6.QtGui import QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QTableWidget, QTableWidgetItem, QSpinBox, QDoubleSpinBox,
-    QGroupBox, QMessageBox, QHeaderView, QCheckBox
+    QGroupBox, QMessageBox, QHeaderView
 )
 
 from ui_qt.services.legacy_formula import scan_variables, eval_formula, sanitize_name
+from ui_qt.services.typologies_store import TypologiesStore, default_db_path
 
-# DB profili (spessori)
 try:
     from ui_qt.services.profiles_store import ProfilesStore
 except Exception:
     ProfilesStore = None  # type: ignore
-
-# DB tipologie (lamelle/opzioni + ferramenta)
-try:
-    from ui_qt.services.typologies_store import TypologiesStore, default_db_path
-except Exception:
-    TypologiesStore = None  # type: ignore
-    default_db_path = lambda: Path.cwd() / "typologies.db"  # type: ignore
-
-# Gestione catalogo ferramenta (CRUD)
-try:
-    from ui_qt.dialogs.hardware_manager_qt import HardwareManagerDialog
-except Exception:
-    HardwareManagerDialog = None  # type: ignore
-
 
 def _profiles_map() -> Dict[str, float]:
     try:
@@ -39,37 +25,31 @@ def _profiles_map() -> Dict[str, float]:
     except Exception:
         return {}
 
-
 def _abbrev_token(s: str, maxlen: int = 10) -> str:
     s = str(s or "")
-    if len(s) <= maxlen:
-        return s
-    return s[:maxlen - 1] + "…"
+    return s if len(s) <= maxlen else (s[:maxlen - 1] + "…")
 
 
 class ComponentEditorDialog(QDialog):
     """
-    Editor componente:
-    - Token rapidi H/L + variabili locali abbreviate (tooltip con nome completo e valore)
-    - Token profilo con spessore in tooltip
-    - Token componenti C_Rx con tooltip (nome componente)
-    - Pulsanti 0°/45° + scorciatoie Alt+0 / Alt+5
-    - Usa var_provider() per leggere le variabili correnti dall'editor padre
+    Editor componente con bottoni token abbreviati, 0°/45°, e NUOVO: tasto 'Ferramenta…'
+    per mappare formule per opzione hardware (a livello di elemento).
     """
-    def __init__(self, parent, base: Dict[str, Any],
-                 prev_components: List[Dict[str, Any]],
-                 profiles: Dict[str, float],
-                 var_provider: Optional[Callable[[], Dict[str, float]]] = None):
+    def __init__(self, parent, base: Dict[str, Any], prev_components: List[Dict[str, Any]],
+                 profiles: Dict[str, float], var_provider: Optional[Callable[[], Dict[str, float]]] = None,
+                 store: Optional[TypologiesStore] = None, typology_id: Optional[int] = None):
         super().__init__(parent)
         self.setWindowTitle("Componente")
         self.setModal(True)
-        self.resize(940, 640)
+        self.resize(940, 660)
         self.setMinimumSize(860, 560)
 
         self.base = dict(base)
         self.prev_components = prev_components
         self.profiles = profiles
         self.var_provider = var_provider
+        self.store = store
+        self.typology_id = typology_id
         self.created = False
 
         self._build()
@@ -86,7 +66,17 @@ class ComponentEditorDialog(QDialog):
         g.addWidget(self.ed_id, row, 1); row += 1
 
         g.addWidget(QLabel("Nome:"), row, 0)
-        self.ed_name = QLineEdit(self.base.get("nome", "")); g.addWidget(self.ed_name, row, 1, 1, 3); row += 1
+        self.ed_name = QLineEdit(self.base.get("nome", "")); g.addWidget(self.ed_name, row, 1, 1, 2)
+
+        # Ferramenta mapping (solo se tipologia già salvata)
+        self.btn_hw_map = QPushButton("Ferramenta…")
+        self.btn_hw_map.setToolTip("Mappa formule per opzioni ferramenta (tipologia)")
+        self.btn_hw_map.clicked.connect(self._open_hw_map)
+        if not (self.store and self.typology_id):
+            self.btn_hw_map.setEnabled(False)
+            self.btn_hw_map.setToolTip("Salva prima la tipologia per abilitare la mappatura ferramenta")
+        g.addWidget(self.btn_hw_map, row, 3)
+        row += 1
 
         g.addWidget(QLabel("Profilo:"), row, 0)
         self.cmb_prof = QComboBox()
@@ -125,16 +115,14 @@ class ComponentEditorDialog(QDialog):
         self.sp_off = QDoubleSpinBox(); self.sp_off.setRange(-1e6, 1e6); self.sp_off.setDecimals(3); self.sp_off.setSingleStep(0.1)
         self.sp_off.setValue(float(self.base.get("offset_mm", 0.0) or 0.0)); g.addWidget(self.sp_off, row, 1); row += 1
 
-        g.addWidget(QLabel("Formula lunghezza:"), row, 0)
+        g.addWidget(QLabel("Formula (base):"), row, 0)
         self.ed_formula = QLineEdit(self.base.get("formula_lunghezza", "H")); g.addWidget(self.ed_formula, row, 1, 1, 3); row += 1
 
-        # Token bar: H/L, var locali abbreviate, C_Rx
+        # Token bar
         token_bar = QHBoxLayout()
         lbl = QLabel("Token:"); lbl.setStyleSheet("color:#7f8c8d;"); token_bar.addWidget(lbl)
-        # H/L
         for t, tip in (("H","Altezza finita"), ("L","Larghezza finita")):
             b = QPushButton(t); b.setToolTip(tip); b.clicked.connect(lambda _=None, v=t: self._ins_token(v)); token_bar.addWidget(b)
-        # Variabili locali (abbreviate a schermo, tooltip completo)
         token_bar.addWidget(QLabel("Variabili:"))
         var_map = (self.var_provider() or {}) if self.var_provider else {}
         for k in sorted(var_map.keys()):
@@ -143,7 +131,6 @@ class ComponentEditorDialog(QDialog):
             b.setToolTip(f"{k} = {var_map.get(k)}")
             b.clicked.connect(lambda _=None, v=k: self._ins_token(v))
             token_bar.addWidget(b)
-        # Componenti precedenti
         token_bar.addWidget(QLabel("Componenti prec.:"))
         for c in self.prev_components:
             rid = c.get("id_riga",""); nm = c.get("nome","")
@@ -153,7 +140,6 @@ class ComponentEditorDialog(QDialog):
                 b.setToolTip(f"{t} → {nm}")
                 b.clicked.connect(lambda _=None, v=t: self._ins_token(v))
                 token_bar.addWidget(b)
-
         token_bar.addStretch(1)
 
         root.addLayout(g); root.addLayout(token_bar)
@@ -171,6 +157,7 @@ class ComponentEditorDialog(QDialog):
         tb.addLayout(rowt)
         root.addWidget(test_box)
 
+        # Note e salvataggio
         root.addWidget(QLabel("Note:"))
         self.ed_note = QLineEdit(self.base.get("note", "")); root.addWidget(self.ed_note)
 
@@ -184,13 +171,10 @@ class ComponentEditorDialog(QDialog):
         self.cmb_prof.currentIndexChanged.connect(self._update_prof_token)
 
     def _install_shortcuts(self):
-        sc0 = QShortcut(QKeySequence("Alt+0"), self)
-        sc0.activated.connect(lambda: (self.sp_ang_sx.setValue(0.0), self.sp_ang_dx.setValue(0.0)))
-        sc45 = QShortcut(QKeySequence("Alt+5"), self)
-        sc45.activated.connect(lambda: (self.sp_ang_sx.setValue(45.0), self.sp_ang_dx.setValue(45.0)))
+        sc0 = QShortcut(QKeySequence("Alt+0"), self); sc0.activated.connect(lambda: (self.sp_ang_sx.setValue(0.0), self.sp_ang_dx.setValue(0.0)))
+        sc45 = QShortcut(QKeySequence("Alt+5"), self); sc45.activated.connect(lambda: (self.sp_ang_sx.setValue(45.0), self.sp_ang_dx.setValue(45.0)))
 
     def _ins_token(self, tok: str):
-        if not tok: return
         t = self.ed_formula.text() or ""
         sep = "" if (not t or t.endswith(("+","-","*","/","("," "))) else ""
         self.ed_formula.setText(t + sep + tok)
@@ -240,6 +224,17 @@ class ComponentEditorDialog(QDialog):
         except Exception as e:
             self.lbl_test.setText(f"Errore: {e}")
 
+    def _open_hw_map(self):
+        if not (self.store and self.typology_id):
+            return
+        try:
+            from ui_qt.dialogs.component_hardware_map_qt import ComponentHardwareMapDialog
+        except Exception:
+            QMessageBox.information(self, "Ferramenta", "Modulo mapping non disponibile.")
+            return
+        dlg = ComponentHardwareMapDialog(self, self.store, int(self.typology_id), self.ed_id.text().strip())
+        dlg.exec()
+
     def _save(self):
         name = (self.ed_name.text() or "").strip() or "Senza Nome"
         prof = (self.cmb_prof.currentText() or "").strip()
@@ -265,29 +260,19 @@ class ComponentEditorDialog(QDialog):
 
 class TipologiaEditorDialog(QDialog):
     """
-    Editor tipologia (legacy):
-    - Massimizzata all'apertura
-    - Variabili locali CRUD (visibili nel componente con token abbreviati + tooltip)
-    - Opzioni:
-      - persiana: schema lamelle
-      - astine/battente: selezione Ferramenta (Marca/Serie/Sottocategoria/Maniglia) + pulsante "Gestisci ferramenta…"
+    Editor tipologia (legacy) – finestra massimizzata, niente auto-sottoeditor per categoria.
+    Le opzioni ferramenta si gestiscono per-elemento dal tasto 'Ferramenta…' nel dialog del componente.
     """
     def __init__(self, parent, base: Optional[Dict[str, Any]] = None, is_new: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Nuova Tipologia" if is_new else "Modifica Tipologia")
         self.setModal(True)
-        # finestra massimizzata: evita pulsanti fuori dallo schermo
         self.setWindowState(Qt.WindowMaximized)
 
         self.base = dict(base or {})
         self.is_new = is_new
         self.profiles = _profiles_map()
-
-        # Store per lamelle/opzioni + ferramenta
-        try:
-            self._store = TypologiesStore(str(default_db_path()))
-        except Exception:
-            self._store = None
+        self.store = TypologiesStore(str(default_db_path()))
 
         self._build()
         self._load_base()
@@ -296,13 +281,12 @@ class TipologiaEditorDialog(QDialog):
         root = QVBoxLayout(self)
 
         meta = QGridLayout(); meta.setHorizontalSpacing(12); meta.setVerticalSpacing(6); row = 0
-        lbl_nome = QLabel("Nome tipologia:"); lbl_nome.setWordWrap(True); meta.addWidget(lbl_nome, row, 0)
+        meta.addWidget(QLabel("Nome tipologia:"), row, 0)
         self.ed_name = QLineEdit(); meta.addWidget(self.ed_name, row, 1, 1, 3); row += 1
 
         meta.addWidget(QLabel("Categoria:"), row, 0)
         self.ed_cat = QLineEdit(); meta.addWidget(self.ed_cat, row, 1)
         meta.addWidget(QLabel("Materiale:"), row, 2)
-        # FIX: riga corretta (prima c'era un refuso che impediva l'apertura del dialog)
         self.ed_mat = QLineEdit(); meta.addWidget(self.ed_mat, row, 3); row += 1
 
         meta.addWidget(QLabel("Riferimento quota:"), row, 0)
@@ -315,26 +299,7 @@ class TipologiaEditorDialog(QDialog):
         meta.addWidget(QLabel("Note:"), row, 2)
         self.ed_note = QLineEdit(); meta.addWidget(self.ed_note, row, 3); row += 1
 
-        # Opzioni categoria-specifiche
-        self.grp_opts = QGroupBox("Opzioni tipologia"); og = QGridLayout(self.grp_opts); og.setHorizontalSpacing(10); og.setVerticalSpacing(6)
-        # Persiana: schema lamelle
-        og.addWidget(QLabel("Schema lamelle (persiana):"), 0, 0)
-        self.cmb_lamella = QComboBox(); self.cmb_lamella.setToolTip("Schema lamelle per persiane (range H → n. lamelle)")
-        og.addWidget(self.cmb_lamella, 0, 1)
-        # Ferramenta (astine/battente)
-        rowo = 1
-        og.addWidget(QLabel("Ferramenta (astine/battente):"), rowo, 0, 1, 2)
-        rowo += 1
-        og.addWidget(QLabel("Marca:"), rowo, 0); self.cmb_brand = QComboBox(); og.addWidget(self.cmb_brand, rowo, 1); rowo += 1
-        og.addWidget(QLabel("Serie:"), rowo, 0); self.cmb_series = QComboBox(); og.addWidget(self.cmb_series, rowo, 1); rowo += 1
-        og.addWidget(QLabel("Sottocategoria:"), rowo, 0); self.cmb_subcat = QComboBox(); og.addWidget(self.cmb_subcat, rowo, 1); rowo += 1
-        og.addWidget(QLabel("Maniglia:"), rowo, 0); self.cmb_handle = QComboBox(); og.addWidget(self.cmb_handle, rowo, 1); rowo += 1
-        self.btn_hw_manage = QPushButton("Gestisci ferramenta…"); og.addWidget(self.btn_hw_manage, rowo, 0, 1, 2); rowo += 1
-
-        self.grp_opts.setVisible(False)
-
         root.addLayout(meta)
-        root.addWidget(self.grp_opts)
 
         # Variabili locali
         root.addWidget(QLabel("Variabili locali (nome → valore):"))
@@ -351,7 +316,7 @@ class TipologiaEditorDialog(QDialog):
         root.addLayout(rowv)
 
         # Componenti
-        root.addWidget(QLabel("Componenti (doppio click per modificare):"))
+        root.addWidget(QLabel("Componenti (doppio click per modificare – mappatura ferramenta per elemento dal tasto nel dialog)"))
         self.tbl_comp = QTableWidget(0, 9)
         self.tbl_comp.setHorizontalHeaderLabels(["ID","Nome","Profilo","Spess.","Q.tà","Ang SX","Ang DX","Formula","Offset"])
         hdr = self.tbl_comp.horizontalHeader()
@@ -381,96 +346,6 @@ class TipologiaEditorDialog(QDialog):
         acts.addWidget(btn_cancel); acts.addWidget(btn_save); acts.addStretch(1)
         root.addLayout(acts)
 
-        # Reazioni
-        self.ed_cat.textChanged.connect(self._refresh_options_group)
-        self.btn_hw_manage.clicked.connect(self._open_hw_manager)
-        self.cmb_brand.currentIndexChanged.connect(self._on_brand_changed)
-        self.cmb_series.currentIndexChanged.connect(self._on_series_changed)
-
-    def _open_hw_manager(self):
-        if HardwareManagerDialog is None or self._store is None:
-            QMessageBox.information(self, "Ferramenta", "Modulo gestione ferramenta non disponibile.")
-            return
-        dlg = HardwareManagerDialog(self, self._store)
-        dlg.exec()
-        # dopo gestione, ricarica combo
-        self._reload_hw_combos()
-
-    def _refresh_options_group(self):
-        cat = (self.ed_cat.text() or "").strip().lower()
-        show = (cat in ("persiana", "astine", "battente"))
-        self.grp_opts.setVisible(show)
-        # lamelle se persiana
-        if self._store:
-            self.cmb_lamella.clear()
-            if cat == "persiana":
-                try:
-                    names = self._store.list_lamella_rulesets("persiana")
-                    if not names:
-                        self.cmb_lamella.addItem("— Nessuno —", "")
-                    else:
-                        for n in names: self.cmb_lamella.addItem(n, n)
-                except Exception:
-                    self.cmb_lamella.addItem("— Errore DB —", "")
-            else:
-                self.cmb_lamella.addItem("— N/D —", "")
-        # ferramenta se astine o battente
-        self._reload_hw_combos()
-
-    def _reload_hw_combos(self):
-        if self._store is None:
-            for cb in (self.cmb_brand, self.cmb_series, self.cmb_subcat, self.cmb_handle):
-                cb.clear(); cb.addItem("— N/D —", None)
-            return
-        # Marca
-        self.cmb_brand.clear()
-        try:
-            brands = self._store.list_hw_brands()
-        except Exception:
-            brands = []
-        if not brands:
-            self.cmb_brand.addItem("— Nessuna marca —", None)
-        else:
-            for b in brands:
-                self.cmb_brand.addItem(b["name"], int(b["id"]))
-        self._on_brand_changed()
-
-    def _on_brand_changed(self):
-        if self._store is None:
-            return
-        self.cmb_series.clear(); self.cmb_handle.clear(); self.cmb_subcat.clear()
-        bid = self.cmb_brand.currentData()
-        if not bid:
-            self.cmb_series.addItem("—", None); self.cmb_handle.addItem("—", None); self.cmb_subcat.addItem("—", None); return
-        series = self._store.list_hw_series(int(bid))
-        if not series:
-            self.cmb_series.addItem("— Nessuna serie —", None)
-        else:
-            for s in series:
-                self.cmb_series.addItem(s["name"], int(s["id"]))
-        self._on_series_changed()
-
-    def _on_series_changed(self):
-        if self._store is None:
-            return
-        self.cmb_handle.clear(); self.cmb_subcat.clear()
-        bid = self.cmb_brand.currentData(); sid = self.cmb_series.currentData()
-        if not (bid and sid):
-            self.cmb_handle.addItem("—", None); self.cmb_subcat.addItem("—", None); return
-        handles = self._store.list_hw_handle_types(int(bid), int(sid))
-        if not handles:
-            self.cmb_handle.addItem("— Nessuna maniglia —", None)
-        else:
-            for h in handles:
-                label = f"{h['name']} ({h['handle_offset_mm']:.0f} mm)"
-                self.cmb_handle.addItem(label, int(h["id"]))
-        subcats = self._store.list_hw_sash_subcats(int(bid), int(sid))
-        if not subcats:
-            self.cmb_subcat.addItem("— Nessuna sottocategoria —", "")
-        else:
-            for sc in subcats:
-                self.cmb_subcat.addItem(sc, sc)
-
     def _load_base(self):
         b = self.base
         self.ed_name.setText(str(b.get("nome",""))); self.ed_cat.setText(str(b.get("categoria",""))); self.ed_mat.setText(str(b.get("materiale","")))
@@ -479,37 +354,6 @@ class TipologiaEditorDialog(QDialog):
         self.sp_extra.setValue(float(b.get("extra_detrazione_mm",0.0) or 0.0))
         self.sp_pezzi.setValue(int(b.get("pezzi_totali",1) or 1))
         self.ed_note.setText(str(b.get("note","")))
-
-        # Opzioni salvatate
-        opts = b.get("options") or {}
-        self._refresh_options_group()
-        # lamelle
-        lam = opts.get("lamelle_ruleset","")
-        if lam:
-            i = self.cmb_lamella.findData(lam)
-            if i >= 0: self.cmb_lamella.setCurrentIndex(i)
-        # ferramenta defaults
-        bid = int(opts.get("hw_brand_id")) if opts.get("hw_brand_id") else None
-        sid = int(opts.get("hw_series_id")) if opts.get("hw_series_id") else None
-        subc = opts.get("hw_subcat","")
-        hid = int(opts.get("hw_handle_id")) if opts.get("hw_handle_id") else None
-        if bid:
-            for i in range(self.cmb_brand.count()):
-                if self.cmb_brand.itemData(i) == bid:
-                    self.cmb_brand.setCurrentIndex(i); break
-        if sid:
-            for i in range(self.cmb_series.count()):
-                if self.cmb_series.itemData(i) == sid:
-                    self.cmb_series.setCurrentIndex(i); break
-        if subc:
-            for i in range(self.cmb_subcat.count()):
-                if self.cmb_subcat.itemData(i) == subc:
-                    self.cmb_subcat.setCurrentIndex(i); break
-        if hid:
-            for i in range(self.cmb_handle.count()):
-                if self.cmb_handle.itemData(i) == hid:
-                    self.cmb_handle.setCurrentIndex(i); break
-
         # variabili
         for k, v in sorted((b.get("variabili_locali") or {}).items()):
             self._vars_insert_row(k, float(v))
@@ -588,7 +432,9 @@ class TipologiaEditorDialog(QDialog):
         comps_before = self._collect_components_list() if row_to_replace is None else self._collect_components_list()[:row_to_replace]
         var_provider: Callable[[], Dict[str, float]] = lambda: self._collect_vars_map()
         from PySide6.QtWidgets import QDialog as _QDialog
-        dlg = ComponentEditorDialog(self, base_comp, prev_components=comps_before, profiles=self.profiles, var_provider=var_provider)
+        typ_id = self.base.get("id") if isinstance(self.base.get("id"), int) else None
+        dlg = ComponentEditorDialog(self, base_comp, prev_components=comps_before, profiles=self.profiles,
+                                    var_provider=var_provider, store=self.store, typology_id=typ_id)
         if dlg.exec() == _QDialog.DialogCode.Accepted and dlg.created:
             if row_to_replace is None:
                 self._comp_insert_row(dlg.result_component())
@@ -633,25 +479,8 @@ class TipologiaEditorDialog(QDialog):
             if _MB.question(self, "Conferma", "Nessun componente. Salvare comunque?") != _MB.Yes:
                 return
 
-        # Opzioni da salvare
-        opts: Dict[str, str] = {}
-        cat = (self.ed_cat.text() or "").strip().lower()
-        # lamelle
-        lam = self.cmb_lamella.currentData()
-        if cat == "persiana" and lam:
-            opts["lamelle_ruleset"] = str(lam)
-        # ferramenta default
-        if cat in ("astine", "battente"):
-            bid = self.cmb_brand.currentData() or ""
-            sid = self.cmb_series.currentData() or ""
-            subc = self.cmb_subcat.currentData() or ""
-            hid = self.cmb_handle.currentData() or ""
-            if bid: opts["hw_brand_id"] = str(bid)
-            if sid: opts["hw_series_id"] = str(sid)
-            if subc: opts["hw_subcat"] = str(subc)
-            if hid: opts["hw_handle_id"] = str(hid)
-
         self.base = {
+            "id": self.base.get("id"),  # preserva se editing
             "nome": name,
             "categoria": (self.ed_cat.text() or "").strip(),
             "materiale": (self.ed_mat.text() or "").strip(),
@@ -660,7 +489,6 @@ class TipologiaEditorDialog(QDialog):
             "pezzi_totali": int(self.sp_pezzi.value()),
             "note": (self.ed_note.text() or "").strip(),
             "variabili_locali": vars_map,
-            "options": opts,
             "componenti": comps
         }
         self.accept()
