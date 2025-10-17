@@ -65,7 +65,6 @@ class ComponentEditorDialog(QDialog):
         g.addWidget(QLabel("ID riga:"), row, 0)
         self.ed_id = QLineEdit(self.base.get("id_riga", "")); self.ed_id.setReadOnly(True)
         g.addWidget(self.ed_id, row, 1)
-        # Ferramenta mapping
         self.btn_hw_map = QPushButton("Ferramenta…")
         self.btn_hw_map.setToolTip("Mappa formule dell'elemento per le opzioni di ferramenta della tipologia")
         self.btn_hw_map.clicked.connect(self._open_hw_map)
@@ -116,7 +115,6 @@ class ComponentEditorDialog(QDialog):
         g.addWidget(QLabel("Formula (base):"), row, 0)
         self.ed_formula = QLineEdit(self.base.get("formula_lunghezza", "H")); g.addWidget(self.ed_formula, row, 1, 1, 3); row += 1
 
-        # Token menu a comparsa
         token_row = QHBoxLayout()
         token_row.addWidget(QLabel("Token…"))
         self.btn_token = QToolButton()
@@ -128,7 +126,6 @@ class ComponentEditorDialog(QDialog):
         root.addLayout(g)
         root.addLayout(token_row)
 
-        # Test formula
         test_box = QGroupBox("Test formula")
         tb = QVBoxLayout(test_box)
         tb.addWidget(QLabel("Valori test es: H=1500; L=900; TOKEN_PROFILO=60"))
@@ -141,7 +138,6 @@ class ComponentEditorDialog(QDialog):
         tb.addLayout(rowt)
         root.addWidget(test_box)
 
-        # Note e salvataggio
         root.addWidget(QLabel("Note:"))
         self.ed_note = QLineEdit(self.base.get("note", "")); root.addWidget(self.ed_note)
 
@@ -156,13 +152,11 @@ class ComponentEditorDialog(QDialog):
 
     def _rebuild_token_menu(self):
         m = QMenu(self)
-        # Base
         m_base = m.addMenu("Base")
         for t, tip in (("H","Altezza finita"), ("L","Larghezza finita")):
             act = m_base.addAction(t)
             act.setToolTip(tip)
             act.triggered.connect(lambda _, v=t: self._ins_token(v))
-        # Variabili
         m_vars = m.addMenu("Variabili")
         var_map = (self.var_provider() or {}) if self.var_provider else {}
         if not var_map:
@@ -172,7 +166,6 @@ class ComponentEditorDialog(QDialog):
                 act = m_vars.addAction(_abbrev(k))
                 act.setToolTip(f"{k} = {var_map.get(k)}")
                 act.triggered.connect(lambda _, v=k: self._ins_token(v))
-        # Componenti precedenti
         m_comp = m.addMenu("Componenti prec.")
         had = False
         for c in self.prev_components:
@@ -185,7 +178,6 @@ class ComponentEditorDialog(QDialog):
                 had = True
         if not had:
             m_comp.addAction("— Nessuno —").setEnabled(False)
-        # Profili (token sanitizzati)
         m_prof = m.addMenu("Profili")
         hadp = False
         for name, th in sorted(self.profiles.items()):
@@ -217,7 +209,6 @@ class ComponentEditorDialog(QDialog):
             self.lbl_token.setText(tip)
         else:
             self.lbl_token.setText("")
-        # aggiorna anche il menu token (in caso di nuovi profili/spessori)
         self._rebuild_token_menu()
 
     def _analyze(self):
@@ -290,7 +281,7 @@ class ComponentEditorDialog(QDialog):
 class TipologiaEditorDialog(QDialog):
     """
     Editor tipologia (legacy) – finestra massimizzata
-    - Opzioni ferramenta gestite da pulsante dedicato (non più per categoria)
+    - Opzioni ferramenta gestite da pulsante dedicato
     - Per-elemento: mappatura formule via tasto 'Ferramenta…' nel dialog del componente
     """
     def __init__(self, parent, base: Optional[Dict[str, Any]] = None, is_new: bool = False):
@@ -331,7 +322,6 @@ class TipologiaEditorDialog(QDialog):
 
         root.addLayout(meta)
 
-        # Azioni tipologia
         bar = QHBoxLayout()
         btn_hw_opts = QPushButton("Opzioni ferramenta…")
         btn_hw_opts.setToolTip("Definisci le opzioni di ferramenta (marca/serie/sottocategoria/maniglia) selezionabili in commessa")
@@ -340,7 +330,6 @@ class TipologiaEditorDialog(QDialog):
         bar.addStretch(1)
         root.addLayout(bar)
 
-        # Variabili locali
         root.addWidget(QLabel("Variabili locali (nome → valore):"))
         self.tbl_vars = QTableWidget(0, 2)
         self.tbl_vars.setHorizontalHeaderLabels(["Nome","Valore"])
@@ -354,7 +343,6 @@ class TipologiaEditorDialog(QDialog):
         rowv.addWidget(btn_add_v); rowv.addWidget(btn_del_v); rowv.addStretch(1)
         root.addLayout(rowv)
 
-        # Componenti
         root.addWidget(QLabel("Componenti (doppio click per modificare – mappatura ferramenta per elemento nel dialog)"))
         self.tbl_comp = QTableWidget(0, 9)
         self.tbl_comp.setHorizontalHeaderLabels(["ID","Nome","Profilo","Spess.","Q.tà","Ang SX","Ang DX","Formula","Offset"])
@@ -386,7 +374,6 @@ class TipologiaEditorDialog(QDialog):
         root.addLayout(acts)
 
     def _open_hw_options(self):
-        # Richiede un id tipologia (se nuova, chiedi salvataggio prima)
         typ_id = self.base.get("id")
         if not isinstance(typ_id, int):
             QMessageBox.information(self, "Ferramenta", "Salva la tipologia per abilitare le opzioni di ferramenta.")
@@ -407,10 +394,8 @@ class TipologiaEditorDialog(QDialog):
         self.sp_extra.setValue(float(b.get("extra_detrazione_mm",0.0) or 0.0))
         self.sp_pezzi.setValue(int(b.get("pezzi_totali",1) or 1))
         self.ed_note.setText(str(b.get("note","")))
-        # variabili
         for k, v in sorted((b.get("variabili_locali") or {}).items()):
             self._vars_insert_row(k, float(v))
-        # componenti
         for c in (b.get("componenti") or []):
             self._comp_insert_row(c)
 
