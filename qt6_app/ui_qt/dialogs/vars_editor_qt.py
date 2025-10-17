@@ -28,7 +28,6 @@ class VarsEditorDialog(QDialog):
         hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         root.addWidget(self.tbl)
 
-        # carica
         for k, v in sorted(self._vars.items()):
             r = self.tbl.rowCount(); self.tbl.insertRow(r)
             self.tbl.setItem(r, 0, QTableWidgetItem(k))
