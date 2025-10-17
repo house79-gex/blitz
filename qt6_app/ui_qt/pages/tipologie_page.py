@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Optional, Dict, Any, List
 from pathlib import Path
+import traceback
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -101,28 +102,52 @@ class TipologiePage(QFrame):
     def _new(self):
         dlg = TipologiaEditorDialog(self, is_new=True)
         from PySide6.QtWidgets import QDialog as _QDialog
-        if dlg.exec() == _QDialog.DialogCode.Accepted:
-            data = dlg.result_tipologia()
-            try:
-                self._store.create_typology(data)
-                self._reload()
-            except Exception as e:
-                QMessageBox.critical(self, "Errore salvataggio", str(e))
+        try:
+            if dlg.exec() == _QDialog.DialogCode.Accepted:
+                data = dlg.result_tipologia()
+                # garantisco che la struttura sia completa (minimi)
+                if not isinstance(data, dict):
+                    QMessageBox.critical(self, "Errore", "Dati tipologia non validi (formato).")
+                    return
+                data.setdefault("variabili_locali", {})
+                data.setdefault("options", {})
+                data.setdefault("componenti", [])
+                try:
+                    tid = self._store.create_typology(data)
+                    QMessageBox.information(self, "OK", f"Tipologia creata (id={tid}).")
+                    self._reload()
+                except Exception as e:
+                    tb = traceback.format_exc()
+                    QMessageBox.critical(self, "Errore salvataggio", f"{e}\n\n{tb}")
+        except Exception as e:
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "Errore dialog", f"{e}\n\n{tb}")
 
     def _edit(self):
         tid = self._current_id()
         if not tid: return
-        data = self._store.get_typology_full(tid)
-        if not data: return
-        dlg = TipologiaEditorDialog(self, base=data, is_new=False)
-        from PySide6.QtWidgets import QDialog as _QDialog
-        if dlg.exec() == _QDialog.DialogCode.Accepted:
-            out = dlg.result_tipologia()
-            try:
-                self._store.update_typology(tid, out)
-                self._reload()
-            except Exception as e:
-                QMessageBox.critical(self, "Errore salvataggio", str(e))
+        try:
+            data = self._store.get_typology_full(tid)
+            if not data:
+                QMessageBox.critical(self, "Errore", "Tipologia non trovata nel DB.")
+                return
+            dlg = TipologiaEditorDialog(self, base=data, is_new=False)
+            from PySide6.QtWidgets import QDialog as _QDialog
+            if dlg.exec() == _QDialog.DialogCode.Accepted:
+                out = dlg.result_tipologia()
+                out.setdefault("variabili_locali", {})
+                out.setdefault("options", {})
+                out.setdefault("componenti", [])
+                try:
+                    self._store.update_typology(tid, out)
+                    QMessageBox.information(self, "OK", "Tipologia aggiornata.")
+                    self._reload()
+                except Exception as e:
+                    tb = traceback.format_exc()
+                    QMessageBox.critical(self, "Errore salvataggio", f"{e}\n\n{tb}")
+        except Exception as e:
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "Errore", f"{e}\n\n{tb}")
 
     def _edit_on_double(self, item: QTreeWidgetItem, _col: int):
         if item and item.data(0, Qt.UserRole) is not None:
@@ -135,10 +160,13 @@ class TipologiePage(QFrame):
         new_name, ok = QInputDialog.getText(self, "Duplica tipologia", "Nuovo nome:")
         if not ok or not (new_name or "").strip(): return
         try:
-            self._store.duplicate_typology(tid, (new_name or "").strip())
-            self._reload()
+            new_id = self._store.duplicate_typology(tid, (new_name or "").strip())
+            if new_id:
+                QMessageBox.information(self, "OK", f"Tipologia duplicata (id={new_id}).")
+                self._reload()
         except Exception as e:
-            QMessageBox.critical(self, "Errore duplicazione", str(e))
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "Errore duplicazione", f"{e}\n\n{tb}")
 
     def _del(self):
         tid = self._current_id()
@@ -150,4 +178,5 @@ class TipologiePage(QFrame):
             self._store.delete_typology(tid)
             self._reload()
         except Exception as e:
-            QMessageBox.critical(self, "Errore eliminazione", str(e))
+            tb = traceback.format_exc()
+            QMessageBox.critical(self, "Errore eliminazione", f"{e}\n\n{tb}")
