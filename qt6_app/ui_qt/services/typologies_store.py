@@ -70,17 +70,19 @@ CREATE TABLE IF NOT EXISTS lamella_rule (
     pitch_mm  REAL             -- passo tra lamelle (se noto)
 );
 
--- Catalogo ferramenta (marca/serie/maniglia/bracci/formule astina) – già presenti
+-- Catalogo ferramenta (marca/serie/maniglia/bracci/formule astina)
 CREATE TABLE IF NOT EXISTS hw_brand (
     id    INTEGER PRIMARY KEY AUTOINCREMENT,
     name  TEXT NOT NULL UNIQUE
 );
+
 CREATE TABLE IF NOT EXISTS hw_series (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     brand_id  INTEGER NOT NULL REFERENCES hw_brand(id) ON DELETE CASCADE,
     name      TEXT NOT NULL,
     UNIQUE(brand_id, name)
 );
+
 CREATE TABLE IF NOT EXISTS hw_handle_type (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     brand_id          INTEGER NOT NULL REFERENCES hw_brand(id) ON DELETE CASCADE,
@@ -90,29 +92,31 @@ CREATE TABLE IF NOT EXISTS hw_handle_type (
     handle_offset_mm  REAL NOT NULL DEFAULT 0.0,
     UNIQUE(brand_id, series_id, code)
 );
+
 CREATE TABLE IF NOT EXISTS hw_arm_rule (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     brand_id     INTEGER NOT NULL REFERENCES hw_brand(id) ON DELETE CASCADE,
     series_id    INTEGER NOT NULL REFERENCES hw_series(id) ON DELETE CASCADE,
-    sash_subcat  TEXT NOT NULL,
+    sash_subcat  TEXT NOT NULL,   -- es. "battente_standard"
     w_min        REAL NOT NULL,
     w_max        REAL NOT NULL,
     arm_code     TEXT NOT NULL,
     arm_name     TEXT,
     UNIQUE(brand_id, series_id, sash_subcat, w_min, w_max)
 );
+
 CREATE TABLE IF NOT EXISTS hw_astina_formula (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     brand_id     INTEGER NOT NULL REFERENCES hw_brand(id) ON DELETE CASCADE,
     series_id    INTEGER NOT NULL REFERENCES hw_series(id) ON DELETE CASCADE,
     sash_subcat  TEXT NOT NULL,
-    arm_code     TEXT,
+    arm_code     TEXT,            -- NULL = formula generica sottocategoria
     formula      TEXT NOT NULL,
     note         TEXT,
     UNIQUE(brand_id, series_id, sash_subcat, arm_code)
 );
 
--- NUOVO: opzioni di ferramenta specifiche della tipologia (preset che l'utente selezionerà in commessa)
+-- Opzioni di ferramenta specifiche della tipologia (preset selezionabili in commessa)
 CREATE TABLE IF NOT EXISTS typology_hw_option (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     typology_id  INTEGER NOT NULL REFERENCES typology(id) ON DELETE CASCADE,
@@ -124,7 +128,7 @@ CREATE TABLE IF NOT EXISTS typology_hw_option (
     UNIQUE(typology_id, name)
 );
 
--- NUOVO: mapping formula per componente in base all'opzione ferramenta
+-- Mapping formula per componente in base all'opzione ferramenta
 CREATE TABLE IF NOT EXISTS comp_hw_formula (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     typology_id   INTEGER NOT NULL REFERENCES typology(id) ON DELETE CASCADE,
@@ -198,17 +202,14 @@ class TypologiesStore:
         row = cur.fetchone()
         if not row:
             return None
-        # vars
         cur = self._conn.execute(
             "SELECT name, value FROM typology_var WHERE typology_id = ? ORDER BY id ASC", (typology_id,)
         )
         vars_map = {r[0]: float(r[1]) for r in cur.fetchall()}
-        # opts
         cur = self._conn.execute(
             "SELECT opt_key, opt_value FROM typology_option WHERE typology_id = ?", (typology_id,)
         )
         opts = {r[0]: r[1] for r in cur.fetchall()}
-        # comps
         cur = self._conn.execute(
             "SELECT row_id, name, profile_name, quantity, ang_sx, ang_dx, formula, offset, note "
             "FROM typology_component WHERE typology_id = ? ORDER BY ord ASC, id ASC",
@@ -260,7 +261,6 @@ class TypologiesStore:
             )
         )
         typ_id = int(cur.lastrowid)
-        # vars
         for k, v in (data.get("variabili_locali") or {}).items():
             try: vv = float(v)
             except Exception: vv = 0.0
@@ -268,13 +268,11 @@ class TypologiesStore:
                 "INSERT INTO typology_var(typology_id, name, value) VALUES(?,?,?)",
                 (typ_id, k, vv)
             )
-        # options
         for ok, ov in (data.get("options") or {}).items():
             self._conn.execute(
                 "INSERT INTO typology_option(typology_id, opt_key, opt_value) VALUES(?,?,?)",
                 (typ_id, ok, str(ov) if ov is not None else "")
             )
-        # comps
         for idx, c in enumerate(data.get("componenti") or []):
             self._conn.execute(
                 "INSERT INTO typology_component(typology_id, ord, row_id, name, profile_name, quantity, ang_sx, ang_dx, formula, offset, note) "
@@ -312,7 +310,6 @@ class TypologiesStore:
                 typology_id
             )
         )
-        # replace vars/options/components
         self._conn.execute("DELETE FROM typology_var WHERE typology_id=?", (typology_id,))
         self._conn.execute("DELETE FROM typology_option WHERE typology_id=?", (typology_id,))
         self._conn.execute("DELETE FROM typology_component WHERE typology_id=?", (typology_id,))
@@ -351,7 +348,7 @@ class TypologiesStore:
         self._conn.execute("DELETE FROM typology WHERE id=?", (typology_id,))
         self._conn.commit()
 
-    # -------- Lamelle persiane (existing) --------
+    # -------- Lamelle persiane --------
     def list_lamella_rulesets(self, category: str = "persiana") -> List[str]:
         cur = self._conn.execute(
             "SELECT DISTINCT name FROM lamella_rule WHERE category=? ORDER BY name ASC", (category,)
@@ -365,7 +362,7 @@ class TypologiesStore:
         )
         return [{"h_min": r[0], "h_max": r[1], "count": r[2], "pitch_mm": r[3]} for r in cur.fetchall()]
 
-    # -------- Hardware catalog helpers --------
+    # -------- Catalogo ferramenta --------
     def list_hw_brands(self) -> List[Dict[str, Any]]:
         cur = self._conn.execute("SELECT id, name FROM hw_brand ORDER BY name ASC")
         return [{"id": r[0], "name": r[1]} for r in cur.fetchall()]
@@ -415,7 +412,7 @@ class TypologiesStore:
         r = self._conn.execute("SELECT handle_offset_mm FROM hw_handle_type WHERE id=?", (handle_id,)).fetchone()
         return float(r[0]) if r else None
 
-    # -------- NUOVO: Opzioni ferramenta della tipologia --------
+    # -------- Opzioni ferramenta della tipologia --------
     def list_typology_hw_options(self, typology_id: int) -> List[Dict[str, Any]]:
         cur = self._conn.execute(
             "SELECT id, name, brand_id, series_id, subcat, handle_id FROM typology_hw_option WHERE typology_id=? ORDER BY name ASC",
@@ -468,7 +465,7 @@ class TypologiesStore:
             "handle_id": (int(r[6]) if r[6] is not None else None)
         }
 
-    # -------- NUOVO: Formula per componente in base all'opzione --------
+    # -------- Formula per componente in base all'opzione --------
     def set_comp_hw_formula(self, typology_id: int, row_id: str, hw_option_id: int, formula: str) -> None:
         self._conn.execute(
             "INSERT INTO comp_hw_formula(typology_id, row_id, hw_option_id, formula) VALUES(?,?,?,?) "
@@ -500,7 +497,7 @@ class TypologiesStore:
 
     # -------- Seed demo minimale --------
     def _maybe_seed(self):
-        # lamelle seed
+        # lamelle
         n = int(self._conn.execute("SELECT COUNT(*) FROM lamella_rule").fetchone()[0])
         if n == 0:
             demo = [
@@ -515,7 +512,7 @@ class TypologiesStore:
             )
             self._conn.commit()
 
-        # hardware seed
+        # hardware
         nb = int(self._conn.execute("SELECT COUNT(*) FROM hw_brand").fetchone()[0])
         if nb == 0:
             self._conn.execute("INSERT INTO hw_brand(name) VALUES(?)", ("DemoHW",))
