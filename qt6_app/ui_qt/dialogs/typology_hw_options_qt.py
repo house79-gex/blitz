@@ -20,7 +20,6 @@ class TypologyHardwareOptionsDialog(QDialog):
         self.setModal(True)
         self.store = store
         self.typology_id = int(typology_id)
-        self._brands: List[Dict[str, Any]] = []
         self._build()
         self._reload_all()
 
@@ -57,30 +56,30 @@ class TypologyHardwareOptionsDialog(QDialog):
             self.tbl.setItem(r, 4, QTableWidgetItem(str(o["handle_id"] or "-")))
 
     def _add_option(self):
+        from PySide6.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(self, "Opzione", "Nome opzione:")
         if not ok or not (name or "").strip():
             return
-        # pick brand/series/subcat/handle via dialog semplici
         try:
             brands = self.store.list_hw_brands()
         except Exception:
             brands = []
         if not brands:
-            QMessageBox.information(self, "Ferramenta", "Prima crea una marca/serie nel gestore ferramenta.")
+            QMessageBox.information(self, "Ferramenta", "Prima crea una marca/serie nel catalogo.")
             return
         b_names = [b["name"] for b in brands]
-        b_idx, ok = QInputDialog.getItem(self, "Marca", "Marca:", b_names, 0, False)
+        b_sel, ok = QInputDialog.getItem(self, "Marca", "Marca:", b_names, 0, False)
         if not ok: return
-        brand_id = brands[b_names.index(b_idx)]["id"]
+        brand_id = brands[b_names.index(b_sel)]["id"]
 
         series = self.store.list_hw_series(brand_id)
         if not series:
             QMessageBox.information(self, "Ferramenta", "Nessuna serie per la marca selezionata.")
             return
         s_names = [s["name"] for s in series]
-        s_idx, ok = QInputDialog.getItem(self, "Serie", "Serie:", s_names, 0, False)
+        s_sel, ok = QInputDialog.getItem(self, "Serie", "Serie:", s_names, 0, False)
         if not ok: return
-        series_id = series[s_names.index(s_idx)]["id"]
+        series_id = series[s_names.index(s_sel)]["id"]
 
         subcats = self.store.list_hw_sash_subcats(brand_id, series_id)
         if not subcats:
@@ -115,6 +114,7 @@ class TypologyHardwareOptionsDialog(QDialog):
         if not opt_id: return
         opt = self.store.get_typology_hw_option(opt_id)
         if not opt: return
+        from PySide6.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(self, "Opzione", "Nome opzione:", text=str(opt["name"]))
         if not ok or not (name or "").strip(): return
 
