@@ -4,9 +4,8 @@ from collections import defaultdict
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QComboBox, QSpinBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QGroupBox, QWidget
+    QFrame, QVBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
+    QHeaderView, QMessageBox
 )
 
 try:
@@ -16,20 +15,24 @@ except Exception:
 
 from ui_qt.services.typologies_store import TypologiesStore, default_db_path
 from ui_qt.services.legacy_formula import eval_formula, sanitize_name
-from ui_qt.dialogs.vars_editor_qt import VarsEditorDialog
 
 try:
     from ui_qt.services.profiles_store import ProfilesStore
 except Exception:
     ProfilesStore = None
 
+# Modali per aggiungere riga
+from ui_qt.dialogs.order_row_typology_qt import OrderRowTypologyDialog
+from ui_qt.dialogs.order_row_dims_qt import OrderRowDimsDialog
+from ui_qt.dialogs.order_row_hw_qt import OrderRowHardwareDialog
+
 
 class QuoteVaniPage(QFrame):
     """
     Commessa:
-    - Aggiungi più righe (tipologia, pezzi, H, L, variabili riga, ferramenta riga opzionale)
-    - Calcola elenco taglio aggregato per profilo, ordinato per lunghezza decrescente
-    - Invia ad 'automatico'
+    - Pulsante 'Aggiungi riga' → 3 modali in sequenza: Tipologia → Dati (pezzi,H,L,vars) → Opzione ferramenta
+    - Calcolo elenco taglio aggregato per profilo (discendente)
+    - Invio ad 'automatico'
     """
     def __init__(self, appwin):
         super().__init__()
@@ -43,8 +46,6 @@ class QuoteVaniPage(QFrame):
         self._rows: List[Dict[str, Any]] = []
 
         self._build()
-        self._reload_typologies()
-        self._reload_brands()
 
     def _build(self):
         self.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
@@ -60,58 +61,13 @@ class QuoteVaniPage(QFrame):
             title.setStyleSheet("font-size:18px; font-weight:700;")
             root.addWidget(title, 0)
 
-        # Helper per input con label sopra
-        def vfield(label: str, widget: QWidget, minw: int = 100) -> QWidget:
-            w = QWidget(); l = QVBoxLayout(w); l.setContentsMargins(0,0,0,0); l.setSpacing(4)
-            lab = QLabel(label); lab.setStyleSheet("color:#7f8c8d; font-size:11px;")
-            l.addWidget(lab, 0); widget.setMinimumWidth(minw); l.addWidget(widget, 0)
-            return w
+        # Azioni commessa
+        btn_add = QPushButton("Aggiungi riga…"); btn_add.clicked.connect(self._add_row_wizard)
+        root.addWidget(btn_add, 0)
 
-        # Aggiungi riga commessa (label sopra agli input, testi brevi)
-        gb = QGroupBox("Aggiungi riga")
-        gl = QHBoxLayout(gb); gl.setSpacing(12)
-
-        self.cmb_typ = QComboBox(); self.cmb_typ.setMinimumWidth(200)
-        gl.addWidget(vfield("Tipologia", self.cmb_typ, 200))
-
-        self.sp_qty = QSpinBox(); self.sp_qty.setRange(1, 999); self.sp_qty.setValue(1)
-        gl.addWidget(vfield("Pezzi", self.sp_qty, 80))
-
-        self.ed_h = QLineEdit(); self.ed_h.setPlaceholderText("mm")
-        gl.addWidget(vfield("H (mm)", self.ed_h, 100))
-
-        self.ed_l = QLineEdit(); self.ed_l.setPlaceholderText("mm")
-        gl.addWidget(vfield("L (mm)", self.ed_l, 100))
-
-        self.btn_vars = QPushButton("Apri")
-        self.btn_vars.setToolTip("Variabili riga")
-        self.btn_vars.clicked.connect(self._edit_row_vars)
-        gl.addWidget(vfield("Variabili", self.btn_vars, 80))
-
-        # Ferramenta riga opzionale
-        self.cmb_brand = QComboBox()
-        self.cmb_brand.currentIndexChanged.connect(self._on_brand_changed)
-        gl.addWidget(vfield("Marca", self.cmb_brand, 150))
-
-        self.cmb_series = QComboBox()
-        self.cmb_series.currentIndexChanged.connect(self._on_series_changed)
-        gl.addWidget(vfield("Serie", self.cmb_series, 150))
-
-        self.cmb_subcat = QComboBox()
-        gl.addWidget(vfield("Sottocat.", self.cmb_subcat, 150))
-
-        self.cmb_handle = QComboBox()
-        gl.addWidget(vfield("Maniglia", self.cmb_handle, 180))
-
-        self.btn_add = QPushButton("Aggiungi")
-        self.btn_add.clicked.connect(self._add_row)
-        gl.addWidget(vfield(" ", self.btn_add, 110))
-
-        root.addWidget(gb)
-
-        # Tabella righe
-        self.tbl_rows = QTableWidget(0, 7)
-        self.tbl_rows.setHorizontalHeaderLabels(["#", "Tipologia", "Pezzi", "H", "L", "Ferramenta", "Variabili"])
+        # Tabella righe commessa
+        self.tbl_rows = QTableWidget(0, 6)
+        self.tbl_rows.setHorizontalHeaderLabels(["#", "Tipologia", "Pezzi", "H", "L", "Ferramenta"])
         hdr = self.tbl_rows.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -119,15 +75,13 @@ class QuoteVaniPage(QFrame):
         hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(5, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(6, QHeaderView.Stretch)
         root.addWidget(self.tbl_rows)
 
-        # Azioni righe
-        rr = QHBoxLayout()
+        row_actions = QHBoxLayout()
         btn_del = QPushButton("Rimuovi riga"); btn_del.clicked.connect(self._del_row)
         btn_clr = QPushButton("Svuota"); btn_clr.clicked.connect(self._clear_rows)
-        rr.addWidget(btn_del); rr.addWidget(btn_clr); rr.addStretch(1)
-        root.addLayout(rr)
+        row_actions.addWidget(btn_del); row_actions.addWidget(btn_clr); row_actions.addStretch(1)
+        root.addLayout(row_actions)
 
         # Calcolo/Invio
         act = QHBoxLayout()
@@ -148,118 +102,53 @@ class QuoteVaniPage(QFrame):
         h2.setSectionResizeMode(5, QHeaderView.Stretch)
         root.addWidget(self.tbl_cut, 1)
 
-        hint = QLabel("Aggiungi righe con dati essenziali (Tipologia, Pezzi, H, L). Ferramenta/Variabili sono opzionali.")
+        hint = QLabel("Aggiungi righe tramite la finestra modale. La scelta ferramenta è per-riga ed usa le opzioni definite in Tipologie.")
         hint.setStyleSheet("color:#7f8c8d;")
         root.addWidget(hint, 0)
 
-        self._cur_row_vars: Dict[str, float] = {}
-
-    def _reload_typologies(self):
-        self.cmb_typ.clear()
-        rows = self._store.list_typologies()
-        if not rows:
-            self.cmb_typ.addItem("— Nessuna —", None)
+    def _add_row_wizard(self):
+        # 1) Tipologia
+        d1 = OrderRowTypologyDialog(self, self._store)
+        if not d1.exec():
             return
-        for r in rows:
-            self.cmb_typ.addItem(str(r["name"]), int(r["id"]))
+        typ_id = int(d1.typology_id)
 
-    def _reload_brands(self):
-        self.cmb_brand.clear(); self.cmb_series.clear(); self.cmb_handle.clear(); self.cmb_subcat.clear()
-        try:
-            brands = self._store.list_hw_brands()
-        except Exception:
-            brands = []
-        if not brands:
-            self.cmb_brand.addItem("—", None)
-        else:
-            for b in brands:
-                self.cmb_brand.addItem(b["name"], int(b["id"]))
-        self._on_brand_changed()
+        # 2) Dati (qty,H,L,vars)
+        d2 = OrderRowDimsDialog(self)
+        if not d2.exec():
+            return
 
-    def _on_brand_changed(self):
-        self.cmb_series.clear(); self.cmb_handle.clear(); self.cmb_subcat.clear()
-        bid = self.cmb_brand.currentData()
-        if not bid:
-            self.cmb_series.addItem("—", None); self.cmb_handle.addItem("—", None); self.cmb_subcat.addItem("—", None); return
-        series = self._store.list_hw_series(int(bid))
-        if not series:
-            self.cmb_series.addItem("—", None)
-        else:
-            for s in series:
-                self.cmb_series.addItem(s["name"], int(s["id"]))
-        self._on_series_changed()
-
-    def _on_series_changed(self):
-        self.cmb_handle.clear(); self.cmb_subcat.clear()
-        bid = self.cmb_brand.currentData(); sid = self.cmb_series.currentData()
-        if not (bid and sid): 
-            self.cmb_handle.addItem("—", None); self.cmb_subcat.addItem("—", None); return
-        handles = self._store.list_hw_handle_types(int(bid), int(sid))
-        if not handles:
-            self.cmb_handle.addItem("—", None)
-        else:
-            for h in handles:
-                label = f"{h['name']} ({h['handle_offset_mm']:.0f} mm)"
-                self.cmb_handle.addItem(label, int(h["id"]))
-        subcats = self._store.list_hw_sash_subcats(int(bid), int(sid))
-        if not subcats:
-            self.cmb_subcat.addItem("—", "")
-        else:
-            for sc in subcats:
-                self.cmb_subcat.addItem(sc, sc)
-
-    def _edit_row_vars(self):
-        dlg = VarsEditorDialog(self, base=self._cur_row_vars)
-        if dlg.exec():
-            self._cur_row_vars = dlg.result_vars()
-
-    def _add_row(self):
-        tid = self.cmb_typ.currentData()
-        if not tid:
-            QMessageBox.warning(self, "Tipologia", "Seleziona una tipologia."); return
-        try:
-            H = float((self.ed_h.text() or "0").replace(",", "."))
-            L = float((self.ed_l.text() or "0").replace(",", "."))
-        except Exception:
-            QMessageBox.warning(self, "Dati", "Inserisci H e L validi."); return
-        qty = int(self.sp_qty.value())
-
-        r_bid = self.cmb_brand.currentData(); r_sid = self.cmb_series.currentData()
-        r_subc = self.cmb_subcat.currentData(); r_hid = self.cmb_handle.currentData()
+        # 3) Opzione ferramenta (facolt.)
+        d3 = OrderRowHardwareDialog(self, self._store, typ_id)
+        d3.exec()  # anche se annullata, proseguiamo con None
 
         row = {
-            "tid": int(tid),
-            "qty": qty,
-            "H": H,
-            "L": L,
-            "vars": dict(self._cur_row_vars),
-            "hw": {
-                "brand_id": int(r_bid) if r_bid else None,
-                "series_id": int(r_sid) if r_sid else None,
-                "subcat": str(r_subc) if r_subc else "",
-                "handle_id": int(r_hid) if r_hid else None
-            }
+            "tid": typ_id,
+            "qty": int(d2.qty),
+            "H": float(d2.H),
+            "L": float(d2.L),
+            "vars": dict(d2.vars),
+            "hw_option_id": (int(d3.hw_option_id) if d3.hw_option_id else None)
         }
         self._rows.append(row)
-        self._cur_row_vars = {}
         self._refresh_rows_table()
 
     def _refresh_rows_table(self):
         self.tbl_rows.setRowCount(0)
         for i, r in enumerate(self._rows, start=1):
+            tdata = self._store.get_typology_full(int(r["tid"]))
+            name = tdata["nome"] if tdata else str(r["tid"])
             hw_txt = "-"
-            if r["hw"]["brand_id"]:
-                hw_txt = f"B{r['hw']['brand_id']}/S{r['hw']['series_id']}/{r['hw']['subcat'] or '-'} H:{r['hw']['handle_id'] or '-'}"
-            vars_txt = "; ".join(f"{k}={v}" for k, v in sorted((r.get("vars") or {}).items()))
+            if r.get("hw_option_id"):
+                opt = self._store.get_typology_hw_option(int(r["hw_option_id"]))
+                if opt: hw_txt = opt["name"]
             ri = self.tbl_rows.rowCount(); self.tbl_rows.insertRow(ri)
             self.tbl_rows.setItem(ri, 0, QTableWidgetItem(str(i)))
-            tdata = self._store.get_typology_full(int(r["tid"]))
-            self.tbl_rows.setItem(ri, 1, QTableWidgetItem(str(tdata["nome"] if tdata else r["tid"])))
+            self.tbl_rows.setItem(ri, 1, QTableWidgetItem(str(name)))
             self.tbl_rows.setItem(ri, 2, QTableWidgetItem(str(r["qty"])))
             self.tbl_rows.setItem(ri, 3, QTableWidgetItem(f"{r['H']:.1f}"))
             self.tbl_rows.setItem(ri, 4, QTableWidgetItem(f"{r['L']:.1f}"))
             self.tbl_rows.setItem(ri, 5, QTableWidgetItem(hw_txt))
-            self.tbl_rows.setItem(ri, 6, QTableWidgetItem(vars_txt))
 
     def _del_row(self):
         idx = self.tbl_rows.currentRow()
@@ -269,7 +158,8 @@ class QuoteVaniPage(QFrame):
             self._refresh_rows_table()
 
     def _clear_rows(self):
-        self._rows.clear(); self._refresh_rows_table()
+        self._rows.clear()
+        self._refresh_rows_table()
         self.tbl_cut.setRowCount(0)
 
     def _calc_and_aggregate(self):
@@ -277,6 +167,7 @@ class QuoteVaniPage(QFrame):
         if not self._rows:
             QMessageBox.information(self, "Commessa", "Aggiungi almeno una riga."); return
 
+        # token profili (spessori)
         prof_tokens: Dict[str, float] = {}
         if self._profiles:
             try:
@@ -297,7 +188,24 @@ class QuoteVaniPage(QFrame):
             env_base.update(r.get("vars") or {})
             env_base.update(prof_tokens)
 
-            # Componenti tipologia
+            # Se è stata scelta una opzione ferramenta, prepara dati utili (handle_offset, arm_code)
+            hw_opt_id = r.get("hw_option_id")
+            handle_offset = None
+            arm_code = None
+            if hw_opt_id:
+                opt = self._store.get_typology_hw_option(int(hw_opt_id))
+                if opt:
+                    if opt.get("handle_id"):
+                        handle_offset = self._store.get_handle_offset(int(opt["handle_id"]))
+                        if handle_offset is not None:
+                            env_base["handle_offset"] = float(handle_offset)
+                    # pick braccio per L
+                    pick = self._store.pick_arm_for_width(int(opt["brand_id"]), int(opt["series_id"]), str(opt["subcat"]), L)
+                    if pick:
+                        arm_code = pick["arm_code"]
+                        env_base["arm_code"] = str(arm_code)
+
+            # Componenti – per ciascuno, se esiste un override formula per questa opzione, usalo
             comps = t.get("componenti") or []
             c_values: Dict[str, float] = {}
             for c in comps:
@@ -308,6 +216,13 @@ class QuoteVaniPage(QFrame):
                 expr = c.get("formula_lunghezza","") or "H"
                 offs = float(c.get("offset_mm",0.0) or 0.0)
                 env = dict(env_base); env.update(c_values)
+
+                # override per opzione ferramenta su questo elemento
+                if hw_opt_id:
+                    f_override = self._store.get_comp_hw_formula(int(r["tid"]), str(c.get("id_riga","")), int(hw_opt_id))
+                    if f_override and f_override.strip():
+                        expr = f_override.strip()
+
                 try:
                     length = float(eval_formula(expr, env)) + offs
                 except Exception:
@@ -363,5 +278,5 @@ class QuoteVaniPage(QFrame):
             pass
 
     def on_show(self):
-        self._reload_typologies()
-        self._reload_brands()
+        # niente da ricaricare – si lavora via modali
+        pass
