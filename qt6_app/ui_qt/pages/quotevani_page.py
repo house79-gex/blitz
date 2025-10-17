@@ -1,11 +1,14 @@
 from __future__ import annotations
 from typing import Optional, Dict, Any, List, Tuple
 from collections import defaultdict
+import json
+from pathlib import Path
+from datetime import datetime
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox
+    QHeaderView, QMessageBox, QHBoxLayout, QFileDialog
 )
 
 try:
@@ -30,9 +33,10 @@ from ui_qt.dialogs.order_row_hw_qt import OrderRowHardwareDialog
 class QuoteVaniPage(QFrame):
     """
     Commessa:
-    - Pulsante 'Aggiungi riga' → 3 modali in sequenza: Tipologia → Dati (pezzi,H,L,vars) → Opzione ferramenta
-    - Calcolo elenco taglio aggregato per profilo (discendente)
-    - Invio ad 'automatico'
+    - 'Aggiungi riga…' → 3 modali (Tipologia → Dati → Opzione ferramenta)
+    - Calcola lista taglio aggregata per profilo (discendente)
+    - Importa/Esporta commessa in JSON
+    - Invia ad 'automatico'
     """
     def __init__(self, appwin):
         super().__init__()
@@ -61,9 +65,15 @@ class QuoteVaniPage(QFrame):
             title.setStyleSheet("font-size:18px; font-weight:700;")
             root.addWidget(title, 0)
 
-        # Azioni commessa
+        actions_top = QHBoxLayout()
         btn_add = QPushButton("Aggiungi riga…"); btn_add.clicked.connect(self._add_row_wizard)
-        root.addWidget(btn_add, 0)
+        btn_imp = QPushButton("Importa…"); btn_imp.clicked.connect(self._import_order)
+        btn_exp = QPushButton("Esporta…"); btn_exp.clicked.connect(self._export_order)
+        actions_top.addWidget(btn_add)
+        actions_top.addStretch(1)
+        actions_top.addWidget(btn_imp)
+        actions_top.addWidget(btn_exp)
+        root.addLayout(actions_top)
 
         # Tabella righe commessa
         self.tbl_rows = QTableWidget(0, 6)
@@ -102,25 +112,23 @@ class QuoteVaniPage(QFrame):
         h2.setSectionResizeMode(5, QHeaderView.Stretch)
         root.addWidget(self.tbl_cut, 1)
 
-        hint = QLabel("Aggiungi righe tramite la finestra modale. La scelta ferramenta è per-riga ed usa le opzioni definite in Tipologie.")
+        hint = QLabel("Aggiungi righe tramite la finestra modale. La scelta ferramenta è per-riga ed usa le opzioni definite nella tipologia.")
         hint.setStyleSheet("color:#7f8c8d;")
         root.addWidget(hint, 0)
 
+    # ----- Wizard add row -----
     def _add_row_wizard(self):
-        # 1) Tipologia
         d1 = OrderRowTypologyDialog(self, self._store)
         if not d1.exec():
             return
         typ_id = int(d1.typology_id)
 
-        # 2) Dati (qty,H,L,vars)
         d2 = OrderRowDimsDialog(self)
         if not d2.exec():
             return
 
-        # 3) Opzione ferramenta (facolt.)
         d3 = OrderRowHardwareDialog(self, self._store, typ_id)
-        d3.exec()  # anche se annullata, proseguiamo con None
+        d3.exec()  # opzionale
 
         row = {
             "tid": typ_id,
@@ -162,6 +170,7 @@ class QuoteVaniPage(QFrame):
         self._refresh_rows_table()
         self.tbl_cut.setRowCount(0)
 
+    # ----- Calcolo / aggregazione -----
     def _calc_and_aggregate(self):
         self.tbl_cut.setRowCount(0)
         if not self._rows:
@@ -188,10 +197,8 @@ class QuoteVaniPage(QFrame):
             env_base.update(r.get("vars") or {})
             env_base.update(prof_tokens)
 
-            # Se è stata scelta una opzione ferramenta, prepara dati utili (handle_offset, arm_code)
+            # opzione ferramenta (per eventuali formule override che la usano)
             hw_opt_id = r.get("hw_option_id")
-            handle_offset = None
-            arm_code = None
             if hw_opt_id:
                 opt = self._store.get_typology_hw_option(int(hw_opt_id))
                 if opt:
@@ -199,13 +206,11 @@ class QuoteVaniPage(QFrame):
                         handle_offset = self._store.get_handle_offset(int(opt["handle_id"]))
                         if handle_offset is not None:
                             env_base["handle_offset"] = float(handle_offset)
-                    # pick braccio per L
                     pick = self._store.pick_arm_for_width(int(opt["brand_id"]), int(opt["series_id"]), str(opt["subcat"]), L)
                     if pick:
-                        arm_code = pick["arm_code"]
-                        env_base["arm_code"] = str(arm_code)
+                        env_base["arm_code"] = str(pick["arm_code"])
 
-            # Componenti – per ciascuno, se esiste un override formula per questa opzione, usalo
+            # Componenti con override per-opzione
             comps = t.get("componenti") or []
             c_values: Dict[str, float] = {}
             for c in comps:
@@ -217,7 +222,6 @@ class QuoteVaniPage(QFrame):
                 offs = float(c.get("offset_mm",0.0) or 0.0)
                 env = dict(env_base); env.update(c_values)
 
-                # override per opzione ferramenta su questo elemento
                 if hw_opt_id:
                     f_override = self._store.get_comp_hw_formula(int(r["tid"]), str(c.get("id_riga","")), int(hw_opt_id))
                     if f_override and f_override.strip():
@@ -247,6 +251,53 @@ class QuoteVaniPage(QFrame):
                 self.tbl_cut.setItem(ri, 4, QTableWidgetItem(str(q)))
                 self.tbl_cut.setItem(ri, 5, QTableWidgetItem(""))
 
+    # ----- Export/Import -----
+    def _export_order(self):
+        if not self._rows:
+            QMessageBox.information(self, "Esporta", "La commessa è vuota."); return
+        path, _ = QFileDialog.getSaveFileName(self, "Esporta commessa", "", "Commessa JSON (*.order.json)")
+        if not path: return
+        data = {
+            "type": "blitz-order",
+            "version": 1,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "rows": self._rows
+        }
+        try:
+            Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+            QMessageBox.information(self, "Esporta", "Commessa esportata.")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore export", str(e))
+
+    def _import_order(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Importa commessa", "", "Commessa JSON (*.order.json)")
+        if not path: return
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as e:
+            QMessageBox.critical(self, "Errore import", f"File non valido:\n{e}"); return
+        if not isinstance(data, dict) or data.get("type") != "blitz-order" or "rows" not in data:
+            QMessageBox.critical(self, "Errore import", "Formato commessa non riconosciuto."); return
+        rows = data.get("rows") or []
+        if not isinstance(rows, list):
+            QMessageBox.critical(self, "Errore import", "Formato righe non valido."); return
+        # opzionale: validazione minimale campi
+        self._rows = []
+        for r in rows:
+            try:
+                self._rows.append({
+                    "tid": int(r["tid"]),
+                    "qty": int(r["qty"]),
+                    "H": float(r["H"]),
+                    "L": float(r["L"]),
+                    "vars": dict(r.get("vars") or {}),
+                    "hw_option_id": (int(r["hw_option_id"]) if r.get("hw_option_id") is not None else None)
+                })
+            except Exception:
+                continue
+        self._refresh_rows_table()
+
+    # ----- Invio ad Automatico -----
     def _send_to_automatico(self):
         rows = []
         for r in range(self.tbl_cut.rowCount()):
@@ -278,5 +329,4 @@ class QuoteVaniPage(QFrame):
             pass
 
     def on_show(self):
-        # niente da ricaricare – si lavora via modali
         pass
