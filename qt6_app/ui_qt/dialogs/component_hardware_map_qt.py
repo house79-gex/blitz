@@ -53,7 +53,6 @@ class ComponentHardwareMapDialog(QDialog):
             self._opts = self.store.list_typology_hw_options(self.typology_id)
         except Exception:
             self._opts = []
-        # formule esistenti
         fm_rows = self.store.list_comp_hw_formulas_for_row(self.typology_id, self.row_id)
         self._formulas = {int(r["hw_option_id"]): str(r["formula"]) for r in fm_rows}
 
@@ -64,7 +63,6 @@ class ComponentHardwareMapDialog(QDialog):
             self.tbl.setItem(r, 1, QTableWidgetItem(self._formulas.get(opt["id"], "")))
 
     def _manage_options(self):
-        # apre gestore opzioni per questa tipologia
         try:
             from ui_qt.dialogs.typology_hw_options_qt import TypologyHardwareOptionsDialog
         except Exception:
@@ -72,7 +70,6 @@ class ComponentHardwareMapDialog(QDialog):
             return
         dlg = TypologyHardwareOptionsDialog(self, self.store, self.typology_id)
         if dlg.exec():
-            # salva eventuali modifiche correnti prima di ricaricare
             self._save_current_table()
             self._load()
 
@@ -80,14 +77,12 @@ class ComponentHardwareMapDialog(QDialog):
         for r in range(self.tbl.rowCount()):
             name = self.tbl.item(r, 0).text()
             formula = self.tbl.item(r, 1).text() if self.tbl.item(r, 1) else ""
-            # trova opt_id da nome
             opt = next((o for o in self._opts if o["name"] == name), None)
             if not opt: continue
             opt_id = int(opt["id"])
             if (formula or "").strip():
                 self.store.set_comp_hw_formula(self.typology_id, self.row_id, opt_id, formula.strip())
             else:
-                # se svuotata, rimuovi override
                 self.store.delete_comp_hw_formula(self.typology_id, self.row_id, opt_id)
 
     def accept(self):
