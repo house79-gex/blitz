@@ -302,7 +302,8 @@ class TipologiaEditorDialog(QDialog):
         meta.addWidget(QLabel("Categoria:"), row, 0)
         self.ed_cat = QLineEdit(); meta.addWidget(self.ed_cat, row, 1)
         meta.addWidget(QLabel("Materiale:"), row, 2)
-        self.ed_mat = QLineLineEdit := QLineEdit(); meta.addWidget(self.ed_mat, row, 3); row += 1  # noqa
+        # FIX: riga corretta (prima c'era un refuso che impediva l'apertura del dialog)
+        self.ed_mat = QLineEdit(); meta.addWidget(self.ed_mat, row, 3); row += 1
 
         meta.addWidget(QLabel("Riferimento quota:"), row, 0)
         self.cmb_rif = QComboBox(); self.cmb_rif.addItems(["esterna","interna"]); meta.addWidget(self.cmb_rif, row, 1)
@@ -493,7 +494,6 @@ class TipologiaEditorDialog(QDialog):
         subc = opts.get("hw_subcat","")
         hid = int(opts.get("hw_handle_id")) if opts.get("hw_handle_id") else None
         if bid:
-            # set current brand
             for i in range(self.cmb_brand.count()):
                 if self.cmb_brand.itemData(i) == bid:
                     self.cmb_brand.setCurrentIndex(i); break
