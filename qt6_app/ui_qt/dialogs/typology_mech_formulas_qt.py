@@ -1,12 +1,14 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QComboBox, QTextEdit
 )
 
 from ui_qt.services.legacy_formula import sanitize_name
+
 
 class TypologyMechanismFormulasDialog(QDialog):
     """
@@ -60,7 +62,7 @@ class TypologyMechanismFormulasDialog(QDialog):
         hdr.setSectionResizeMode(3, QHeaderView.Stretch)
         root.addWidget(self.tbl, 1)
 
-        # preview/edito text area for selected override cell (better UX)
+        # preview/edit text area for selected override cell (better UX)
         bottom = QHBoxLayout()
         self.txt_preview = QTextEdit()
         self.txt_preview.setPlaceholderText("Seleziona una riga e modifica l'override qui; poi clicca 'Applica a cella selezionata'")
@@ -94,17 +96,17 @@ class TypologyMechanismFormulasDialog(QDialog):
                 tokens.append(k)
             # profili (sanitized)
             try:
-                profiles_map = {}
                 from ui_qt.services.profiles_store import ProfilesStore
                 ps = ProfilesStore()
                 for p in ps.list_profiles():
                     name = str(p.get("name") or "")
-                    tokens.append(sanitize_name(name))
+                    if name:
+                        tokens.append(sanitize_name(name))
             except Exception:
                 pass
             # componenti ids
             for c in (typ.get("componenti") or []):
-                rid = c.get("id_riga","")
+                rid = c.get("id_riga", "")
                 if rid:
                     tokens.append(f"C_{rid}")
         # set tokens
@@ -125,7 +127,8 @@ class TypologyMechanismFormulasDialog(QDialog):
             self.tbl.setItem(r, 2, QTableWidgetItem(p["formula"]))
             fm = existing.get(p["part_key"], "")
             item = QTableWidgetItem(fm)
-            item.setFlags(item.flags() | 2)  # ensure editable (Qt.ItemIsEditable)
+            # ensure editable using Qt flag (correct enum operations)
+            item.setFlags(item.flags() | Qt.ItemIsEditable)
             self.tbl.setItem(r, 3, item)
 
     def _insert_token_into_selected(self):
@@ -133,16 +136,14 @@ class TypologyMechanismFormulasDialog(QDialog):
         if not tok:
             return
         r = self.tbl.currentRow()
-        c = self.tbl.currentColumn()
         if r < 0:
             QMessageBox.information(self, "Token", "Seleziona prima una riga nella tabella e poi clicca Inserisci.")
             return
-        # preferiamo inserire nel campo override (colonna 3). Se altro cella selezionata cerca di usare quella.
-        target_col = 3 if c != 3 else c
-        cell_item = self.tbl.item(r, target_col)
+        # preferiamo inserire nel campo override (colonna 3)
+        cell_item = self.tbl.item(r, 3)
         if cell_item is None:
             cell_item = QTableWidgetItem("")
-            self.tbl.setItem(r, target_col, cell_item)
+            self.tbl.setItem(r, 3, cell_item)
         txt = cell_item.text() or ""
         sep = "" if (not txt or txt.endswith(("+", "-", "*", "/", "(", " "))) else ""
         cell_item.setText(txt + sep + tok)
@@ -153,7 +154,9 @@ class TypologyMechanismFormulasDialog(QDialog):
         if r < 0:
             QMessageBox.information(self, "Applica", "Seleziona prima una riga.")
             return
-        self.tbl.setItem(r, 3, QTableWidgetItem(txt))
+        item = QTableWidgetItem(txt)
+        item.setFlags(item.flags() | Qt.ItemIsEditable)
+        self.tbl.setItem(r, 3, item)
         QMessageBox.information(self, "Applica", "Valore applicato alla cella override selezionata.")
 
     def _import_typology_vars(self):
@@ -165,7 +168,6 @@ class TypologyMechanismFormulasDialog(QDialog):
         if not vars_map:
             QMessageBox.information(self, "Importa", "Nessuna variabile locale definita nella tipologia.")
             return
-        # append variables as comments to the preview area for reference
         lines = [f"{k} = {v}" for k, v in sorted(vars_map.items())]
         self.txt_preview.append("\n# Variabili tipologia importate:")
         for L in lines:
