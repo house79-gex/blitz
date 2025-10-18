@@ -2,16 +2,17 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QInputDialog, QMessageBox
 )
 
 class TypologyHardwareOptionsDialog(QDialog):
     """
-    Opzioni ferramenta della tipologia:
-    - Nome opzione
-    - Marca, Serie, Sottocategoria, Maniglia (facoltativa)
-    - Meccanismo (normale / ribalta_cremonese / ribalta_dk / custom)
+    Gestisce le OPZIONI di ferramenta della tipologia (preset selezionabili in commessa):
+    - Nome (etichetta utente)
+    - Marca, Serie, Sottocategoria, Maniglia (opz.)
+    - Meccanismo associato (che definisce le parti/astine)
+    - Pulsante per aprire l'editor formule meccanismo per questa opzione
     """
     def __init__(self, parent, store, typology_id: int):
         super().__init__(parent)
@@ -25,20 +26,25 @@ class TypologyHardwareOptionsDialog(QDialog):
 
     def _build(self):
         root = QVBoxLayout(self)
+
         self.tbl = QTableWidget(0, 6)
-        self.tbl.setHorizontalHeaderLabels(["ID", "Opzione", "Marca/Serie", "Sottocat.", "Maniglia", "Meccanismo"])
+        self.tbl.setHorizontalHeaderLabels(["ID", "Nome opzione", "Marca/Serie", "Sottocat.", "Maniglia", "Meccanismo"])
         hdr = self.tbl.horizontalHeader()
-        for i, mode in enumerate([QHeaderView.ResizeToContents, QHeaderView.Stretch, QHeaderView.Stretch,
-                                  QHeaderView.ResizeToContents, QHeaderView.Stretch, QHeaderView.ResizeToContents]):
-            hdr.setSectionResizeMode(i, mode)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(4, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         root.addWidget(self.tbl, 1)
 
         row = QHBoxLayout()
         b_add = QPushButton("Aggiungi"); b_add.clicked.connect(self._add_option)
         b_edit = QPushButton("Modifica"); b_edit.clicked.connect(self._edit_option)
         b_del = QPushButton("Elimina"); b_del.clicked.connect(self._del_option)
+        b_form = QPushButton("Formule meccanismo"); b_form.clicked.connect(self._edit_mech_formulas)
         btn_close = QPushButton("Chiudi"); btn_close.clicked.connect(self.accept)
-        row.addWidget(b_add); row.addWidget(b_edit); row.addWidget(b_del); row.addStretch(1); row.addWidget(btn_close)
+        row.addWidget(b_add); row.addWidget(b_edit); row.addWidget(b_del); row.addWidget(b_form); row.addStretch(1); row.addWidget(btn_close)
         root.addLayout(row)
 
     def _reload_all(self):
@@ -105,7 +111,7 @@ class TypologyHardwareOptionsDialog(QDialog):
         if not bs: return
         brand_id, series_id = bs
         subc, handle_id = self._choose_subcat_and_handle(brand_id, series_id)
-        if not subc: return
+        if subc is None: return
         mech = self._choose_mechanism()
         if mech is None: return
         try:
@@ -114,25 +120,24 @@ class TypologyHardwareOptionsDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Errore", str(e))
 
-    def _get_sel_id(self) -> Optional[int]:
+    def _get_selected_opt_id(self) -> Optional[int]:
         r = self.tbl.currentRow()
         if r < 0: return None
         try: return int(self.tbl.item(r, 0).text())
         except Exception: return None
 
     def _edit_option(self):
-        opt_id = self._get_sel_id()
+        opt_id = self._get_selected_opt_id()
         if not opt_id: return
         opt = self.store.get_typology_hw_option(opt_id)
         if not opt: return
         name, ok = QInputDialog.getText(self, "Opzione", "Nome opzione:", text=str(opt["name"]))
         if not ok or not (name or "").strip(): return
-        # brand/series
         bs = self._choose_brand_series()
         if not bs: return
         brand_id, series_id = bs
         subc, handle_id = self._choose_subcat_and_handle(brand_id, series_id)
-        if not subc: return
+        if subc is None: return
         mech = self._choose_mechanism()
         if mech is None: return
         try:
@@ -142,7 +147,7 @@ class TypologyHardwareOptionsDialog(QDialog):
             QMessageBox.critical(self, "Errore", str(e))
 
     def _del_option(self):
-        opt_id = self._get_sel_id()
+        opt_id = self._get_selected_opt_id()
         if not opt_id: return
         from PySide6.QtWidgets import QMessageBox as _MB
         if _MB.question(self, "Elimina", "Eliminare l'opzione selezionata?") != _MB.Yes:
@@ -152,3 +157,16 @@ class TypologyHardwareOptionsDialog(QDialog):
             self._reload_all()
         except Exception as e:
             QMessageBox.critical(self, "Errore", str(e))
+
+    def _edit_mech_formulas(self):
+        opt_id = self._get_selected_opt_id()
+        if not opt_id:
+            QMessageBox.information(self, "Formule", "Seleziona prima un'opzione.")
+            return
+        try:
+            from ui_qt.dialogs.typology_mech_formulas_qt import TypologyMechanismFormulasDialog
+        except Exception:
+            QMessageBox.information(self, "Formule", "Modulo editor formule non disponibile.")
+            return
+        dlg = TypologyMechanismFormulasDialog(self, self.store, self.typology_id, int(opt_id))
+        dlg.exec()
