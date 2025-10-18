@@ -140,7 +140,6 @@ class HardwareMechanismManagerDialog(QDialog):
         if not self._cur_mech:
             QMessageBox.information(self, "Parti", "Seleziona prima un meccanismo.")
             return
-        # Dialog veloce con QInputDialog in sequenza
         part_key, ok = QInputDialog.getText(self, "Parte", "Key (es. AST_INF_MONT):")
         if not ok or not (part_key or "").strip(): return
         disp, ok = QInputDialog.getText(self, "Parte", "Nome visuale:")
