@@ -30,12 +30,14 @@ from ui_qt.dialogs.order_row_dims_qt import OrderRowDimsDialog
 from ui_qt.dialogs.order_row_hw_qt import OrderRowHardwareDialog
 from ui_qt.dialogs.orders_manager_qt import OrdersManagerDialog
 
+
 class QuoteVaniPage(QFrame):
     """
-    Commessa editor con salvataggio su DB (OrdersStore):
-    - Nuova commessa, Apri commessa (da DB), Salva commessa (su DB), Esporta/Importa JSON
-    - Associazione cliente e gestione di più commesse per cliente
-    - Generazione lista taglio (comp. + parti meccanismo con override)
+    Commessa editor:
+    - Nuova/Apri/Salva commessa (DB OrdersStore)
+    - Aggiungi riga: tipologia -> dims (carica variabili dalla tipologia) -> opzione ferramenta
+    - Calcola lista taglio (componenti tipologia + parti meccanismo con override)
+    - Salva lista di taglio (salva su OrdersStore come 'cutlist')
     """
     def __init__(self, appwin):
         super().__init__()
@@ -44,8 +46,10 @@ class QuoteVaniPage(QFrame):
         self._orders = OrdersStore(str(default_db_path()))
         self._profiles = None
         if ProfilesStore:
-            try: self._profiles = ProfilesStore()
-            except Exception: self._profiles = None
+            try:
+                self._profiles = ProfilesStore()
+            except Exception:
+                self._profiles = None
 
         self._rows: List[Dict[str, Any]] = []
         self._current_order_id: Optional[int] = None
@@ -72,16 +76,17 @@ class QuoteVaniPage(QFrame):
         btn_open = QPushButton("Apri commessa…"); btn_open.clicked.connect(self._open_order_from_db)
         btn_imp = QPushButton("Importa…"); btn_imp.clicked.connect(self._import_order)
         btn_exp = QPushButton("Esporta…"); btn_exp.clicked.connect(self._export_order)
+        btn_save_cutlist = QPushButton("Salva lista di taglio"); btn_save_cutlist.clicked.connect(self._save_cutlist_as_order)
         actions_top.addWidget(btn_add)
         actions_top.addStretch(1)
         actions_top.addWidget(QLabel("Cliente:"))
         self.ed_customer = QLineEdit(); self.ed_customer.setPlaceholderText("Nome cliente"); self.ed_customer.setMaximumWidth(260)
         actions_top.addWidget(self.ed_customer)
         actions_top.addWidget(btn_new); actions_top.addWidget(btn_save); actions_top.addWidget(btn_open)
-        actions_top.addWidget(btn_imp); actions_top.addWidget(btn_exp)
+        actions_top.addWidget(btn_imp); actions_top.addWidget(btn_exp); actions_top.addWidget(btn_save_cutlist)
         root.addLayout(actions_top)
 
-        # Tabella righe commessa
+        # tabella righe commessa
         self.tbl_rows = QTableWidget(0, 6)
         self.tbl_rows.setHorizontalHeaderLabels(["#", "Tipologia", "Pezzi", "H", "L", "Ferramenta"])
         hdr = self.tbl_rows.horizontalHeader()
@@ -99,13 +104,12 @@ class QuoteVaniPage(QFrame):
         row_actions.addWidget(btn_del); row_actions.addWidget(btn_clr); row_actions.addStretch(1)
         root.addLayout(row_actions)
 
-        # Calcolo/Invio
         act = QHBoxLayout()
         btn_calc = QPushButton("Calcola lista taglio"); btn_calc.clicked.connect(self._calc_and_aggregate)
         act.addWidget(btn_calc); act.addStretch(1)
         root.addLayout(act)
 
-        # Elenco taglio
+        # elenco taglio
         self.tbl_cut = QTableWidget(0, 6)
         self.tbl_cut.setHorizontalHeaderLabels(["Profilo", "Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà", "Note"])
         h2 = self.tbl_cut.horizontalHeader()
@@ -117,13 +121,12 @@ class QuoteVaniPage(QFrame):
         h2.setSectionResizeMode(5, QHeaderView.Stretch)
         root.addWidget(self.tbl_cut, 1)
 
-        hint = QLabel("Aggiungi righe tramite la finestra modale. La scelta ferramenta è per-riga ed usa le opzioni definite nella tipologia.")
+        hint = QLabel("Aggiungi righe tramite la finestra modale. Le variabili riga sono prese dalla tipologia (modifica solo i valori).")
         hint.setStyleSheet("color:#7f8c8d;")
         root.addWidget(hint, 0)
 
-    # ----- Order CRUD (DB) -----
+    # ---------- Orders CRUD ----------
     def _new_order(self):
-        # reset current commessa (non salvata)
         self._current_order_id = None
         self._rows.clear()
         self.tbl_cut.setRowCount(0)
@@ -140,7 +143,7 @@ class QuoteVaniPage(QFrame):
             return
         name = name.strip()
         customer = (self.ed_customer.text() or "").strip()
-        data = {"rows": self._rows, "saved_at": datetime.utcnow().isoformat() + "Z"}
+        data = {"rows": self._rows, "saved_at": datetime.utcnow().isoformat() + "Z", "customer": customer}
         try:
             if self._current_order_id:
                 self._orders.update_order(self._current_order_id, name, customer, data)
@@ -168,19 +171,48 @@ class QuoteVaniPage(QFrame):
             self._refresh_rows_table()
             QMessageBox.information(self, "Apri", f"Comessa aperta: {ord_item.get('name')} (id={oid}).")
 
-    # ----- Wizard add row -----
+    # salva la lista di taglio corrente come order di tipo 'cutlist' (rows=lista taglio)
+    def _save_cutlist_as_order(self):
+        if self.tbl_cut.rowCount() == 0:
+            QMessageBox.information(self, "Salva lista", "La lista di taglio è vuota."); return
+        default_name = f"Cutlist {datetime.utcnow().isoformat()}"
+        name, ok = QInputDialog.getText(self, "Salva lista di taglio", "Nome lista:", text=default_name)
+        if not ok or not (name or "").strip():
+            return
+        name = name.strip()
+        customer = (self.ed_customer.text() or "").strip()
+        cuts = []
+        for r in range(self.tbl_cut.rowCount()):
+            prof = self.tbl_cut.item(r, 0).text()
+            length = float(self.tbl_cut.item(r, 1).text())
+            ax = float(self.tbl_cut.item(r, 2).text())
+            ad = float(self.tbl_cut.item(r, 3).text())
+            qty = int(self.tbl_cut.item(r, 4).text())
+            note = self.tbl_cut.item(r, 5).text() if self.tbl_cut.item(r, 5) else ""
+            cuts.append({"profile": prof, "length_mm": length, "ang_sx": ax, "ang_dx": ad, "qty": qty, "note": note})
+        data = {"type": "cutlist", "cuts": cuts, "saved_at": datetime.utcnow().isoformat() + "Z"}
+        try:
+            oid = self._orders.create_order(name, customer, data)
+            QMessageBox.information(self, "Salva lista", f"Lista salvata come order id={oid}.")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore salvataggio", str(e))
+
+    # ---------- Add row wizard ----------
     def _add_row_wizard(self):
+        # 1) seleziona tipologia
         d1 = OrderRowTypologyDialog(self, self._store)
         if not d1.exec():
             return
         typ_id = int(d1.typology_id)
 
-        d2 = OrderRowDimsDialog(self)
+        # 2) dimensions + variables (passo typology_id e store così OrderRowDimsDialog carica le variabili)
+        d2 = OrderRowDimsDialog(self, store=self._store, typology_id=typ_id)
         if not d2.exec():
             return
 
+        # 3) scelta opzione ferramenta (facoltativa)
         d3 = OrderRowHardwareDialog(self, self._store, typ_id)
-        d3.exec()  # opzionale
+        d3.exec()
 
         row = {
             "tid": typ_id,
@@ -201,7 +233,8 @@ class QuoteVaniPage(QFrame):
             hw_txt = "-"
             if r.get("hw_option_id"):
                 opt = self._store.get_typology_hw_option(int(r["hw_option_id"]))
-                if opt: hw_txt = f"{opt['name']} [{opt.get('mechanism_code') or '-'}]"
+                if opt:
+                    hw_txt = f"{opt['name']} [{opt.get('mechanism_code') or '-'}]"
             ri = self.tbl_rows.rowCount(); self.tbl_rows.insertRow(ri)
             self.tbl_rows.setItem(ri, 0, QTableWidgetItem(str(i)))
             self.tbl_rows.setItem(ri, 1, QTableWidgetItem(str(name)))
@@ -212,7 +245,8 @@ class QuoteVaniPage(QFrame):
 
     def _del_row(self):
         idx = self.tbl_rows.currentRow()
-        if idx < 0: return
+        if idx < 0:
+            return
         if 0 <= idx < len(self._rows):
             del self._rows[idx]
             self._refresh_rows_table()
@@ -222,25 +256,122 @@ class QuoteVaniPage(QFrame):
         self._refresh_rows_table()
         self.tbl_cut.setRowCount(0)
 
-    # ----- Calcolo / aggregazione ----- (unchanged from previous implementation)
+    # ---------- Calcolo e aggregazione (componenti tipologia + parti meccanismo con override) ----------
     def _calc_and_aggregate(self):
-        # same implementation as before (omitted here for brevity in this block)
-        # the original logic is left intact; ensure your file has the full method body
-        pass
+        self.tbl_cut.setRowCount(0)
+        if not self._rows:
+            QMessageBox.information(self, "Commessa", "Aggiungi almeno una riga."); return
 
-    # ----- Export/Import (JSON) -----
+        # token profili (spessori)
+        prof_tokens: Dict[str, float] = {}
+        if self._profiles:
+            try:
+                for r in self._profiles.list_profiles():
+                    n = str(r.get("name") or ""); th = float(r.get("thickness") or 0.0)
+                    if n:
+                        prof_tokens[sanitize_name(n)] = th
+            except Exception:
+                pass
+
+        aggregated: Dict[str, Dict[Tuple[float, float, float], int]] = defaultdict(lambda: defaultdict(int))
+
+        for r in self._rows:
+            t = self._store.get_typology_full(int(r["tid"]))
+            if not t:
+                continue
+            H = float(r["H"]); L = float(r["L"]); qty_row = int(r["qty"])
+            env_base: Dict[str, Any] = {"H": H, "L": L}
+            env_base.update(t.get("variabili_locali") or {})
+            env_base.update(r.get("vars") or {})
+            env_base.update(prof_tokens)
+
+            # opzione ferramenta
+            hw_opt_id = r.get("hw_option_id")
+            opt = self._store.get_typology_hw_option(int(hw_opt_id)) if hw_opt_id else None
+            if opt:
+                if opt.get("handle_id"):
+                    handle_offset = self._store.get_handle_offset(int(opt["handle_id"]))
+                    if handle_offset is not None:
+                        env_base["handle_offset"] = float(handle_offset)
+                pick = self._store.pick_arm_for_width(int(opt["brand_id"]), int(opt["series_id"]), str(opt["subcat"]), L)
+                if pick:
+                    if pick.get("arm_code"): env_base["arm_code"] = str(pick["arm_code"])
+                    if pick.get("arm_class"): env_base["arm_class"] = str(pick["arm_class"])
+                    if pick.get("arm_len") is not None: env_base["arm_len"] = float(pick["arm_len"])
+
+            # componenti tipologia
+            comps = t.get("componenti") or []
+            c_values: Dict[str, float] = {}
+            for c in comps:
+                prof = c.get("profilo_nome", "") or ""
+                qty = int(c.get("quantita", 0) or 0) * qty_row
+                angsx = float(c.get("ang_sx", 0.0) or 0.0)
+                angdx = float(c.get("ang_dx", 0.0) or 0.0)
+                expr = c.get("formula_lunghezza", "") or "H"
+                offs = float(c.get("offset_mm", 0.0) or 0.0)
+                env = dict(env_base); env.update(c_values)
+
+                # override per opzione ferramenta su questo elemento
+                if opt:
+                    try:
+                        f_override = self._store.get_comp_hw_formula(int(r["tid"]), str(c.get("id_riga", "")), int(opt["id"]))
+                        if f_override and f_override.strip():
+                            expr = f_override.strip()
+                    except Exception:
+                        pass
+
+                try:
+                    length = float(eval_formula(expr, env)) + offs
+                except Exception:
+                    length = 0.0
+                if prof and qty > 0:
+                    aggregated[prof][(round(length, 2), angsx, angdx)] += qty
+                rid = c.get("id_riga", "")
+                if rid:
+                    c_values[f"C_{rid}"] = length
+
+            # parti meccanismo (astine)
+            if opt:
+                mechanism = opt.get("mechanism_code") or None
+                if mechanism:
+                    parts = self._store.list_mech_parts(str(mechanism))
+                    for p in parts:
+                        env = dict(env_base)
+                        # override per tipologia+opzione+part
+                        try:
+                            override = self._store.get_typology_mech_part_formula(int(r["tid"]), int(opt["id"]), p["part_key"])
+                            formula = override.strip() if (override and override.strip()) else p["formula"]
+                        except Exception:
+                            formula = p["formula"]
+                        try:
+                            length = float(eval_formula(formula, env))
+                        except Exception:
+                            length = 0.0
+                        prof = p["profile_name"] or "ASTINA"
+                        q = int(p["qty"] or 1) * qty_row
+                        aggregated[prof][(round(length, 2), float(p["ang_sx"] or 0.0), float(p["ang_dx"] or 0.0))] += q
+
+        # popola tabella con aggregazione per profilo e lunghezza (decrescente)
+        self.tbl_cut.setRowCount(0)
+        for prof in sorted(aggregated.keys()):
+            lines = [(length, ax, ad, q) for (length, ax, ad), q in aggregated[prof].items()]
+            lines.sort(key=lambda x: x[0], reverse=True)
+            for length, ax, ad, q in lines:
+                ri = self.tbl_cut.rowCount(); self.tbl_cut.insertRow(ri)
+                self.tbl_cut.setItem(ri, 0, QTableWidgetItem(str(prof)))
+                self.tbl_cut.setItem(ri, 1, QTableWidgetItem(f"{length:.2f}"))
+                self.tbl_cut.setItem(ri, 2, QTableWidgetItem(f"{ax:.1f}"))
+                self.tbl_cut.setItem(ri, 3, QTableWidgetItem(f"{ad:.1f}"))
+                self.tbl_cut.setItem(ri, 4, QTableWidgetItem(str(q)))
+                self.tbl_cut.setItem(ri, 5, QTableWidgetItem(""))
+
+    # ---------- Export/Import JSON (unchanged) ----------
     def _export_order(self):
         if not self._rows:
             QMessageBox.information(self, "Esporta", "La commessa è vuota."); return
         path, _ = QFileDialog.getSaveFileName(self, "Esporta commessa", "", "Commessa JSON (*.order.json)")
         if not path: return
-        data = {
-            "type": "blitz-order",
-            "version": 1,
-            "created_at": datetime.utcnow().isoformat() + "Z",
-            "customer": (self.ed_customer.text() or ""),
-            "rows": self._rows
-        }
+        data = {"type": "blitz-order", "version": 1, "created_at": datetime.utcnow().isoformat() + "Z", "customer": (self.ed_customer.text() or ""), "rows": self._rows}
         try:
             Path(path).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
             QMessageBox.information(self, "Esporta", "Commessa esportata.")
@@ -262,14 +393,7 @@ class QuoteVaniPage(QFrame):
         self._rows = []
         for r in rows:
             try:
-                self._rows.append({
-                    "tid": int(r["tid"]),
-                    "qty": int(r["qty"]),
-                    "H": float(r["H"]),
-                    "L": float(r["L"]),
-                    "vars": dict(r.get("vars") or {}),
-                    "hw_option_id": (int(r["hw_option_id"]) if r.get("hw_option_id") is not None else None)
-                })
+                self._rows.append({"tid": int(r["tid"]), "qty": int(r["qty"]), "H": float(r["H"]), "L": float(r["L"]), "vars": dict(r.get("vars") or {}), "hw_option_id": (int(r["hw_option_id"]) if r.get("hw_option_id") is not None else None)})
             except Exception:
                 continue
         cust = data.get("customer") or ""
