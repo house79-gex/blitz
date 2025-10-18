@@ -77,12 +77,14 @@ class ComponentHardwareMapDialog(QDialog):
         for r in range(self.tbl.rowCount()):
             name = self.tbl.item(r, 0).text()
             formula = self.tbl.item(r, 1).text() if self.tbl.item(r, 1) else ""
+            # trova opt_id da nome
             opt = next((o for o in self._opts if o["name"] == name), None)
             if not opt: continue
             opt_id = int(opt["id"])
             if (formula or "").strip():
                 self.store.set_comp_hw_formula(self.typology_id, self.row_id, opt_id, formula.strip())
             else:
+                # se svuotata, rimuovi override
                 self.store.delete_comp_hw_formula(self.typology_id, self.row_id, opt_id)
 
     def accept(self):
