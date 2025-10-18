@@ -1,5 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Optional, Callable
+from pathlib import Path
+import traceback
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QShortcut, QKeySequence
@@ -284,7 +286,7 @@ class ComponentEditorDialog(QDialog):
 
     def result_component(self) -> Dict[str, Any]:
         return dict(self.base)
-# fine ComponentEditorDialog
+# end ComponentEditorDialog
 
 
 class TipologiaEditorDialog(QDialog):
@@ -331,13 +333,11 @@ class TipologiaEditorDialog(QDialog):
 
         root.addLayout(meta)
 
-        # Azioni tipologia (ferramenta)
+        # Azioni tipologia (ferramenta / meccanismi)
         bar = QHBoxLayout()
-        btn_hw_opts = QPushButton("Opzioni ferramenta…")
-        btn_hw_opts.setToolTip("Definisci le opzioni di ferramenta (marca/serie/sottocategoria/maniglia) selezionabili in commessa")
-        btn_hw_opts.clicked.connect(self._open_hw_options)
-        bar.addWidget(btn_hw_opts)
-        bar.addStretch(1)
+        btn_hw_opts = QPushButton("Opzioni ferramenta…"); btn_hw_opts.setToolTip("Definisci le opzioni di ferramenta della tipologia"); btn_hw_opts.clicked.connect(self._open_hw_options)
+        btn_mech_mgr = QPushButton("Gestisci meccanismi…"); btn_mech_mgr.setToolTip("Gestisci meccanismi e parti"); btn_mech_mgr.clicked.connect(self._open_mech_mgr)
+        bar.addWidget(btn_hw_opts); bar.addWidget(btn_mech_mgr); bar.addStretch(1)
         root.addLayout(bar)
 
         # Variabili locali
@@ -388,15 +388,20 @@ class TipologiaEditorDialog(QDialog):
     def _open_hw_options(self):
         typ_id = self.base.get("id")
         if not isinstance(typ_id, int):
-            QMessageBox.information(self, "Ferramenta", "Salva la tipologia per abilitare le opzioni di ferramenta.")
-            return
+            QMessageBox.information(self, "Ferramenta", "Salva la tipologia per abilitare le opzioni di ferramenta."); return
         try:
             from ui_qt.dialogs.typology_hw_options_qt import TypologyHardwareOptionsDialog
         except Exception:
-            QMessageBox.information(self, "Ferramenta", "Modulo opzioni non disponibile.")
-            return
+            QMessageBox.information(self, "Ferramenta", "Modulo opzioni non disponibile."); return
         dlg = TypologyHardwareOptionsDialog(self, self._store, int(typ_id))
         dlg.exec()
+
+    def _open_mech_mgr(self):
+        try:
+            from ui_qt.dialogs.hw_mechanism_manager_qt import HardwareMechanismManagerDialog
+        except Exception:
+            QMessageBox.information(self, "Meccanismi", "Modulo non disponibile."); return
+        HardwareMechanismManagerDialog(self, self._store).exec()
 
     def _load_base(self):
         b = self.base
