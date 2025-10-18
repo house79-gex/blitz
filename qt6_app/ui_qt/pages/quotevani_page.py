@@ -8,7 +8,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QHBoxLayout, QFileDialog
+    QHeaderView, QMessageBox, QHBoxLayout, QFileDialog, QLineEdit
 )
 
 try:
@@ -28,13 +28,13 @@ from ui_qt.dialogs.order_row_typology_qt import OrderRowTypologyDialog
 from ui_qt.dialogs.order_row_dims_qt import OrderRowDimsDialog
 from ui_qt.dialogs.order_row_hw_qt import OrderRowHardwareDialog
 
-
 class QuoteVaniPage(QFrame):
     """
     Commessa:
     - 'Aggiungi riga…' → 3 modali (Tipologia → Dati → Opzione ferramenta)
-    - Calcola lista taglio: componenti tipologia + parti meccanismo (astine), aggregate per profilo (discendente)
-    - Import/Export JSON, invio ad Automatico
+    - Calcola lista taglio aggregata per profilo (discendente)
+    - Importa/Esporta commessa in JSON (con campo Cliente)
+    - Invia ad 'automatico' con refresh page se possibile
     """
     def __init__(self, appwin):
         super().__init__()
@@ -44,25 +44,39 @@ class QuoteVaniPage(QFrame):
         if ProfilesStore:
             try: self._profiles = ProfilesStore()
             except Exception: self._profiles = None
+
         self._rows: List[Dict[str, Any]] = []
         self._build()
 
     def _build(self):
         self.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
-        root = QVBoxLayout(self); root.setContentsMargins(12,12,12,12); root.setSpacing(10)
 
-        if Header: root.addWidget(Header(self.appwin, "COMMESSA - QUOTE VANI"), 0)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        if Header:
+            root.addWidget(Header(self.appwin, "COMMESSA - QUOTE VANI"), 0)
         else:
-            t = QLabel("COMMESSA - QUOTE VANI"); t.setStyleSheet("font-size:18px; font-weight:700;")
-            root.addWidget(t, 0)
+            title = QLabel("COMMESSA - QUOTE VANI")
+            title.setStyleSheet("font-size:18px; font-weight:700;")
+            root.addWidget(title, 0)
 
         actions_top = QHBoxLayout()
         btn_add = QPushButton("Aggiungi riga…"); btn_add.clicked.connect(self._add_row_wizard)
         btn_imp = QPushButton("Importa…"); btn_imp.clicked.connect(self._import_order)
         btn_exp = QPushButton("Esporta…"); btn_exp.clicked.connect(self._export_order)
-        actions_top.addWidget(btn_add); actions_top.addStretch(1); actions_top.addWidget(btn_imp); actions_top.addWidget(btn_exp)
+        actions_top.addWidget(btn_add)
+        actions_top.addStretch(1)
+        actions_top.addWidget(QLabel("Cliente:"))
+        self.ed_customer = QLineEdit(); self.ed_customer.setPlaceholderText("Nome cliente")
+        self.ed_customer.setMaximumWidth(260)
+        actions_top.addWidget(self.ed_customer)
+        actions_top.addWidget(btn_imp)
+        actions_top.addWidget(btn_exp)
         root.addLayout(actions_top)
 
+        # Tabella righe
         self.tbl_rows = QTableWidget(0, 6)
         self.tbl_rows.setHorizontalHeaderLabels(["#", "Tipologia", "Pezzi", "H", "L", "Ferramenta"])
         hdr = self.tbl_rows.horizontalHeader()
@@ -86,27 +100,46 @@ class QuoteVaniPage(QFrame):
         act.addWidget(btn_calc); act.addWidget(btn_send); act.addStretch(1)
         root.addLayout(act)
 
+        # Elenco taglio
         self.tbl_cut = QTableWidget(0, 6)
         self.tbl_cut.setHorizontalHeaderLabels(["Profilo", "Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà", "Note"])
         h2 = self.tbl_cut.horizontalHeader()
-        h2.setSectionResizeMode(0, QHeaderView.Stretch); h2.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        h2.setSectionResizeMode(2, QHeaderView.ResizeToContents); h2.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        h2.setSectionResizeMode(4, QHeaderView.ResizeToContents); h2.setSectionResizeMode(5, QHeaderView.Stretch)
+        h2.setSectionResizeMode(0, QHeaderView.Stretch)
+        h2.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        h2.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        h2.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        h2.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        h2.setSectionResizeMode(5, QHeaderView.Stretch)
         root.addWidget(self.tbl_cut, 1)
 
-        hint = QLabel("Aggiungi righe tramite la finestra modale. Le parti meccanismo (astine) vengono generate automaticamente in base all'opzione.")
-        hint.setStyleSheet("color:#7f8c8d;"); root.addWidget(hint, 0)
+        hint = QLabel("Aggiungi righe tramite la finestra modale. La scelta ferramenta è per-riga ed usa le opzioni definite nella tipologia.")
+        hint.setStyleSheet("color:#7f8c8d;")
+        root.addWidget(hint, 0)
 
+    # ----- Wizard add row -----
     def _add_row_wizard(self):
         d1 = OrderRowTypologyDialog(self, self._store)
-        if not d1.exec(): return
+        if not d1.exec():
+            return
         typ_id = int(d1.typology_id)
+
         d2 = OrderRowDimsDialog(self)
-        if not d2.exec(): return
-        d3 = OrderRowHardwareDialog(self, self._store, typ_id); d3.exec()
-        row = {"tid": typ_id, "qty": int(d2.qty), "H": float(d2.H), "L": float(d2.L),
-               "vars": dict(d2.vars), "hw_option_id": (int(d3.hw_option_id) if d3.hw_option_id else None)}
-        self._rows.append(row); self._refresh_rows_table()
+        if not d2.exec():
+            return
+
+        d3 = OrderRowHardwareDialog(self, self._store, typ_id)
+        d3.exec()  # opzionale
+
+        row = {
+            "tid": typ_id,
+            "qty": int(d2.qty),
+            "H": float(d2.H),
+            "L": float(d2.L),
+            "vars": dict(d2.vars),
+            "hw_option_id": (int(d3.hw_option_id) if d3.hw_option_id else None)
+        }
+        self._rows.append(row)
+        self._refresh_rows_table()
 
     def _refresh_rows_table(self):
         self.tbl_rows.setRowCount(0)
@@ -129,17 +162,21 @@ class QuoteVaniPage(QFrame):
         idx = self.tbl_rows.currentRow()
         if idx < 0: return
         if 0 <= idx < len(self._rows):
-            del self._rows[idx]; self._refresh_rows_table()
+            del self._rows[idx]
+            self._refresh_rows_table()
 
     def _clear_rows(self):
-        self._rows.clear(); self._refresh_rows_table(); self.tbl_cut.setRowCount(0)
+        self._rows.clear()
+        self._refresh_rows_table()
+        self.tbl_cut.setRowCount(0)
 
+    # ----- Calcolo / aggregazione -----
     def _calc_and_aggregate(self):
         self.tbl_cut.setRowCount(0)
         if not self._rows:
             QMessageBox.information(self, "Commessa", "Aggiungi almeno una riga."); return
 
-        # Token profili (spessori)
+        # token profili (spessori)
         prof_tokens: Dict[str, float] = {}
         if self._profiles:
             try:
@@ -156,32 +193,49 @@ class QuoteVaniPage(QFrame):
             if not t: continue
             H = float(r["H"]); L = float(r["L"]); qty_row = int(r["qty"])
             env_base: Dict[str, Any] = {"H": H, "L": L}
-            env_base.update(t.get("variabili_locali") or {}); env_base.update(r.get("vars") or {}); env_base.update(prof_tokens)
+            env_base.update(t.get("variabili_locali") or {})
+            env_base.update(r.get("vars") or {})
+            env_base.update(prof_tokens)
 
-            # Dati opzione ferramenta (meccanismo)
-            opt = self._store.get_typology_hw_option(int(r["hw_option_id"])) if r.get("hw_option_id") else None
-            mechanism = (opt.get("mechanism_code") if opt else None) or None
-            if opt:
-                if opt.get("handle_id"):
-                    handle_offset = self._store.get_handle_offset(int(opt["handle_id"]))
-                    if handle_offset is not None: env_base["handle_offset"] = float(handle_offset)
-                pick = self._store.pick_arm_for_width(int(opt["brand_id"]), int(opt["series_id"]), str(opt["subcat"]), L)
-                if pick:
-                    if pick.get("arm_code"): env_base["arm_code"] = str(pick["arm_code"])
-                    if pick.get("arm_class"): env_base["arm_class"] = str(pick["arm_class"])
-                    if pick.get("arm_len") is not None: env_base["arm_len"] = float(pick["arm_len"])
+            # Se è stata scelta una opzione ferramenta, prepara dati utili (handle_offset, arm_code, arm_class, arm_len)
+            hw_opt_id = r.get("hw_option_id")
+            handle_offset = None
+            arm_code = None
+            arm_class = None
+            arm_len = None
+            opt = None
+            if hw_opt_id:
+                opt = self._store.get_typology_hw_option(int(hw_opt_id))
+                if opt:
+                    if opt.get("handle_id"):
+                        handle_offset = self._store.get_handle_offset(int(opt["handle_id"]))
+                        if handle_offset is not None:
+                            env_base["handle_offset"] = float(handle_offset)
+                    pick = self._store.pick_arm_for_width(int(opt["brand_id"]), int(opt["series_id"]), str(opt["subcat"]), L)
+                    if pick:
+                        arm_code = pick.get("arm_code"); arm_class = pick.get("arm_class"); arm_len = pick.get("arm_len")
+                        if arm_code: env_base["arm_code"] = str(arm_code)
+                        if arm_class: env_base["arm_class"] = str(arm_class)
+                        if arm_len is not None: env_base["arm_len"] = float(arm_len)
 
             # Componenti tipologia (con override formula per-opzione)
-            comps = t.get("componenti") or []; c_values: Dict[str, float] = {}
+            comps = t.get("componenti") or []
+            c_values: Dict[str, float] = {}
             for c in comps:
                 prof = c.get("profilo_nome","") or ""
                 qty = int(c.get("quantita",0) or 0) * qty_row
-                angsx = float(c.get("ang_sx",0.0) or 0.0); angdx = float(c.get("ang_dx",0.0) or 0.0)
-                expr = c.get("formula_lunghezza","") or "H"; offs = float(c.get("offset_mm",0.0) or 0.0)
+                angsx = float(c.get("ang_sx",0.0) or 0.0)
+                angdx = float(c.get("ang_dx",0.0) or 0.0)
+                expr = c.get("formula_lunghezza","") or "H"
+                offs = float(c.get("offset_mm",0.0) or 0.0)
                 env = dict(env_base); env.update(c_values)
+
+                # override per opzione ferramenta su questo elemento
                 if opt:
                     f_override = self._store.get_comp_hw_formula(int(r["tid"]), str(c.get("id_riga","")), int(opt["id"]))
-                    if f_override and f_override.strip(): expr = f_override.strip()
+                    if f_override and f_override.strip():
+                        expr = f_override.strip()
+
                 try:
                     length = float(eval_formula(expr, env)) + offs
                 except Exception:
@@ -189,22 +243,35 @@ class QuoteVaniPage(QFrame):
                 if prof and qty > 0:
                     aggregated[prof][(round(length, 2), angsx, angdx)] += qty
                 rid = c.get("id_riga","")
-                if rid: c_values[f"C_{rid}"] = length
+                if rid:
+                    c_values[f"C_{rid}"] = length
 
             # Parti meccanismo (astine) – create dinamicamente
-            if mechanism:
-                parts = self._store.list_mech_parts(str(mechanism))
-                for p in parts:
-                    env = dict(env_base)
-                    try:
-                        length = float(eval_formula(p["formula"], env))
-                    except Exception:
-                        length = 0.0
-                    prof = p["profile_name"] or "ASTINA"
-                    q = int(p["qty"] or 1) * qty_row
-                    aggregated[prof][(round(length, 2), float(p["ang_sx"] or 0.0), float(p["ang_dx"] or 0.0))] += q
+            if opt:
+                mechanism = opt.get("mechanism_code") or None
+                if mechanism:
+                    parts = self._store.list_mech_parts(str(mechanism))
+                    # check for per-typology+option override formulas
+                    for p in parts:
+                        env = dict(env_base)
+                        # try to get override formula specific for typology+option+part
+                        try:
+                            override = self._store.get_typology_mech_part_formula(int(r["tid"]), int(opt["id"]), p["part_key"])
+                            if override and override.strip():
+                                formula = override.strip()
+                            else:
+                                formula = p["formula"]
+                        except Exception:
+                            formula = p["formula"]
+                        try:
+                            length = float(eval_formula(formula, env))
+                        except Exception:
+                            length = 0.0
+                        prof = p["profile_name"] or "ASTINA"
+                        q = int(p["qty"] or 1) * qty_row
+                        aggregated[prof][(round(length, 2), float(p["ang_sx"] or 0.0), float(p["ang_dx"] or 0.0))] += q
 
-        # Output tabella (per profilo, lunghezza desc)
+        # riempi tabella per profilo, lunghezza desc
         self.tbl_cut.setRowCount(0)
         for prof in sorted(aggregated.keys()):
             lines = [(length, ax, ad, q) for (length, ax, ad), q in aggregated[prof].items()]
@@ -218,15 +285,21 @@ class QuoteVaniPage(QFrame):
                 self.tbl_cut.setItem(ri, 4, QTableWidgetItem(str(q)))
                 self.tbl_cut.setItem(ri, 5, QTableWidgetItem(""))
 
-    # Export/Import e invio ad Automatico restano identici (già implementati)
+    # ----- Export/Import -----
     def _export_order(self):
         if not self._rows:
             QMessageBox.information(self, "Esporta", "La commessa è vuota."); return
         path, _ = QFileDialog.getSaveFileName(self, "Esporta commessa", "", "Commessa JSON (*.order.json)")
         if not path: return
-        data = {"type": "blitz-order", "version": 1, "created_at": datetime.utcnow().isoformat() + "Z", "rows": self._rows}
+        data = {
+            "type": "blitz-order",
+            "version": 1,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "customer": (self.ed_customer.text() or ""),
+            "rows": self._rows
+        }
         try:
-            Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+            Path(path).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
             QMessageBox.information(self, "Esporta", "Commessa esportata.")
         except Exception as e:
             QMessageBox.critical(self, "Errore export", str(e))
@@ -240,35 +313,74 @@ class QuoteVaniPage(QFrame):
             QMessageBox.critical(self, "Errore import", f"File non valido:\n{e}"); return
         if not isinstance(data, dict) or data.get("type") != "blitz-order" or "rows" not in data:
             QMessageBox.critical(self, "Errore import", "Formato commessa non riconosciuto."); return
+        rows = data.get("rows") or []
+        if not isinstance(rows, list):
+            QMessageBox.critical(self, "Errore import", "Formato righe non valido."); return
+        # opzionale: validazione minimale campi
         self._rows = []
-        for r in (data.get("rows") or []):
+        for r in rows:
             try:
-                self._rows.append({"tid": int(r["tid"]), "qty": int(r["qty"]), "H": float(r["H"]), "L": float(r["L"]),
-                                   "vars": dict(r.get("vars") or {}), "hw_option_id": (int(r["hw_option_id"]) if r.get("hw_option_id") is not None else None)})
+                self._rows.append({
+                    "tid": int(r["tid"]),
+                    "qty": int(r["qty"]),
+                    "H": float(r["H"]),
+                    "L": float(r["L"]),
+                    "vars": dict(r.get("vars") or {}),
+                    "hw_option_id": (int(r["hw_option_id"]) if r.get("hw_option_id") is not None else None)
+                })
             except Exception:
                 continue
+        cust = data.get("customer") or ""
+        self.ed_customer.setText(str(cust))
         self._refresh_rows_table()
 
+    # ----- Invio ad Automatico -----
     def _send_to_automatico(self):
         rows = []
         for r in range(self.tbl_cut.rowCount()):
+            prof = self.tbl_cut.item(r, 0).text()
+            length = float(self.tbl_cut.item(r, 1).text())
+            ax = float(self.tbl_cut.item(r, 2).text())
+            ad = float(self.tbl_cut.item(r, 3).text())
+            qty = int(self.tbl_cut.item(r, 4).text())
             rows.append({
-                "profile": self.tbl_cut.item(r, 0).text(),
-                "length_mm": float(self.tbl_cut.item(r, 1).text()),
-                "ang_sx": float(self.tbl_cut.item(r, 2).text()),
-                "ang_dx": float(self.tbl_cut.item(r, 3).text()),
-                "qty": int(self.tbl_cut.item(r, 4).text()),
+                "profile": prof,
+                "length_mm": length,
+                "ang_sx": ax,
+                "ang_dx": ad,
+                "qty": qty,
                 "note": self.tbl_cut.item(r, 5).text() if self.tbl_cut.item(r, 5) else ""
             })
         if not rows:
             QMessageBox.information(self, "Automatico", "Nessun elemento da inviare."); return
         try:
             mq = getattr(self.appwin.machine, "work_queue", None)
+            if mq is None:
+                try:
+                    setattr(self.appwin.machine, "work_queue", [])
+                    setattr(self.appwin.machine, "current_work_idx", 0)
+                    mq = getattr(self.appwin.machine, "work_queue", None)
+                except Exception:
+                    mq = None
             if isinstance(mq, list):
-                mq.clear(); mq.extend(rows)
-                if hasattr(self.appwin.machine, "current_work_idx"): self.appwin.machine.current_work_idx = 0
-            if hasattr(self.appwin, "show_page"): self.appwin.show_page("automatico")
-        except Exception:
-            pass
+                mq.clear()
+                mq.extend(rows)
+                if hasattr(self.appwin.machine, "current_work_idx"):
+                    self.appwin.machine.current_work_idx = 0
+            if hasattr(self.appwin, "show_page"):
+                self.appwin.show_page("automatico")
+            try:
+                pages = getattr(self.appwin, "pages", None)
+                if isinstance(pages, dict) and pages.get("automatico"):
+                    page = pages.get("automatico")
+                    for m in ("load_from_queue", "refresh", "on_show"):
+                        if hasattr(page, m):
+                            getattr(page, m)()
+            except Exception:
+                pass
+            QMessageBox.information(self, "Automatico", "Lista inviata alla macchina.")
+        except Exception as e:
+            QMessageBox.critical(self, "Automatico", f"Errore invio: {e}")
 
-    def on_show(self): pass
+    def on_show(self):
+        pass
