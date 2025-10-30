@@ -8,7 +8,7 @@ from ui_qt.widgets.status_panel import StatusPanel
 
 # Dimensioni base (verranno scalate dinamicamente)
 BASE_HEIGHT = 900.0
-QUOTA_FONT_PX_BASE = 160
+QUOTA_FONT_PX_BASE = 155
 BTN_FONT_PX_BASE = 52
 PANEL_W = 420
 PANEL_H = 220
