@@ -32,16 +32,20 @@ except Exception:
 
 
 def _norm_label(s: str) -> str:
-    """
-    Normalizza un'etichetta per matching tollerante:
-    - lowercase + strip
-    - rimuove spazi, underscore e caratteri non alfanumerici
-    """
     s = (s or "").strip().lower()
-    # sostituisci underscore e spazi con niente, rimuovi non alfanumerici
     s = re.sub(r"[\s_]+", "", s)
     s = re.sub(r"[^a-z0-9]+", "", s)
     return s
+
+
+def _is_base_formula_valid(expr: Optional[str]) -> bool:
+    if not expr:
+        return False
+    t = expr.strip().lower()
+    if not t:
+        return False
+    # consideriamo "no", "-", "n" come disattivazione esplicita
+    return t not in ("no", "-", "n")
 
 
 class QuoteVaniPage(QFrame):
@@ -79,7 +83,6 @@ class QuoteVaniPage(QFrame):
             title.setStyleSheet("font-size:18px; font-weight:700;")
             root.addWidget(title, 0)
 
-        # Barra azioni con Cliente + Nuova/Salva/Apri + Import/Export + Salva Cutlist
         actions_top = QHBoxLayout()
         btn_add = QPushButton("Aggiungi riga…"); btn_add.clicked.connect(self._add_row_wizard)
         btn_new = QPushButton("Nuova commessa"); btn_new.clicked.connect(self._new_order)
@@ -98,7 +101,6 @@ class QuoteVaniPage(QFrame):
         actions_top.addWidget(btn_imp); actions_top.addWidget(btn_exp); actions_top.addWidget(btn_save_cutlist)
         root.addLayout(actions_top)
 
-        # Tabella righe
         self.tbl_rows = QTableWidget(0, 6)
         self.tbl_rows.setHorizontalHeaderLabels(["#", "Tipologia", "Pezzi", "H", "L", "Gruppo formule"])
         hdr = self.tbl_rows.horizontalHeader()
@@ -134,7 +136,7 @@ class QuoteVaniPage(QFrame):
         h2.setSectionResizeMode(6, QHeaderView.Stretch)
         root.addWidget(self.tbl_cut, 1)
 
-        hint = QLabel("Gruppi: usa in formula il token 'braccio'. Il valore viene scelto automaticamente tra le regole (tipo0/1/2) in base alla L. La lista mostra Profilo + Elemento.")
+        hint = QLabel("Se selezioni un Gruppo: applico le formule associate e aggiungo eventuali elementi extra; se non selezioni un Gruppo: uso solo le formule base valide. 'no' o vuoto = elemento escluso.")
         hint.setStyleSheet("color:#7f8c8d;")
         root.addWidget(hint, 0)
 
@@ -255,7 +257,7 @@ class QuoteVaniPage(QFrame):
 
         for r in self._rows:
             t = self._store.get_typology_full(int(r["tid"]))
-            if not t: 
+            if not t:
                 continue
             H = float(r["H"]); L = float(r["L"]); qty_row = int(r["qty"])
 
@@ -265,7 +267,7 @@ class QuoteVaniPage(QFrame):
             env_base.update(r.get("vars") or {})
             env_base.update(prof_tokens)
 
-            # Carica gruppo formule multiple (selezionato) + regole variabili
+            # Gruppo + regole variabili
             grp = r.get("formula_group")
             mf_map: Dict[str, Dict[str, Any]] = {}
             var_rules: List[Dict[str, Any]] = []
@@ -287,7 +289,6 @@ class QuoteVaniPage(QFrame):
                 for var_name, rules in by_var.items():
                     matches = [vr for vr in rules if float(vr["l_min"]) <= L <= float(vr["l_max"])]
                     if matches:
-                        # prendi il range più stretto
                         matches.sort(key=lambda x: (float(x["l_max"]) - float(x["l_min"])))
                         chosen = matches[0]
                         env_base[var_name] = float(chosen["value"])
@@ -295,51 +296,56 @@ class QuoteVaniPage(QFrame):
                         if variant:
                             env_base[f"{var_name}_variant"] = variant
 
-            # Componenti tipologia: usa formula del gruppo se etichetta=nome (match normalizzato)
+            # Componenti tipologia: se gruppo selezionato, usa formula gruppo quando presente, altrimenti formula base valida;
+            # se gruppo non selezionato, usa SOLO formula base valida; elementi con base "no"/vuoto sono esclusi
             comps = t.get("componenti") or []
             used_labels: set[str] = set()
             c_values: Dict[str, float] = {}
             for c in comps:
                 elemento = (c.get("nome") or "").strip() or "-"
                 elemento_key = _norm_label(elemento)
-                prof = (c.get("profilo_nome", "") or "").strip()
+                prof = (c.get("profilo_nome", "") or "").strip() or "—"
                 qty = int(c.get("quantita", 0) or 0) * qty_row
                 angsx = float(c.get("ang_sx", 0.0) or 0.0)
                 angdx = float(c.get("ang_dx", 0.0) or 0.0)
-                expr = c.get("formula_lunghezza", "") or "H"
+                base_expr_raw = c.get("formula_lunghezza", None)
                 offs = float(c.get("offset_mm", 0.0) or 0.0)
 
                 env = dict(env_base)
                 env.update(c_values)
 
-                # Override da gruppo se label combacia con nome
+                expr_to_use: Optional[str] = None
                 if grp and elemento_key in mf_map:
                     fm = (mf_map[elemento_key].get("formula") or "").strip()
                     if fm:
-                        expr = fm
+                        expr_to_use = fm
                         used_labels.add(elemento_key)
+                else:
+                    # se non c'è gruppo o non c'è match, uso la base SOLO se valida
+                    if _is_base_formula_valid(base_expr_raw):
+                        expr_to_use = (base_expr_raw or "").strip()
 
-                # Valutazione
-                try:
-                    length = float(eval_formula(expr, env)) + offs
-                except Exception:
-                    length = 0.0
+                if expr_to_use and qty > 0:
+                    try:
+                        length = float(eval_formula(expr_to_use, env)) + offs
+                    except Exception:
+                        length = 0.0
+                    aggregated[prof][(elemento, round(length, 2), angsx, angdx)] += qty
 
-                prof_out = prof if prof else "—"
-                if qty > 0:
-                    aggregated[prof_out][(elemento, round(length, 2), angsx, angdx)] += qty
+                    # aggiorna C_<id> per dipendenze successive
+                    rid = c.get("id_riga", "")
+                    if rid:
+                        c_values[f"C_{rid}"] = length
 
-                rid = c.get("id_riga", "")
-                if rid:
-                    c_values[f"C_{rid}"] = length  # disponibile per extras
-
-            # Elementi extra dal gruppo (tutte le label non usate)
+            # Elementi extra dal gruppo: solo se gruppo selezionato, aggiungo tutte le label non usate
             if grp and mf_map:
                 for lbl_key, itm in mf_map.items():
                     if lbl_key in used_labels:
                         continue
                     elemento = (itm.get("label") or "").strip() or "-"
-                    expr = (itm.get("formula") or "H").strip()
+                    expr = (itm.get("formula") or "").strip()
+                    if not _is_base_formula_valid(expr):  # anche qui rispetto "no"/vuoto
+                        continue
                     prof = (itm.get("profile_name") or "ASTINA") or "ASTINA"
                     q = int(itm.get("qty", 1) or 1) * qty_row
                     ax = float(itm.get("ang_sx", 0.0) or 0.0)
@@ -347,7 +353,7 @@ class QuoteVaniPage(QFrame):
                     offs = float(itm.get("offset", 0.0) or 0.0)
 
                     env = dict(env_base)
-                    env.update(c_values)  # IMPORTANTE: ora gli extra vedono C_<id> già calcolati
+                    env.update(c_values)  # gli extra vedono le C_<id> già calcolate
 
                     try:
                         length = float(eval_formula(expr, env)) + offs
@@ -416,7 +422,6 @@ class QuoteVaniPage(QFrame):
         self.ed_customer.setText(str(cust))
         self._refresh_rows_table()
 
-    # ----- Salva cutlist su DB (include anche il campo 'element') -----
     def _save_cutlist_as_order(self):
         if self.tbl_cut.rowCount() == 0:
             QMessageBox.information(self, "Salva lista", "La lista di taglio è vuota."); return
