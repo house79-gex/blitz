@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Optional, Callable
-import traceback
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QShortcut, QKeySequence
@@ -26,15 +25,16 @@ def _profiles_map() -> Dict[str, float]:
         return {}
 
 def _abbrev(s: str, maxlen: int = 12) -> str:
-    s = str(s or ""); return s if len(s) <= maxlen else (s[:maxlen-1] + "…")
+    s = str(s or "")
+    return s if len(s) <= maxlen else (s[:maxlen-1] + "…")
 
 
 class ComponentEditorDialog(QDialog):
     """
     Editor componente:
-    - Token menu (tooltip attivi)
-    - Pulsante 'Ferramenta…' per mappare formule per-opzione (override)
-    - NUOVO: 'Libreria formule ferramenta…' per scegliere un preset (filtrato per opzione) e inserirlo
+    - Menu 'Token…' a comparsa (tooltip)
+    - Inserimento token alla posizione del cursore nella formula
+    - Focus sul campo formula → prompt “Vuoi creare formule multiple?” → apre editor dedicato
     """
     def __init__(self, parent, base: Dict[str, Any], prev_components: List[Dict[str, Any]],
                  profiles: Dict[str, float], var_provider: Optional[Callable[[], Dict[str, float]]] = None,
@@ -42,8 +42,9 @@ class ComponentEditorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Componente")
         self.setModal(True)
-        self.resize(960, 680)
+        self.resize(940, 660)
         self.setMinimumSize(860, 560)
+
         self.base = dict(base)
         self.prev_components = prev_components
         self.profiles = profiles
@@ -51,28 +52,19 @@ class ComponentEditorDialog(QDialog):
         self.store = store
         self.typology_id = typology_id
         self.created = False
+
         self._build()
         self._install_shortcuts()
 
     def _build(self):
         root = QVBoxLayout(self)
-        g = QGridLayout(); g.setHorizontalSpacing(12); g.setVerticalSpacing(8); row = 0
+
+        g = QGridLayout(); g.setHorizontalSpacing(12); g.setVerticalSpacing(8)
+        row = 0
 
         g.addWidget(QLabel("ID riga:"), row, 0)
         self.ed_id = QLineEdit(self.base.get("id_riga", "")); self.ed_id.setReadOnly(True)
         g.addWidget(self.ed_id, row, 1)
-        self.btn_hw_map = QPushButton("Ferramenta (override)…")
-        self.btn_hw_map.setToolTip("Mappa formule dell'elemento per le opzioni di ferramenta della tipologia")
-        self.btn_hw_map.clicked.connect(self._open_hw_map)
-        if not (self.store and self.typology_id):
-            self.btn_hw_map.setEnabled(False)
-        g.addWidget(self.btn_hw_map, row, 2)
-        self.btn_lib = QPushButton("Libreria formule ferramenta…")
-        self.btn_lib.setToolTip("Scegli un preset dalla libreria (filtra per opzione) e inseriscilo")
-        self.btn_lib.clicked.connect(self._open_hw_library_picker)
-        if not (self.store and self.typology_id):
-            self.btn_lib.setEnabled(False)
-        g.addWidget(self.btn_lib, row, 3)
         row += 1
 
         g.addWidget(QLabel("Nome:"), row, 0)
@@ -83,7 +75,7 @@ class ComponentEditorDialog(QDialog):
         names = sorted(self.profiles.keys()); self.cmb_prof.addItem("")
         for n in names: self.cmb_prof.addItem(n)
         if self.base.get("profilo_nome"):
-            idx = self.cmb_prof.findText(self.base["profilo_nome"]); 
+            idx = self.cmb_prof.findText(self.base["profilo_nome"])
             if idx >= 0: self.cmb_prof.setCurrentIndex(idx)
         g.addWidget(self.cmb_prof, row, 1)
         self.lbl_token = QLabel(""); self.lbl_token.setStyleSheet("color:#7f8c8d;")
@@ -106,16 +98,23 @@ class ComponentEditorDialog(QDialog):
         self.sp_off.setValue(float(self.base.get("offset_mm", 0.0) or 0.0)); g.addWidget(self.sp_off, row, 1); row += 1
 
         g.addWidget(QLabel("Formula (base):"), row, 0)
-        self.ed_formula = QLineEdit(self.base.get("formula_lunghezza", "H")); g.addWidget(self.ed_formula, row, 1, 1, 3); row += 1
+        self.ed_formula = QLineEdit(self.base.get("formula_lunghezza", "H"))
+        # Hook: focus → prompt “formule multiple”
+        self.ed_formula.focusInEvent = self._formula_focus_in  # type: ignore
+        g.addWidget(self.ed_formula, row, 1, 1, 3); row += 1
 
-        # Token menu
+        # Token menu a comparsa (tooltip attivi)
         token_row = QHBoxLayout()
         token_row.addWidget(QLabel("Token…"))
-        self.btn_token = QToolButton(); self.btn_token.setText("Apri"); self.btn_token.setPopupMode(QToolButton.InstantPopup)
+        self.btn_token = QToolButton()
+        self.btn_token.setText("Apri")
+        self.btn_token.setPopupMode(QToolButton.InstantPopup)
         self._rebuild_token_menu()
-        token_row.addWidget(self.btn_token); token_row.addStretch(1)
+        token_row.addWidget(self.btn_token)
+        token_row.addStretch(1)
 
-        root.addLayout(g); root.addLayout(token_row)
+        root.addLayout(g)
+        root.addLayout(token_row)
 
         # Test formula
         test_box = QGroupBox("Test formula")
@@ -126,9 +125,11 @@ class ComponentEditorDialog(QDialog):
         rowt = QHBoxLayout()
         btn_an = QPushButton("Analizza"); btn_an.clicked.connect(self._analyze)
         btn_ts = QPushButton("Valuta"); btn_ts.clicked.connect(self._try_eval)
-        rowt.addWidget(btn_an); rowt.addWidget(btn_ts); rowt.addStretch(1); tb.addLayout(rowt)
+        rowt.addWidget(btn_an); rowt.addWidget(btn_ts); rowt.addStretch(1)
+        tb.addLayout(rowt)
         root.addWidget(test_box)
 
+        # Note e salvataggio
         root.addWidget(QLabel("Note:"))
         self.ed_note = QLineEdit(self.base.get("note", "")); root.addWidget(self.ed_note)
 
@@ -143,12 +144,16 @@ class ComponentEditorDialog(QDialog):
 
     def _rebuild_token_menu(self):
         m = QMenu(self)
-        try: m.setToolTipsVisible(True)
-        except Exception: pass
+        try:
+            m.setToolTipsVisible(True)
+        except Exception:
+            pass
         # Base
         m_base = m.addMenu("Base")
-        for t, tip in (("H","Altezza finita"), ("L","Larghezza finita")):
-            act = m_base.addAction(t); act.setToolTip(tip); act.triggered.connect(lambda _, v=t: self._ins_token(v))
+        for t, tip in (("H", "Altezza finita"), ("L", "Larghezza finita")):
+            act = m_base.addAction(t)
+            act.setToolTip(tip)
+            act.triggered.connect(lambda _, v=t: self._ins_token(v))
         # Variabili
         m_vars = m.addMenu("Variabili")
         var_map = (self.var_provider() or {}) if self.var_provider else {}
@@ -156,37 +161,51 @@ class ComponentEditorDialog(QDialog):
             a = m_vars.addAction("— Nessuna —"); a.setEnabled(False)
         else:
             for k in sorted(var_map.keys()):
-                act = m_vars.addAction(_abbrev(k)); act.setToolTip(f"{k} = {var_map.get(k)}")
+                act = m_vars.addAction(_abbrev(k))
+                act.setToolTip(f"{k} = {var_map.get(k)}")
                 act.triggered.connect(lambda _, v=k: self._ins_token(v))
-        # Componenti
+        # Componenti precedenti
         m_comp = m.addMenu("Componenti prec.")
         had = False
         for c in self.prev_components:
-            rid = c.get("id_riga",""); nm = c.get("nome","")
+            rid = c.get("id_riga", ""); nm = c.get("nome", "")
             if rid:
-                t = f"C_{rid}"; act = m_comp.addAction(_abbrev(t)); act.setToolTip(f"{t} → {nm}")
-                act.triggered.connect(lambda _, v=t: self._ins_token(v)); had = True
+                t = f"C_{rid}"
+                act = m_comp.addAction(_abbrev(t))
+                act.setToolTip(f"{t} → {nm}")
+                act.triggered.connect(lambda _, v=t: self._ins_token(v))
+                had = True
         if not had:
             a = m_comp.addAction("— Nessuno —"); a.setEnabled(False)
-        # Profili
+        # Profili (token sanitizzati)
         m_prof = m.addMenu("Profili")
         hadp = False
         for name, th in sorted(self.profiles.items()):
             tok = sanitize_name(name)
-            act = m_prof.addAction(_abbrev(tok)); act.setToolTip(f"{name} → {tok} (sp={th} mm)")
-            act.triggered.connect(lambda _, v=tok: self._ins_token(v)); hadp = True
+            act = m_prof.addAction(_abbrev(tok))
+            act.setToolTip(f"{name} → {tok} (sp={th} mm)")
+            act.triggered.connect(lambda _, v=tok: self._ins_token(v))
+            hadp = True
         if not hadp:
             a = m_prof.addAction("— Nessuno —"); a.setEnabled(False)
         self.btn_token.setMenu(m)
 
     def _install_shortcuts(self):
-        QShortcut(QKeySequence("Alt+0"), self).activated.connect(lambda: (self.sp_ang_sx.setValue(0.0), self.sp_ang_dx.setValue(0.0)))
-        QShortcut(QKeySequence("Alt+5"), self).activated.connect(lambda: (self.sp_ang_sx.setValue(45.0), self.sp_ang_dx.setValue(45.0)))
+        sc0 = QShortcut(QKeySequence("Alt+0"), self)
+        sc0.activated.connect(lambda: (self.sp_ang_sx.setValue(0.0), self.sp_ang_dx.setValue(0.0)))
+        sc45 = QShortcut(QKeySequence("Alt+5"), self)
+        sc45.activated.connect(lambda: (self.sp_ang_sx.setValue(45.0), self.sp_ang_dx.setValue(45.0)))
+
+    def _insert_at_caret(self, edit: QLineEdit, tok: str):
+        t = edit.text() or ""
+        pos = edit.cursorPosition()
+        sep = "" if (pos == 0 or t[:pos].endswith(("+", "-", "*", "/", "(", " "))) else ""
+        new_text = t[:pos] + sep + tok + t[pos:]
+        edit.setText(new_text)
+        edit.setCursorPosition(pos + len(sep) + len(tok))
 
     def _ins_token(self, tok: str):
-        t = self.ed_formula.text() or ""
-        sep = "" if (not t or t.endswith(("+","-","*","/","("," "))) else ""
-        self.ed_formula.setText(t + sep + tok)
+        self._insert_at_caret(self.ed_formula, tok)
 
     def _update_prof_token(self):
         p = self.cmb_prof.currentText().strip()
@@ -220,7 +239,7 @@ class ComponentEditorDialog(QDialog):
         if p and p in self.profiles:
             env[sanitize_name(p)] = float(self.profiles[p])
         for c in self.prev_components:
-            rid = c.get("id_riga","")
+            rid = c.get("id_riga", "")
             if rid: env[f"C_{rid}"] = 1000.0
         raw = (self.ed_test.text() or "").strip()
         if raw:
@@ -231,31 +250,24 @@ class ComponentEditorDialog(QDialog):
                     except Exception: pass
         return env
 
-    def _open_hw_map(self):
-        if not (self.store and self.typology_id):
-            QMessageBox.information(self, "Ferramenta", "Salva la tipologia prima di mappare le formule.")
-            return
+    def _formula_focus_in(self, ev):
+        # prompt per creare formule multiple
         try:
-            from ui_qt.dialogs.component_hardware_map_qt import ComponentHardwareMapDialog
+            if self.store and isinstance(self.typology_id, int):
+                ret = QMessageBox.question(self, "Formule multiple", "Vuoi creare formule multiple?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if ret == QMessageBox.Yes:
+                    try:
+                        from ui_qt.dialogs.multi_formulas_editor_qt import MultiFormulasEditorDialog
+                        comps = self.prev_components
+                        vars_map = (self.var_provider() or {})
+                        dlg = MultiFormulasEditorDialog(self, self.store, int(self.typology_id), vars_map, comps, profiles_map=self.profiles)
+                        dlg.exec()
+                    except Exception:
+                        QMessageBox.information(self, "Formule multiple", "Editor formule non disponibile.")
         except Exception:
-            QMessageBox.information(self, "Ferramenta", "Modulo mapping non disponibile.")
-            return
-        ComponentHardwareMapDialog(self, self.store, int(self.typology_id), self.ed_id.text().strip()).exec()
-
-    def _open_hw_library_picker(self):
-        if not (self.store and self.typology_id):
-            QMessageBox.information(self, "Libreria", "Salva la tipologia prima di usare la libreria.")
-            return
-        try:
-            from ui_qt.dialogs.component_hw_formula_picker_qt import ComponentHardwareFormulaPickerDialog
-        except Exception:
-            QMessageBox.information(self, "Libreria", "Modulo non disponibile.")
-            return
-        dlg = ComponentHardwareFormulaPickerDialog(self, self.store, int(self.typology_id), self.ed_id.text().strip())
-        if dlg.exec():
-            formula = dlg.selected_formula()
-            if formula:
-                self.ed_formula.setText(formula)
+            pass
+        # esegui focus effettivo
+        return QLineEdit.focusInEvent(self.ed_formula, ev)  # type: ignore
 
     def _save(self):
         name = (self.ed_name.text() or "").strip() or "Senza Nome"
@@ -268,9 +280,11 @@ class ComponentEditorDialog(QDialog):
         note = (self.ed_note.text() or "").strip()
         if not (0.0 <= angsx <= 90.0 and 0.0 <= angdx <= 90.0):
             QMessageBox.warning(self, "Angoli", "Angoli fuori range (0-90)."); return
-        self.base.update({"nome": name, "profilo_nome": prof, "quantita": qta,
-                          "ang_sx": angsx, "ang_dx": angdx, "formula_lunghezza": form,
-                          "offset_mm": offs, "note": note})
+        self.base.update({
+            "nome": name, "profilo_nome": prof, "quantita": qta,
+            "ang_sx": angsx, "ang_dx": angdx, "formula_lunghezza": form,
+            "offset_mm": offs, "note": note
+        })
         self.created = True
         self.accept()
 
@@ -280,50 +294,50 @@ class ComponentEditorDialog(QDialog):
 
 class TipologiaEditorDialog(QDialog):
     """
-    Editor tipologia – include accesso a:
-    - Opzioni ferramenta
-    - Gestione meccanismi
-    - NUOVO: Libreria formule ferramenta (CRUD)
+    Editor tipologia (senza override ferramenta):
+    - Variabili locali
+    - Componenti
+    - Editor 'Formule multiple' accessibile dal focus sul campo formula del componente
     """
     def __init__(self, parent, base: Optional[Dict[str, Any]] = None, is_new: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Nuova Tipologia" if is_new else "Modifica Tipologia")
         self.setModal(True)
         self.setWindowState(Qt.WindowMaximized)
+
         self.base = dict(base or {})
         self.is_new = is_new
         self.profiles = _profiles_map()
-        self.store = TypologiesStore(str(default_db_path()))
+        self._store = TypologiesStore(str(default_db_path()))
+
         self._build()
         self._load_base()
 
     def _build(self):
         root = QVBoxLayout(self)
-        meta = QGridLayout(); meta.setHorizontalSpacing(12); meta.setVerticalSpacing(6); row = 0
 
+        meta = QGridLayout(); meta.setHorizontalSpacing(12); meta.setVerticalSpacing(6); row = 0
         meta.addWidget(QLabel("Nome tipologia:"), row, 0)
         self.ed_name = QLineEdit(); meta.addWidget(self.ed_name, row, 1, 1, 3); row += 1
+
         meta.addWidget(QLabel("Categoria:"), row, 0)
         self.ed_cat = QLineEdit(); meta.addWidget(self.ed_cat, row, 1)
         meta.addWidget(QLabel("Materiale:"), row, 2)
         self.ed_mat = QLineEdit(); meta.addWidget(self.ed_mat, row, 3); row += 1
+
         meta.addWidget(QLabel("Riferimento quota:"), row, 0)
         self.cmb_rif = QComboBox(); self.cmb_rif.addItems(["esterna","interna"]); meta.addWidget(self.cmb_rif, row, 1)
         meta.addWidget(QLabel("Extra detrazione (mm):"), row, 2)
         self.sp_extra = QDoubleSpinBox(); self.sp_extra.setRange(-1e6, 1e6); self.sp_extra.setDecimals(3); meta.addWidget(self.sp_extra, row, 3); row += 1
+
         meta.addWidget(QLabel("Pezzi totali:"), row, 0)
         self.sp_pezzi = QSpinBox(); self.sp_pezzi.setRange(1, 999); meta.addWidget(self.sp_pezzi, row, 1)
         meta.addWidget(QLabel("Note:"), row, 2)
         self.ed_note = QLineEdit(); meta.addWidget(self.ed_note, row, 3); row += 1
+
         root.addLayout(meta)
 
-        bar = QHBoxLayout()
-        btn_hw_opts = QPushButton("Opzioni ferramenta…"); btn_hw_opts.clicked.connect(self._open_hw_options)
-        btn_mech_mgr = QPushButton("Gestisci meccanismi…"); btn_mech_mgr.clicked.connect(self._open_mech_mgr)
-        btn_hw_lib = QPushButton("Libreria formule ferramenta…"); btn_hw_lib.clicked.connect(self._open_hw_lib)
-        bar.addWidget(btn_hw_opts); bar.addWidget(btn_mech_mgr); bar.addWidget(btn_hw_lib); bar.addStretch(1)
-        root.addLayout(bar)
-
+        # Variabili locali
         root.addWidget(QLabel("Variabili locali (nome → valore):"))
         self.tbl_vars = QTableWidget(0, 2)
         self.tbl_vars.setHorizontalHeaderLabels(["Nome","Valore"])
@@ -337,14 +351,20 @@ class TipologiaEditorDialog(QDialog):
         rowv.addWidget(btn_add_v); rowv.addWidget(btn_del_v); rowv.addStretch(1)
         root.addLayout(rowv)
 
+        # Componenti
         root.addWidget(QLabel("Componenti (doppio click per modificare)"))
         self.tbl_comp = QTableWidget(0, 9)
         self.tbl_comp.setHorizontalHeaderLabels(["ID","Nome","Profilo","Spess.","Q.tà","Ang SX","Ang DX","Formula","Offset"])
         hdr = self.tbl_comp.horizontalHeader()
-        for i, mode in enumerate([QHeaderView.ResizeToContents, QHeaderView.Stretch, QHeaderView.Stretch,
-                                  QHeaderView.ResizeToContents, QHeaderView.ResizeToContents, QHeaderView.ResizeToContents,
-                                  QHeaderView.ResizeToContents, QHeaderView.Stretch, QHeaderView.ResizeToContents]):
-            hdr.setSectionResizeMode(i, mode)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(7, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         self.tbl_comp.cellDoubleClicked.connect(self._edit_comp_row)
         root.addWidget(self.tbl_comp)
 
@@ -362,30 +382,6 @@ class TipologiaEditorDialog(QDialog):
         acts.addWidget(btn_cancel); acts.addWidget(btn_save); acts.addStretch(1)
         root.addLayout(acts)
 
-    def _open_hw_options(self):
-        typ_id = self.base.get("id")
-        if not isinstance(typ_id, int):
-            QMessageBox.information(self, "Ferramenta", "Salva la tipologia per abilitare le opzioni."); return
-        try:
-            from ui_qt.dialogs.typology_hw_options_qt import TypologyHardwareOptionsDialog
-            TypologyHardwareOptionsDialog(self, self.store, int(typ_id)).exec()
-        except Exception:
-            QMessageBox.information(self, "Ferramenta", "Modulo opzioni non disponibile.")
-
-    def _open_mech_mgr(self):
-        try:
-            from ui_qt.dialogs.hw_mechanism_manager_qt import HardwareMechanismManagerDialog
-            HardwareMechanismManagerDialog(self, self.store).exec()
-        except Exception:
-            QMessageBox.information(self, "Meccanismi", "Modulo non disponibile.")
-
-    def _open_hw_lib(self):
-        try:
-            from ui_qt.dialogs.hw_formula_presets_qt import HardwareFormulaPresetsDialog
-            HardwareFormulaPresetsDialog(self, self.store).exec()
-        except Exception:
-            QMessageBox.information(self, "Libreria", "Modulo non disponibile.")
-
     def _load_base(self):
         b = self.base or {}
         self.ed_name.setText(str(b.get("nome",""))); self.ed_cat.setText(str(b.get("categoria",""))); self.ed_mat.setText(str(b.get("materiale","")))
@@ -399,6 +395,7 @@ class TipologiaEditorDialog(QDialog):
         for c in (b.get("componenti") or []):
             self._comp_insert_row(c)
 
+    # --- variabili/componenti helpers ---
     def _vars_insert_row(self, k: str, v: float):
         r = self.tbl_vars.rowCount(); self.tbl_vars.insertRow(r)
         self.tbl_vars.setItem(r, 0, QTableWidgetItem(k))
@@ -425,10 +422,15 @@ class TipologiaEditorDialog(QDialog):
         if r >= 0: self.tbl_vars.removeRow(r)
 
     def _next_component_id(self) -> str:
-        ids = set(self.tbl_comp.item(r, 0).text() if self.tbl_comp.item(r, 0) else "" for r in range(self.tbl_comp.rowCount()))
+        ids = set()
+        for r in range(self.tbl_comp.rowCount()):
+            ids.add(self.tbl_comp.item(r, 0).text() if self.tbl_comp.item(r, 0) else "")
         i = 1
-        while f"R{i}" in ids: i += 1
-        return f"R{i}"
+        while True:
+            rid = f"R{i}"
+            if rid not in ids:
+                return rid
+            i += 1
 
     def _collect_components_list(self) -> List[Dict[str, Any]]:
         comps: List[Dict[str, Any]] = []
@@ -437,9 +439,12 @@ class TipologiaEditorDialog(QDialog):
             try:
                 comps.append({
                     "id_riga": gi(0), "nome": gi(1), "profilo_nome": gi(2),
-                    "quantita": int(float(gi(4) or "0")), "ang_sx": float(gi(5) or "0"),
-                    "ang_dx": float(gi(6) or "0"), "formula_lunghezza": gi(7) or "H",
-                    "offset_mm": float(gi(8) or "0"), "note": ""
+                    "quantita": int(float(gi(4) or "0")),
+                    "ang_sx": float(gi(5) or "0"),
+                    "ang_dx": float(gi(6) or "0"),
+                    "formula_lunghezza": gi(7) or "H",
+                    "offset_mm": float(gi(8) or "0"),
+                    "note": ""
                 })
             except Exception:
                 continue
@@ -455,7 +460,8 @@ class TipologiaEditorDialog(QDialog):
                 str(c.get("quantita",0)), f"{float(c.get('ang_sx',0.0)):.2f}",
                 f"{float(c.get('ang_dx',0.0)):.2f}", c.get("formula_lunghezza",""),
                 f"{float(c.get('offset_mm',0.0)):.3f}"]
-        for i, v in enumerate(vals): self.tbl_comp.setItem(r, i, QTableWidgetItem(v))
+        for i, v in enumerate(vals):
+            self.tbl_comp.setItem(r, i, QTableWidgetItem(v))
 
     def _new_component_dialog(self, base_comp: Dict[str, Any], row_to_replace: Optional[int] = None):
         comps_before = self._collect_components_list() if row_to_replace is None else self._collect_components_list()[:row_to_replace]
@@ -463,7 +469,7 @@ class TipologiaEditorDialog(QDialog):
         from PySide6.QtWidgets import QDialog as _QDialog
         typ_id = self.base.get("id") if isinstance(self.base.get("id"), int) else None
         dlg = ComponentEditorDialog(self, base_comp, prev_components=comps_before, profiles=self.profiles,
-                                    var_provider=var_provider, store=self.store, typology_id=typ_id)
+                                    var_provider=var_provider, store=self._store, typology_id=typ_id)
         if dlg.exec() == _QDialog.DialogCode.Accepted and getattr(dlg, "created", False):
             if row_to_replace is None:
                 self._comp_insert_row(dlg.result_component())
@@ -520,6 +526,5 @@ class TipologiaEditorDialog(QDialog):
     def result_tipologia(self) -> Dict[str, Any]:
         out = dict(self.base or {})
         out.setdefault("variabili_locali", {})
-        out.setdefault("options", {})
         out.setdefault("componenti", [])
         return out
