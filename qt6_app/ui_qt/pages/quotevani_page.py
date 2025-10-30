@@ -4,6 +4,7 @@ from collections import defaultdict
 import json
 from pathlib import Path
 from datetime import datetime
+import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -29,10 +30,24 @@ try:
 except Exception:
     ProfilesStore = None
 
+
+def _norm_label(s: str) -> str:
+    """
+    Normalizza un'etichetta per matching tollerante:
+    - lowercase + strip
+    - rimuove spazi, underscore e caratteri non alfanumerici
+    """
+    s = (s or "").strip().lower()
+    # sostituisci underscore e spazi con niente, rimuovi non alfanumerici
+    s = re.sub(r"[\s_]+", "", s)
+    s = re.sub(r"[^a-z0-9]+", "", s)
+    return s
+
+
 class QuoteVaniPage(QFrame):
     """
     Commesse su DB + Formule multiple per gruppo con regole variabili (es. braccio).
-    Cutlist: visualizza Profilo + Elemento.
+    Cutlist: visualizza Profilo + Elemento e aggrega correttamente su più tipologie.
     """
     def __init__(self, appwin):
         super().__init__()
@@ -41,8 +56,10 @@ class QuoteVaniPage(QFrame):
         self._orders = OrdersStore(str(default_db_path()))
         self._profiles = None
         if ProfilesStore:
-            try: self._profiles = ProfilesStore()
-            except Exception: self._profiles = None
+            try:
+                self._profiles = ProfilesStore()
+            except Exception:
+                self._profiles = None
 
         self._rows: List[Dict[str, Any]] = []
         self._current_order_id: Optional[int] = None
@@ -104,7 +121,7 @@ class QuoteVaniPage(QFrame):
         act.addWidget(btn_calc); act.addStretch(1)
         root.addLayout(act)
 
-        # Elenco taglio: aggiunta colonna "Elemento"
+        # Elenco taglio: colonna "Elemento"
         self.tbl_cut = QTableWidget(0, 7)
         self.tbl_cut.setHorizontalHeaderLabels(["Profilo", "Elemento", "Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà", "Note"])
         h2 = self.tbl_cut.horizontalHeader()
@@ -238,7 +255,8 @@ class QuoteVaniPage(QFrame):
 
         for r in self._rows:
             t = self._store.get_typology_full(int(r["tid"]))
-            if not t: continue
+            if not t: 
+                continue
             H = float(r["H"]); L = float(r["L"]); qty_row = int(r["qty"])
 
             # Ambiente base
@@ -254,11 +272,12 @@ class QuoteVaniPage(QFrame):
             if grp:
                 try:
                     for item in self._store.list_multi_formulas(int(r["tid"]), str(grp)):
-                        key = (item["label"] or "").strip().lower()
+                        key = _norm_label(item.get("label") or "")
                         mf_map[key] = item
                     var_rules = self._store.list_multi_var_rules(int(r["tid"]), str(grp))
                 except Exception:
-                    mf_map = {}; var_rules = []
+                    mf_map = {}
+                    var_rules = []
 
             # Applica regole variabili per L (es. braccio tipo0/1/2)
             if var_rules:
@@ -276,54 +295,60 @@ class QuoteVaniPage(QFrame):
                         if variant:
                             env_base[f"{var_name}_variant"] = variant
 
-            # Componenti tipologia: usa formula del gruppo se etichetta=nome (case-insensitive); elemento = nome componente
+            # Componenti tipologia: usa formula del gruppo se etichetta=nome (match normalizzato)
             comps = t.get("componenti") or []
             used_labels: set[str] = set()
             c_values: Dict[str, float] = {}
             for c in comps:
                 elemento = (c.get("nome") or "").strip() or "-"
-                prof = c.get("profilo_nome","") or ""
-                qty = int(c.get("quantita",0) or 0) * qty_row
-                angsx = float(c.get("ang_sx",0.0) or 0.0)
-                angdx = float(c.get("ang_dx",0.0) or 0.0)
-                expr = c.get("formula_lunghezza","") or "H"
-                offs = float(c.get("offset_mm",0.0) or 0.0)
+                elemento_key = _norm_label(elemento)
+                prof = (c.get("profilo_nome", "") or "").strip()
+                qty = int(c.get("quantita", 0) or 0) * qty_row
+                angsx = float(c.get("ang_sx", 0.0) or 0.0)
+                angdx = float(c.get("ang_dx", 0.0) or 0.0)
+                expr = c.get("formula_lunghezza", "") or "H"
+                offs = float(c.get("offset_mm", 0.0) or 0.0)
 
-                env = dict(env_base); env.update(c_values)
+                env = dict(env_base)
+                env.update(c_values)
 
                 # Override da gruppo se label combacia con nome
-                if grp:
-                    cname = elemento.lower()
-                    if cname in mf_map and (mf_map[cname].get("formula") or "").strip():
-                        expr = mf_map[cname]["formula"]
-                        used_labels.add(cname)
+                if grp and elemento_key in mf_map:
+                    fm = (mf_map[elemento_key].get("formula") or "").strip()
+                    if fm:
+                        expr = fm
+                        used_labels.add(elemento_key)
 
+                # Valutazione
                 try:
                     length = float(eval_formula(expr, env)) + offs
                 except Exception:
                     length = 0.0
 
-                if prof and qty > 0:
-                    aggregated[prof][(elemento, round(length, 2), angsx, angdx)] += qty
+                prof_out = prof if prof else "—"
+                if qty > 0:
+                    aggregated[prof_out][(elemento, round(length, 2), angsx, angdx)] += qty
 
-                rid = c.get("id_riga","")
+                rid = c.get("id_riga", "")
                 if rid:
-                    c_values[f"C_{rid}"] = length
+                    c_values[f"C_{rid}"] = length  # disponibile per extras
 
-            # Elementi extra dal gruppo (tutte le label non usate): elemento = etichetta della formula
+            # Elementi extra dal gruppo (tutte le label non usate)
             if grp and mf_map:
                 for lbl_key, itm in mf_map.items():
                     if lbl_key in used_labels:
                         continue
                     elemento = (itm.get("label") or "").strip() or "-"
                     expr = (itm.get("formula") or "H").strip()
-                    prof = (itm.get("profile_name") or "ASTINA") or "ASTINA"  # fallback più utile di "GENERIC"
+                    prof = (itm.get("profile_name") or "ASTINA") or "ASTINA"
                     q = int(itm.get("qty", 1) or 1) * qty_row
                     ax = float(itm.get("ang_sx", 0.0) or 0.0)
                     ad = float(itm.get("ang_dx", 0.0) or 0.0)
                     offs = float(itm.get("offset", 0.0) or 0.0)
 
                     env = dict(env_base)
+                    env.update(c_values)  # IMPORTANTE: ora gli extra vedono C_<id> già calcolati
+
                     try:
                         length = float(eval_formula(expr, env)) + offs
                     except Exception:
