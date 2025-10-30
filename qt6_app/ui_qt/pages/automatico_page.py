@@ -1,15 +1,22 @@
-from typing import Optional
+from __future__ import annotations
+from typing import Optional, List, Dict, Any, Tuple
+from collections import defaultdict
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
-    QComboBox, QSpinBox, QTreeWidget, QTreeWidgetItem, QTextEdit, QCheckBox, QSizePolicy
+    QComboBox, QSpinBox, QTreeWidget, QTreeWidgetItem, QTextEdit, QCheckBox, QSizePolicy, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer
+
 from ui_qt.widgets.header import Header
 from ui_qt.utils.settings import read_settings
 from ui_qt.logic.planner import plan_ilp, plan_bfd
 from ui_qt.logic.sequencer import Sequencer
 from ui_qt.widgets.status_panel import StatusPanel
+
+# Nuovi import per importare liste di taglio salvate
+from ui_qt.services.orders_store import OrdersStore
+from ui_qt.dialogs.orders_manager_qt import OrdersManagerDialog
 
 # Dimensioni allineate a Semi-Auto
 PANEL_W = 420
@@ -23,7 +30,7 @@ class AutomaticoPage(QWidget):
         super().__init__()
         self.appwin = appwin
         self.machine = appwin.machine
-        self.plan = {"solver": "", "steps": []}
+        self.plan: Dict[str, Any] = {"solver": "", "steps": []}
         self.seq = Sequencer(appwin)
         self.seq.step_started.connect(self._on_step_started)
         self.seq.step_finished.connect(self._on_step_finished)
@@ -39,6 +46,10 @@ class AutomaticoPage(QWidget):
 
         self.log: Optional[QTextEdit] = None
         self.tree: Optional[QTreeWidget] = None
+
+        # Nuovo: archivio ordini (usa stesso DB) e cutlist corrente
+        self._orders = OrdersStore()
+        self._cutlist: Optional[List[Dict[str, Any]]] = None  # lista di taglio corrente importata
 
         self._build()
 
@@ -67,12 +78,13 @@ class AutomaticoPage(QWidget):
         return False
 
     def _reset_and_home(self):
-        # Arresta sequenza e pulisce piano/viste; Header poi richiama Home
+        # Arresta sequenza e pulisce piano/viste
         try:
             self.seq.stop()
         except Exception:
             pass
         self.plan = {"solver": "", "steps": []}
+        self._cutlist = None
         try:
             if self.tree:
                 self.tree.clear()
@@ -93,6 +105,12 @@ class AutomaticoPage(QWidget):
         ctrl = QHBoxLayout()
         ctrl.setSpacing(8)
         root.addLayout(ctrl)
+
+        # Nuovo: import cutlist prima dei controlli solver
+        btn_import_cut = QPushButton("Importa Lista di Taglio…")
+        btn_import_cut.clicked.connect(self._import_cutlist)
+        ctrl.addWidget(btn_import_cut)
+
         ctrl.addWidget(QLabel("Solver:"))
         self.cb_solver = QComboBox()
         self.cb_solver.addItems(["ILP", "BFD"])
@@ -185,68 +203,168 @@ class AutomaticoPage(QWidget):
 
     # Piano/Sequencer
     def _calc_plan(self):
-        dummy_jobs = [{"id": "A", "len": 500.0, "qty": 3}, {"id": "B", "len": 750.0, "qty": 2}]
+        # Se è stata importata una cutlist, convertila in jobs per il planner
+        if self._cutlist:
+            jobs = self._jobs_from_cutlist(self._cutlist)
+        else:
+            # Demo fallback (come prima)
+            jobs = [{"id": "A", "len": 500.0, "qty": 3}, {"id": "B", "len": 750.0, "qty": 2}]
+
         solver = self.cb_solver.currentText()
         if solver == "ILP":
-            self.plan = plan_ilp(dummy_jobs, stock=None, time_limit_s=int(self.spin_tl.value()))
+            self.plan = plan_ilp(jobs, stock=None, time_limit_s=int(self.spin_tl.value()))
         else:
-            self.plan = plan_bfd(dummy_jobs, stock=None)
-        self._populate_plan(); self._toast(f"Piano calcolato ({self.plan['solver']})", "ok")
+            self.plan = plan_bfd(jobs, stock=None)
+
+        self._populate_plan()
+        self._toast(f"Piano calcolato ({self.plan.get('solver','')})", "ok")
+
+    def _jobs_from_cutlist(self, cuts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Converte la cutlist salvata (profile, length_mm, ang_sx, ang_dx, qty, note)
+        in jobs per il planner: {id, len, qty}.
+        Raggruppa per (profilo, lunghezza, ang_sx, ang_dx) per non mescolare varianti diverse.
+        """
+        grouped: Dict[Tuple[str, float, float, float], int] = defaultdict(int)
+        for c in cuts:
+            prof = str(c.get("profile") or "")
+            length = float(c.get("length_mm", 0.0) or 0.0)
+            ax = float(c.get("ang_sx", 0.0) or 0.0)
+            ad = float(c.get("ang_dx", 0.0) or 0.0)
+            qty = int(c.get("qty", 0) or 0)
+            key = (prof, round(length, 2), round(ax, 1), round(ad, 1))
+            grouped[key] += qty
+
+        jobs: List[Dict[str, Any]] = []
+        # Ordina per lunghezza decrescente (tipica ottimizzazione lineare)
+        for (prof, length, ax, ad), q in sorted(grouped.items(), key=lambda kv: kv[0][1], reverse=True):
+            job_id = f"{prof} {length:.2f} ({ax:.0f}/{ad:.0f})"
+            jobs.append({"id": job_id, "len": float(length), "qty": int(q)})
+        return jobs
 
     def _populate_plan(self):
         self.tree.clear()
         for i, st in enumerate(self.plan.get("steps", []), start=1):
-            it = QTreeWidgetItem([str(i), str(st.get("id", "")), f"{float(st.get('len', 0.0)):.1f}", str(int(st.get("qty", 1))), str(st.get("stock_id", "") or "-")])
+            it = QTreeWidgetItem([
+                str(i),
+                str(st.get("id", "")),
+                f"{float(st.get('len', 0.0)):.1f}",
+                str(int(st.get("qty", 1))),
+                str(st.get("stock_id", "") or "-")
+            ])
             self.tree.addTopLevelItem(it)
 
     def _start_seq(self):
         steps = self.plan.get("steps") or []
-        if not steps: self._toast("Nessun piano: calcola prima", "warn"); return
-        self.seq.load_plan(steps); self.seq.start(); self._log("Sequenza avviata")
-    def _pause_seq(self): self.seq.pause(); self._log("Sequenza in pausa")
-    def _resume_seq(self): self.seq.resume(); self._log("Sequenza ripresa")
-    def _stop_seq(self): self.seq.stop(); self._log("Sequenza arrestata")
-    def _on_step_started(self, idx: int, step: dict): self._log(f"Step {idx+1} start: {step.get('id')}")
-    def _on_step_finished(self, idx: int, step: dict): self._log(f"Step {idx+1} done")
-    def _on_seq_done(self): self._log("Sequenza completata"); self._toast("Automatico: completato", "ok")
+        if not steps:
+            self._toast("Nessun piano: calcola prima", "warn"); return
+        self.seq.load_plan(steps)
+        self.seq.start()
+        self._log("Sequenza avviata")
+
+    def _pause_seq(self):
+        self.seq.pause()
+        self._log("Sequenza in pausa")
+
+    def _resume_seq(self):
+        self.seq.resume()
+        self._log("Sequenza ripresa")
+
+    def _stop_seq(self):
+        self.seq.stop()
+        self._log("Sequenza arrestata")
+
+    def _on_step_started(self, idx: int, step: dict):
+        self._log(f"Step {idx+1} start: {step.get('id')}")
+
+    def _on_step_finished(self, idx: int, step: dict):
+        self._log(f"Step {idx+1} done")
+
+    def _on_seq_done(self):
+        self._log("Sequenza completata")
+        self._toast("Automatico: completato", "ok")
+
     def _log(self, s: str):
-        if self.log: self.log.append(s)
+        if self.log:
+            self.log.append(s)
 
     # Contapezzi / Fuori Quota
     def _apply_target(self):
         try:
             val = int(self.spin_target.value()) if self.spin_target else 0
-            setattr(self.machine, "semi_auto_target_pieces", val); self._update_counters_ui(); self._toast("Target contapezzi impostato", "ok")
-        except Exception: pass
+            setattr(self.machine, "semi_auto_target_pieces", val)
+            self._update_counters_ui()
+            self._toast("Target contapezzi impostato", "ok")
+        except Exception:
+            pass
+
     def _reset_counter(self):
         try:
-            setattr(self.machine, "semi_auto_count_done", 0); self._update_counters_ui(); self._toast("Contatore pezzi azzerato", "ok")
-        except Exception: pass
+            setattr(self.machine, "semi_auto_count_done", 0)
+            self._update_counters_ui()
+            self._toast("Contatore pezzi azzerato", "ok")
+        except Exception:
+            pass
+
     def _toggle_fuori_quota(self, checked: bool):
         try:
-            setattr(self.machine, "fuori_quota_mode", bool(checked)); setattr(self.machine, "out_of_quota_mode", bool(checked))
+            setattr(self.machine, "fuori_quota_mode", bool(checked))
+            setattr(self.machine, "out_of_quota_mode", bool(checked))
             self._toast(("Fuori quota ON" if checked else "Fuori quota OFF"), "info")
-        except Exception: pass
+        except Exception:
+            pass
+
     def _update_counters_ui(self):
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
         target = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         remaining = max(target - done, 0)
-        if self.lbl_done: self.lbl_done.setText(f"Tagliati: {done}")
-        if self.lbl_remaining: self.lbl_remaining.setText(f"Rimanenti: {remaining}")
-        if self.spin_target and self.spin_target.value() != target: self.spin_target.setValue(target)
+        if self.lbl_done:
+            self.lbl_done.setText(f"Tagliati: {done}")
+        if self.lbl_remaining:
+            self.lbl_remaining.setText(f"Rimanenti: {remaining}")
+        if self.spin_target and self.spin_target.value() != target:
+            self.spin_target.setValue(target)
+
+    # Import cutlist da OrdersStore
+    def _import_cutlist(self):
+        dlg = OrdersManagerDialog(self, self._orders)
+        if dlg.exec() and getattr(dlg, "selected_order_id", None):
+            ord_item = self._orders.get_order(int(dlg.selected_order_id))
+            if not ord_item:
+                QMessageBox.critical(self, "Importa", "Ordine non trovato.")
+                return
+            data = ord_item.get("data") or {}
+            if data.get("type") != "cutlist":
+                QMessageBox.information(self, "Importa", "L'ordine selezionato non è una lista di taglio (type = cutlist).")
+                return
+            cuts = data.get("cuts") or []
+            if not isinstance(cuts, list) or not cuts:
+                QMessageBox.information(self, "Importa", "Lista di taglio vuota.")
+                return
+            self._cutlist = cuts
+            self._log(f"Importata cutlist id={ord_item['id']} con {len(cuts)} righe; calcola il piano per procedere.")
+            self._toast("Cutlist importata", "ok")
 
     # Polling
     def on_show(self):
         if self._poll is None:
-            self._poll = QTimer(self); self._poll.timeout.connect(self._tick); self._poll.start(200)
+            self._poll = QTimer(self)
+            self._poll.timeout.connect(self._tick)
+            self._poll.start(200)
         self._update_counters_ui()
-        if self.status: self.status.refresh()
+        if self.status:
+            self.status.refresh()
+
     def _tick(self):
         self._update_counters_ui()
-        if self.status: self.status.refresh()
+        if self.status:
+            self.status.refresh()
+
     def hideEvent(self, ev):
         if self._poll is not None:
-            try: self._poll.stop()
-            except Exception: pass
+            try:
+                self._poll.stop()
+            except Exception:
+                pass
             self._poll = None
         super().hideEvent(ev)
