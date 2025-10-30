@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Optional, Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent, QTimer
 from PySide6.QtGui import QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, QComboBox,
@@ -17,12 +17,14 @@ try:
 except Exception:
     ProfilesStore = None  # type: ignore
 
+
 def _profiles_map() -> Dict[str, float]:
     try:
         store = ProfilesStore()
         return {str(r.get("name") or ""): float(r.get("thickness") or 0.0) for r in store.list_profiles()}
     except Exception:
         return {}
+
 
 def _abbrev(s: str, maxlen: int = 12) -> str:
     s = str(s or "")
@@ -32,9 +34,9 @@ def _abbrev(s: str, maxlen: int = 12) -> str:
 class ComponentEditorDialog(QDialog):
     """
     Editor componente:
-    - Menu 'Token…' a comparsa (tooltip)
-    - Inserimento token alla posizione del cursore nella formula
-    - Focus sul campo formula → prompt “Vuoi creare formule multiple?” → apre editor dedicato
+    - Token con tooltip e inserimento alla posizione del cursore
+    - Prompt “Formule multiple” mostrato UNA sola volta al primo focus del campo formula (non blocca l’UI)
+    - Pulsante esplicito “Formule multiple…” per aprire l’editor in qualsiasi momento
     """
     def __init__(self, parent, base: Dict[str, Any], prev_components: List[Dict[str, Any]],
                  profiles: Dict[str, float], var_provider: Optional[Callable[[], Dict[str, float]]] = None,
@@ -52,6 +54,9 @@ class ComponentEditorDialog(QDialog):
         self.store = store
         self.typology_id = typology_id
         self.created = False
+
+        # guard per evitare loop sul prompt
+        self._mf_prompt_shown = False
 
         self._build()
         self._install_shortcuts()
@@ -97,11 +102,19 @@ class ComponentEditorDialog(QDialog):
         self.sp_off = QDoubleSpinBox(); self.sp_off.setRange(-1e6, 1e6); self.sp_off.setDecimals(3); self.sp_off.setSingleStep(0.1)
         self.sp_off.setValue(float(self.base.get("offset_mm", 0.0) or 0.0)); g.addWidget(self.sp_off, row, 1); row += 1
 
+        # Formula + pulsante “Formule multiple…”
         g.addWidget(QLabel("Formula (base):"), row, 0)
+        formula_row = QHBoxLayout()
         self.ed_formula = QLineEdit(self.base.get("formula_lunghezza", "H"))
-        # Hook: focus → prompt “formule multiple”
-        self.ed_formula.focusInEvent = self._formula_focus_in  # type: ignore
-        g.addWidget(self.ed_formula, row, 1, 1, 3); row += 1
+        # installo un event filter per intercettare il primo FocusIn in modo sicuro
+        self.ed_formula.installEventFilter(self)
+        btn_multi = QPushButton("Formule multiple…")
+        btn_multi.setToolTip("Apri l’editor di formule multiple (gruppi/etichette)")
+        btn_multi.clicked.connect(self._open_multi_formulas_editor)
+        formula_row.addWidget(self.ed_formula, 1)
+        formula_row.addWidget(btn_multi, 0)
+        g.addLayout(formula_row, row, 1, 1, 3)
+        row += 1
 
         # Token menu a comparsa (tooltip attivi)
         token_row = QHBoxLayout()
@@ -141,6 +154,38 @@ class ComponentEditorDialog(QDialog):
 
         self._update_prof_token()
         self.cmb_prof.currentIndexChanged.connect(self._update_prof_token)
+
+    def eventFilter(self, obj, ev):
+        # Mostra il prompt solo UNA volta e dopo che il focus è entrato (defer con QTimer)
+        if obj is self.ed_formula and ev.type() == QEvent.FocusIn and not self._mf_prompt_shown:
+            self._mf_prompt_shown = True
+            QTimer.singleShot(0, self._ask_multi_formulas_once)
+            # non bloccare il focus
+            return False
+        return super().eventFilter(obj, ev)
+
+    def _ask_multi_formulas_once(self):
+        # Se manca lo store o l'id tipologia, non proporre nulla
+        if not (self.store and isinstance(self.typology_id, int)):
+            return
+        ret = QMessageBox.question(self, "Formule multiple", "Vuoi creare formule multiple?",
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ret == QMessageBox.Yes:
+            self._open_multi_formulas_editor()
+
+    def _open_multi_formulas_editor(self):
+        if not (self.store and isinstance(self.typology_id, int)):
+            QMessageBox.information(self, "Formule multiple", "Salva la tipologia prima di creare formule multiple.")
+            return
+        try:
+            from ui_qt.dialogs.multi_formulas_editor_qt import MultiFormulasEditorDialog
+        except Exception:
+            QMessageBox.information(self, "Formule multiple", "Modulo editor non disponibile.")
+            return
+        comps = self.prev_components
+        vars_map = (self.var_provider() or {})
+        dlg = MultiFormulasEditorDialog(self, self.store, int(self.typology_id), vars_map, comps, profiles_map=self.profiles)
+        dlg.exec()
 
     def _rebuild_token_menu(self):
         m = QMenu(self)
@@ -250,25 +295,6 @@ class ComponentEditorDialog(QDialog):
                     except Exception: pass
         return env
 
-    def _formula_focus_in(self, ev):
-        # prompt per creare formule multiple
-        try:
-            if self.store and isinstance(self.typology_id, int):
-                ret = QMessageBox.question(self, "Formule multiple", "Vuoi creare formule multiple?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-                if ret == QMessageBox.Yes:
-                    try:
-                        from ui_qt.dialogs.multi_formulas_editor_qt import MultiFormulasEditorDialog
-                        comps = self.prev_components
-                        vars_map = (self.var_provider() or {})
-                        dlg = MultiFormulasEditorDialog(self, self.store, int(self.typology_id), vars_map, comps, profiles_map=self.profiles)
-                        dlg.exec()
-                    except Exception:
-                        QMessageBox.information(self, "Formule multiple", "Editor formule non disponibile.")
-        except Exception:
-            pass
-        # esegui focus effettivo
-        return QLineEdit.focusInEvent(self.ed_formula, ev)  # type: ignore
-
     def _save(self):
         name = (self.ed_name.text() or "").strip() or "Senza Nome"
         prof = (self.cmb_prof.currentText() or "").strip()
@@ -297,7 +323,7 @@ class TipologiaEditorDialog(QDialog):
     Editor tipologia (senza override ferramenta):
     - Variabili locali
     - Componenti
-    - Editor 'Formule multiple' accessibile dal focus sul campo formula del componente
+    - Editor 'Formule multiple' accessibile dal prompt al primo focus o dal pulsante
     """
     def __init__(self, parent, base: Optional[Dict[str, Any]] = None, is_new: bool = False):
         super().__init__(parent)
@@ -383,7 +409,7 @@ class TipologiaEditorDialog(QDialog):
         root.addLayout(acts)
 
     def _load_base(self):
-        b = self.base or {}
+        b = self.base
         self.ed_name.setText(str(b.get("nome",""))); self.ed_cat.setText(str(b.get("categoria",""))); self.ed_mat.setText(str(b.get("materiale","")))
         rif = str(b.get("riferimento_quota","esterna")).lower(); idx = self.cmb_rif.findText(rif) if rif else 0
         self.cmb_rif.setCurrentIndex(idx if idx >= 0 else 0)
@@ -468,8 +494,15 @@ class TipologiaEditorDialog(QDialog):
         var_provider: Callable[[], Dict[str, float]] = lambda: self._collect_vars_map()
         from PySide6.QtWidgets import QDialog as _QDialog
         typ_id = self.base.get("id") if isinstance(self.base.get("id"), int) else None
-        dlg = ComponentEditorDialog(self, base_comp, prev_components=comps_before, profiles=self.profiles,
-                                    var_provider=var_provider, store=self._store, typology_id=typ_id)
+        dlg = ComponentEditorDialog(
+            self,
+            base_comp,
+            prev_components=comps_before,
+            profiles=self.profiles,
+            var_provider=var_provider,
+            store=self._store,
+            typology_id=typ_id
+        )
         if dlg.exec() == _QDialog.DialogCode.Accepted and getattr(dlg, "created", False):
             if row_to_replace is None:
                 self._comp_insert_row(dlg.result_component())
@@ -509,6 +542,7 @@ class TipologiaEditorDialog(QDialog):
             QMessageBox.warning(self, "Dati", "Inserisci un nome tipologia."); return
         vars_map = self._collect_vars_map()
         comps = self._collect_components_list()
+
         self.base = {
             "id": self.base.get("id"),
             "nome": name,
