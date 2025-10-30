@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Optional
+from typing import Optional
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -8,24 +8,19 @@ from PySide6.QtWidgets import (
 
 class OrdersManagerDialog(QDialog):
     """
-    Lista commesse salvate nel DB; permette:
-    - aprire (ritorna order_id)
-    - eliminare
-    - rinominare
-    - filtro per cliente
+    Lista ordini (commesse o cutlist) con Apri / Rinomina / Elimina.
     """
     def __init__(self, parent, store):
         super().__init__(parent)
-        self.setWindowTitle("Gestione commesse")
-        self.resize(800, 520)
+        self.setWindowTitle("Gestione ordini")
+        self.resize(820, 520)
         self.store = store
         self.selected_order_id: Optional[int] = None
-        self._build()
-        self._reload()
+        self._build(); self._reload()
 
     def _build(self):
         root = QVBoxLayout(self)
-        root.addWidget(QLabel("Commesse salvate (seleziona una riga e usa i pulsanti)"))
+        root.addWidget(QLabel("Ordini salvati"))
         self.tbl = QTableWidget(0, 4)
         self.tbl.setHorizontalHeaderLabels(["ID", "Nome", "Cliente", "Aggiornato"])
         hdr = self.tbl.horizontalHeader()
@@ -56,28 +51,23 @@ class OrdersManagerDialog(QDialog):
     def _selected_id(self) -> Optional[int]:
         r = self.tbl.currentRow()
         if r < 0: return None
-        try:
-            return int(self.tbl.item(r, 0).text())
-        except Exception:
-            return None
+        try: return int(self.tbl.item(r, 0).text())
+        except Exception: return None
 
     def _open(self):
         oid = self._selected_id()
         if not oid:
-            QMessageBox.information(self, "Apri", "Seleziona una commessa.")
-            return
+            QMessageBox.information(self, "Apri", "Seleziona un ordine."); return
         self.selected_order_id = oid
         self.accept()
 
     def _rename(self):
         oid = self._selected_id()
         if not oid:
-            QMessageBox.information(self, "Rinomina", "Seleziona una commessa.")
-            return
+            QMessageBox.information(self, "Rinomina", "Seleziona un ordine."); return
         cur = self.store.get_order(oid)
         if not cur:
-            QMessageBox.information(self, "Rinomina", "Comessa non trovata.")
-            return
+            QMessageBox.information(self, "Rinomina", "Ordine non trovato."); return
         newname, ok = QInputDialog.getText(self, "Rinomina", "Nuovo nome:", text=cur.get("name") or "")
         if not ok or not (newname or "").strip(): return
         try:
@@ -90,14 +80,13 @@ class OrdersManagerDialog(QDialog):
     def _delete(self):
         oid = self._selected_id()
         if not oid:
-            QMessageBox.information(self, "Elimina", "Seleziona una commessa.")
-            return
+            QMessageBox.information(self, "Elimina", "Seleziona un ordine."); return
         from PySide6.QtWidgets import QMessageBox as _MB
-        if _MB.question(self, "Elimina", "Eliminare la commessa selezionata?") != _MB.Yes:
+        if _MB.question(self, "Elimina", "Eliminare l'ordine selezionato?") != _MB.Yes:
             return
         try:
             self.store.delete_order(oid)
             self._reload()
-            QMessageBox.information(self, "Elimina", "Comessa eliminata.")
+            QMessageBox.information(self, "Elimina", "Ordine eliminato.")
         except Exception as e:
             QMessageBox.critical(self, "Errore", str(e))
