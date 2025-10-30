@@ -30,9 +30,6 @@ except Exception:
     ProfilesStore = None
 
 class QuoteVaniPage(QFrame):
-    """
-    Commesse su DB + Formule multiple per gruppo.
-    """
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
@@ -61,7 +58,6 @@ class QuoteVaniPage(QFrame):
             title.setStyleSheet("font-size:18px; font-weight:700;")
             root.addWidget(title, 0)
 
-        # Barra azioni con Cliente + Nuova/Salva/Apri + Import/Export + Salva Cutlist
         actions_top = QHBoxLayout()
         btn_add = QPushButton("Aggiungi riga…"); btn_add.clicked.connect(self._add_row_wizard)
         btn_new = QPushButton("Nuova commessa"); btn_new.clicked.connect(self._new_order)
@@ -80,7 +76,6 @@ class QuoteVaniPage(QFrame):
         actions_top.addWidget(btn_imp); actions_top.addWidget(btn_exp); actions_top.addWidget(btn_save_cutlist)
         root.addLayout(actions_top)
 
-        # Tabella righe
         self.tbl_rows = QTableWidget(0, 6)
         self.tbl_rows.setHorizontalHeaderLabels(["#", "Tipologia", "Pezzi", "H", "L", "Gruppo formule"])
         hdr = self.tbl_rows.horizontalHeader()
@@ -103,7 +98,6 @@ class QuoteVaniPage(QFrame):
         act.addWidget(btn_calc); act.addStretch(1)
         root.addLayout(act)
 
-        # Elenco taglio
         self.tbl_cut = QTableWidget(0, 6)
         self.tbl_cut.setHorizontalHeaderLabels(["Profilo", "Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà", "Note"])
         h2 = self.tbl_cut.horizontalHeader()
@@ -115,7 +109,7 @@ class QuoteVaniPage(QFrame):
         h2.setSectionResizeMode(5, QHeaderView.Stretch)
         root.addWidget(self.tbl_cut, 1)
 
-        hint = QLabel("Se la tipologia ha 'Formule multiple', scegli un gruppo: le formule saranno applicate ai componenti con etichetta=nome e saranno aggiunti eventuali elementi extra definiti nel gruppo.")
+        hint = QLabel("Gruppi: braccio viene scelto automaticamente fra le regole (es. tipo0/1/2) in base a L; usa in formula solo 'braccio'.")
         hint.setStyleSheet("color:#7f8c8d;")
         root.addWidget(hint, 0)
 
@@ -166,19 +160,16 @@ class QuoteVaniPage(QFrame):
     # ----- Wizard add row -----
     def _add_row_wizard(self):
         d1 = OrderRowTypologyDialog(self, self._store)
-        if not d1.exec():
-            return
+        if not d1.exec(): return
         typ_id = int(d1.typology_id)
 
         d2 = OrderRowDimsDialog(self, store=self._store, typology_id=typ_id)
-        if not d2.exec():
-            return
+        if not d2.exec(): return
 
         groups = self._store.list_multi_formula_groups(typ_id)
         selected_group = None
         if groups:
-            dg = OrderRowFormulasGroupDialog(self, groups)
-            dg.exec()
+            dg = OrderRowFormulasGroupDialog(self, groups); dg.exec()
             selected_group = dg.selected_group
 
         row = {
@@ -244,26 +235,32 @@ class QuoteVaniPage(QFrame):
             env_base.update(r.get("vars") or {})
             env_base.update(prof_tokens)
 
-            # Formule multiple selezionate
             grp = r.get("formula_group")
             mf_map: Dict[str, Dict[str, Any]] = {}
             var_rules: List[Dict[str, Any]] = []
             if grp:
                 try:
                     for item in self._store.list_multi_formulas(int(r["tid"]), str(grp)):
-                        key = (item["label"] or "").strip().lower()
-                        mf_map[key] = item
+                        key = (item["label"] or "").strip().lower(); mf_map[key] = item
                     var_rules = self._store.list_multi_var_rules(int(r["tid"]), str(grp))
                 except Exception:
-                    mf_map = {}; var_rules = []
+                    mf_map = []; var_rules = []
 
-            # Applica regole variabili (in base a L) all'env
+            # Applica regole variabili: selezione migliore per var_name (range più stretto che matcha L)
             if var_rules:
-                for vr in var_rules:
-                    if float(vr["l_min"]) <= L <= float(vr["l_max"]):
-                        env_base[str(vr["var_name"])] = float(vr["value"])
+                rules_by_var: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+                for vr in var_rules: rules_by_var[vr["var_name"]].append(vr)
+                for var_name, rules in rules_by_var.items():
+                    matches = [vr for vr in rules if float(vr["l_min"]) <= L <= float(vr["l_max"])]
+                    if matches:
+                        # scegli quella con intervallo più stretto
+                        matches.sort(key=lambda x: (float(x["l_max"]) - float(x["l_min"])))
+                        chosen = matches[0]
+                        env_base[var_name] = float(chosen["value"])
+                        variant = (chosen.get("variant") or "").strip()
+                        if variant:
+                            env_base[f"{var_name}_variant"] = variant
 
-            # Componenti della tipologia (applica formula del gruppo se etichetta=nome)
             comps = t.get("componenti") or []
             used_labels: set[str] = set()
             c_values: Dict[str, float] = {}
@@ -291,11 +288,10 @@ class QuoteVaniPage(QFrame):
                 rid = c.get("id_riga","")
                 if rid: c_values[f"C_{rid}"] = length
 
-            # Aggiungi anche gli elementi extra definiti nel gruppo e non già usati
+            # Elementi extra dal gruppo (non già usati)
             if grp and mf_map:
                 for lbl, itm in mf_map.items():
-                    if lbl in used_labels:
-                        continue
+                    if lbl in used_labels: continue
                     expr = (itm.get("formula") or "H").strip()
                     prof = (itm.get("profile_name") or "GENERIC") or "GENERIC"
                     q = int(itm.get("qty", 1) or 1) * qty_row
@@ -310,7 +306,7 @@ class QuoteVaniPage(QFrame):
                     if q > 0:
                         aggregated[prof][(round(length, 2), ax, ad)] += q
 
-        # riempi tabella taglio (per profilo, lunghezza decrescente)
+        # Tabella taglio
         self.tbl_cut.setRowCount(0)
         for prof in sorted(aggregated.keys()):
             lines = [(length, ax, ad, q) for (length, ax, ad), q in aggregated[prof].items()]
