@@ -30,6 +30,10 @@ except Exception:
     ProfilesStore = None
 
 class QuoteVaniPage(QFrame):
+    """
+    Commesse su DB + Formule multiple per gruppo con regole variabili (es. braccio).
+    Cutlist: visualizza Profilo + Elemento.
+    """
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
@@ -58,6 +62,7 @@ class QuoteVaniPage(QFrame):
             title.setStyleSheet("font-size:18px; font-weight:700;")
             root.addWidget(title, 0)
 
+        # Barra azioni con Cliente + Nuova/Salva/Apri + Import/Export + Salva Cutlist
         actions_top = QHBoxLayout()
         btn_add = QPushButton("Aggiungi riga…"); btn_add.clicked.connect(self._add_row_wizard)
         btn_new = QPushButton("Nuova commessa"); btn_new.clicked.connect(self._new_order)
@@ -76,6 +81,7 @@ class QuoteVaniPage(QFrame):
         actions_top.addWidget(btn_imp); actions_top.addWidget(btn_exp); actions_top.addWidget(btn_save_cutlist)
         root.addLayout(actions_top)
 
+        # Tabella righe
         self.tbl_rows = QTableWidget(0, 6)
         self.tbl_rows.setHorizontalHeaderLabels(["#", "Tipologia", "Pezzi", "H", "L", "Gruppo formule"])
         hdr = self.tbl_rows.horizontalHeader()
@@ -98,18 +104,20 @@ class QuoteVaniPage(QFrame):
         act.addWidget(btn_calc); act.addStretch(1)
         root.addLayout(act)
 
-        self.tbl_cut = QTableWidget(0, 6)
-        self.tbl_cut.setHorizontalHeaderLabels(["Profilo", "Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà", "Note"])
+        # Elenco taglio: aggiunta colonna "Elemento"
+        self.tbl_cut = QTableWidget(0, 7)
+        self.tbl_cut.setHorizontalHeaderLabels(["Profilo", "Elemento", "Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà", "Note"])
         h2 = self.tbl_cut.horizontalHeader()
         h2.setSectionResizeMode(0, QHeaderView.Stretch)
-        h2.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        h2.setSectionResizeMode(1, QHeaderView.Stretch)
         h2.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         h2.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         h2.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        h2.setSectionResizeMode(5, QHeaderView.Stretch)
+        h2.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        h2.setSectionResizeMode(6, QHeaderView.Stretch)
         root.addWidget(self.tbl_cut, 1)
 
-        hint = QLabel("Gruppi: braccio viene scelto automaticamente fra le regole (es. tipo0/1/2) in base a L; usa in formula solo 'braccio'.")
+        hint = QLabel("Gruppi: usa in formula il token 'braccio'. Il valore viene scelto automaticamente tra le regole (tipo0/1/2) in base alla L. La lista mostra Profilo + Elemento.")
         hint.setStyleSheet("color:#7f8c8d;")
         root.addWidget(hint, 0)
 
@@ -215,6 +223,7 @@ class QuoteVaniPage(QFrame):
         if not self._rows:
             QMessageBox.information(self, "Commessa", "Aggiungi almeno una riga."); return
 
+        # Token profili (spessori sanitizzati)
         prof_tokens: Dict[str, float] = {}
         if self._profiles:
             try:
@@ -224,36 +233,42 @@ class QuoteVaniPage(QFrame):
             except Exception:
                 pass
 
-        aggregated: Dict[str, Dict[Tuple[float,float,float], int]] = defaultdict(lambda: defaultdict(int))
+        # aggregated[profilo][(elemento, length, ax, ad)] = qty
+        aggregated: Dict[str, Dict[Tuple[str, float, float, float], int]] = defaultdict(lambda: defaultdict(int))
 
         for r in self._rows:
             t = self._store.get_typology_full(int(r["tid"]))
             if not t: continue
             H = float(r["H"]); L = float(r["L"]); qty_row = int(r["qty"])
+
+            # Ambiente base
             env_base: Dict[str, Any] = {"H": H, "L": L}
             env_base.update(t.get("variabili_locali") or {})
             env_base.update(r.get("vars") or {})
             env_base.update(prof_tokens)
 
+            # Carica gruppo formule multiple (selezionato) + regole variabili
             grp = r.get("formula_group")
             mf_map: Dict[str, Dict[str, Any]] = {}
             var_rules: List[Dict[str, Any]] = []
             if grp:
                 try:
                     for item in self._store.list_multi_formulas(int(r["tid"]), str(grp)):
-                        key = (item["label"] or "").strip().lower(); mf_map[key] = item
+                        key = (item["label"] or "").strip().lower()
+                        mf_map[key] = item
                     var_rules = self._store.list_multi_var_rules(int(r["tid"]), str(grp))
                 except Exception:
-                    mf_map = []; var_rules = []
+                    mf_map = {}; var_rules = []
 
-            # Applica regole variabili: selezione migliore per var_name (range più stretto che matcha L)
+            # Applica regole variabili per L (es. braccio tipo0/1/2)
             if var_rules:
-                rules_by_var: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-                for vr in var_rules: rules_by_var[vr["var_name"]].append(vr)
-                for var_name, rules in rules_by_var.items():
+                by_var: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+                for vr in var_rules:
+                    by_var[vr["var_name"]].append(vr)
+                for var_name, rules in by_var.items():
                     matches = [vr for vr in rules if float(vr["l_min"]) <= L <= float(vr["l_max"])]
                     if matches:
-                        # scegli quella con intervallo più stretto
+                        # prendi il range più stretto
                         matches.sort(key=lambda x: (float(x["l_max"]) - float(x["l_min"])))
                         chosen = matches[0]
                         env_base[var_name] = float(chosen["value"])
@@ -261,20 +276,24 @@ class QuoteVaniPage(QFrame):
                         if variant:
                             env_base[f"{var_name}_variant"] = variant
 
+            # Componenti tipologia: usa formula del gruppo se etichetta=nome (case-insensitive); elemento = nome componente
             comps = t.get("componenti") or []
             used_labels: set[str] = set()
             c_values: Dict[str, float] = {}
             for c in comps:
+                elemento = (c.get("nome") or "").strip() or "-"
                 prof = c.get("profilo_nome","") or ""
                 qty = int(c.get("quantita",0) or 0) * qty_row
                 angsx = float(c.get("ang_sx",0.0) or 0.0)
                 angdx = float(c.get("ang_dx",0.0) or 0.0)
                 expr = c.get("formula_lunghezza","") or "H"
                 offs = float(c.get("offset_mm",0.0) or 0.0)
+
                 env = dict(env_base); env.update(c_values)
 
+                # Override da gruppo se label combacia con nome
                 if grp:
-                    cname = (c.get("nome") or "").strip().lower()
+                    cname = elemento.lower()
                     if cname in mf_map and (mf_map[cname].get("formula") or "").strip():
                         expr = mf_map[cname]["formula"]
                         used_labels.add(cname)
@@ -283,42 +302,51 @@ class QuoteVaniPage(QFrame):
                     length = float(eval_formula(expr, env)) + offs
                 except Exception:
                     length = 0.0
-                if prof and qty > 0:
-                    aggregated[prof][(round(length, 2), angsx, angdx)] += qty
-                rid = c.get("id_riga","")
-                if rid: c_values[f"C_{rid}"] = length
 
-            # Elementi extra dal gruppo (non già usati)
+                if prof and qty > 0:
+                    aggregated[prof][(elemento, round(length, 2), angsx, angdx)] += qty
+
+                rid = c.get("id_riga","")
+                if rid:
+                    c_values[f"C_{rid}"] = length
+
+            # Elementi extra dal gruppo (tutte le label non usate): elemento = etichetta della formula
             if grp and mf_map:
-                for lbl, itm in mf_map.items():
-                    if lbl in used_labels: continue
+                for lbl_key, itm in mf_map.items():
+                    if lbl_key in used_labels:
+                        continue
+                    elemento = (itm.get("label") or "").strip() or "-"
                     expr = (itm.get("formula") or "H").strip()
-                    prof = (itm.get("profile_name") or "GENERIC") or "GENERIC"
+                    prof = (itm.get("profile_name") or "ASTINA") or "ASTINA"  # fallback più utile di "GENERIC"
                     q = int(itm.get("qty", 1) or 1) * qty_row
                     ax = float(itm.get("ang_sx", 0.0) or 0.0)
                     ad = float(itm.get("ang_dx", 0.0) or 0.0)
                     offs = float(itm.get("offset", 0.0) or 0.0)
+
                     env = dict(env_base)
                     try:
                         length = float(eval_formula(expr, env)) + offs
                     except Exception:
                         length = 0.0
-                    if q > 0:
-                        aggregated[prof][(round(length, 2), ax, ad)] += q
 
-        # Tabella taglio
+                    if q > 0:
+                        aggregated[prof][(elemento, round(length, 2), ax, ad)] += q
+
+        # Popola tabella taglio (per profilo, ordina per lunghezza decrescente)
         self.tbl_cut.setRowCount(0)
         for prof in sorted(aggregated.keys()):
-            lines = [(length, ax, ad, q) for (length, ax, ad), q in aggregated[prof].items()]
-            lines.sort(key=lambda x: x[0], reverse=True)
-            for length, ax, ad, q in lines:
+            # lines: (elemento, length, ax, ad, qty)
+            lines = [(elt, Ls, ax, ad, q) for (elt, Ls, ax, ad), q in aggregated[prof].items()]
+            lines.sort(key=lambda x: x[1], reverse=True)
+            for elemento, length, ax, ad, q in lines:
                 ri = self.tbl_cut.rowCount(); self.tbl_cut.insertRow(ri)
                 self.tbl_cut.setItem(ri, 0, QTableWidgetItem(str(prof)))
-                self.tbl_cut.setItem(ri, 1, QTableWidgetItem(f"{length:.2f}"))
-                self.tbl_cut.setItem(ri, 2, QTableWidgetItem(f"{ax:.1f}"))
-                self.tbl_cut.setItem(ri, 3, QTableWidgetItem(f"{ad:.1f}"))
-                self.tbl_cut.setItem(ri, 4, QTableWidgetItem(str(q)))
-                self.tbl_cut.setItem(ri, 5, QTableWidgetItem(""))
+                self.tbl_cut.setItem(ri, 1, QTableWidgetItem(str(elemento)))
+                self.tbl_cut.setItem(ri, 2, QTableWidgetItem(f"{length:.2f}"))
+                self.tbl_cut.setItem(ri, 3, QTableWidgetItem(f"{ax:.1f}"))
+                self.tbl_cut.setItem(ri, 4, QTableWidgetItem(f"{ad:.1f}"))
+                self.tbl_cut.setItem(ri, 5, QTableWidgetItem(str(q)))
+                self.tbl_cut.setItem(ri, 6, QTableWidgetItem(""))
 
     # ----- Export/Import JSON -----
     def _export_order(self):
@@ -363,7 +391,7 @@ class QuoteVaniPage(QFrame):
         self.ed_customer.setText(str(cust))
         self._refresh_rows_table()
 
-    # ----- Salva cutlist su DB -----
+    # ----- Salva cutlist su DB (include anche il campo 'element') -----
     def _save_cutlist_as_order(self):
         if self.tbl_cut.rowCount() == 0:
             QMessageBox.information(self, "Salva lista", "La lista di taglio è vuota."); return
@@ -375,12 +403,21 @@ class QuoteVaniPage(QFrame):
         cuts = []
         for r in range(self.tbl_cut.rowCount()):
             prof = self.tbl_cut.item(r, 0).text()
-            length = float(self.tbl_cut.item(r, 1).text())
-            ax = float(self.tbl_cut.item(r, 2).text())
-            ad = float(self.tbl_cut.item(r, 3).text())
-            qty = int(self.tbl_cut.item(r, 4).text())
-            note = self.tbl_cut.item(r, 5).text() if self.tbl_cut.item(r, 5) else ""
-            cuts.append({"profile": prof, "length_mm": length, "ang_sx": ax, "ang_dx": ad, "qty": qty, "note": note})
+            elemento = self.tbl_cut.item(r, 1).text()
+            length = float(self.tbl_cut.item(r, 2).text())
+            ax = float(self.tbl_cut.item(r, 3).text())
+            ad = float(self.tbl_cut.item(r, 4).text())
+            qty = int(self.tbl_cut.item(r, 5).text())
+            note = self.tbl_cut.item(r, 6).text() if self.tbl_cut.item(r, 6) else ""
+            cuts.append({
+                "profile": prof,
+                "element": elemento,
+                "length_mm": length,
+                "ang_sx": ax,
+                "ang_dx": ad,
+                "qty": qty,
+                "note": note
+            })
         data = {"type": "cutlist", "cuts": cuts, "saved_at": datetime.utcnow().isoformat() + "Z"}
         try:
             oid = self._orders.create_order(name, customer, data)
