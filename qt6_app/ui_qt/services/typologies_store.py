@@ -1,7 +1,7 @@
 from __future__ import annotations
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 import time
 import contextlib
 
@@ -49,14 +49,14 @@ CREATE TABLE IF NOT EXISTS typology_component (
     note         TEXT
 );
 
--- Formule multiple per gruppi (con metadati per costruire elementi extra)
+-- Formule multiple per gruppi (con metadati per eventuali elementi extra)
 CREATE TABLE IF NOT EXISTS typology_multi_formula (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     typology_id  INTEGER NOT NULL REFERENCES typology(id) ON DELETE CASCADE,
     group_name   TEXT NOT NULL,
     label        TEXT NOT NULL,
     formula      TEXT NOT NULL,
-    profile_name TEXT,                 -- per elementi extra
+    profile_name TEXT,
     qty          INTEGER DEFAULT 1,
     ang_sx       REAL DEFAULT 0.0,
     ang_dx       REAL DEFAULT 0.0,
@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS typology_multi_formula (
     UNIQUE(typology_id, group_name, label)
 );
 
--- Regole variabili per gruppo: var_name vale 'value' quando L è nel range [l_min, l_max]
+-- Regole variabili per gruppo: var_name assume 'value' quando L è in [l_min, l_max]
+-- Aggiunta colonna 'variant' per etichetta (tipo0/tipo1/...)
 CREATE TABLE IF NOT EXISTS typology_multi_var_rule (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     typology_id  INTEGER NOT NULL REFERENCES typology(id) ON DELETE CASCADE,
@@ -73,7 +74,8 @@ CREATE TABLE IF NOT EXISTS typology_multi_var_rule (
     var_name     TEXT NOT NULL,
     l_min        REAL NOT NULL,
     l_max        REAL NOT NULL,
-    value        REAL NOT NULL
+    value        REAL NOT NULL,
+    variant      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_typology_comp_typ ON typology_component(typology_id, ord);
@@ -113,7 +115,7 @@ class TypologiesStore:
         self._conn.commit()
 
     def _migrate_schema(self):
-        # Aggiungi colonne ai multi_formula se mancanti
+        # aggiunte non distruttive
         with contextlib.suppress(Exception):
             self._conn.execute("ALTER TABLE typology_multi_formula ADD COLUMN profile_name TEXT")
         with contextlib.suppress(Exception):
@@ -124,7 +126,8 @@ class TypologiesStore:
             self._conn.execute("ALTER TABLE typology_multi_formula ADD COLUMN ang_dx REAL DEFAULT 0.0")
         with contextlib.suppress(Exception):
             self._conn.execute("ALTER TABLE typology_multi_formula ADD COLUMN offset REAL DEFAULT 0.0")
-        # Crea tabella var_rule se non esiste (è nella SCHEMA)
+        with contextlib.suppress(Exception):
+            self._conn.execute("ALTER TABLE typology_multi_var_rule ADD COLUMN variant TEXT")
         self._conn.commit()
 
     def close(self):
@@ -256,19 +259,19 @@ class TypologiesStore:
         )
         self._conn.commit()
 
-    # -------- Regole variabili (dipendenti da L) --------
+    # -------- Regole variabili (dipendenti da L, con variante opzionale) --------
     def list_multi_var_rules(self, typology_id: int, group_name: str) -> List[Dict[str, Any]]:
         cur = self._conn.execute(
-            "SELECT id, var_name, l_min, l_max, value FROM typology_multi_var_rule WHERE typology_id=? AND group_name=? ORDER BY l_min",
+            "SELECT id, var_name, l_min, l_max, value, variant FROM typology_multi_var_rule WHERE typology_id=? AND group_name=? ORDER BY l_min",
             (int(typology_id), str(group_name))
         )
-        return [{"id": int(r[0]), "var_name": r[1], "l_min": float(r[2]), "l_max": float(r[3]), "value": float(r[4])} for r in cur.fetchall()]
+        return [{"id": int(r[0]), "var_name": r[1], "l_min": float(r[2]), "l_max": float(r[3]), "value": float(r[4]), "variant": (r[5] or "")} for r in cur.fetchall()]
 
     def replace_multi_var_rules(self, typology_id: int, group_name: str, rules: List[Dict[str, Any]]) -> None:
         self._conn.execute("DELETE FROM typology_multi_var_rule WHERE typology_id=? AND group_name=?", (int(typology_id), str(group_name)))
         for r in rules:
             self._conn.execute(
-                "INSERT INTO typology_multi_var_rule(typology_id, group_name, var_name, l_min, l_max, value) VALUES(?,?,?,?,?,?)",
-                (int(typology_id), str(group_name), str(r["var_name"]), float(r["l_min"]), float(r["l_max"]), float(r["value"]))
+                "INSERT INTO typology_multi_var_rule(typology_id, group_name, var_name, l_min, l_max, value, variant) VALUES(?,?,?,?,?,?,?)",
+                (int(typology_id), str(group_name), str(r["var_name"]), float(r["l_min"]), float(r["l_max"]), float(r["value"]), (str(r.get("variant","")) or None))
             )
         self._conn.commit()
