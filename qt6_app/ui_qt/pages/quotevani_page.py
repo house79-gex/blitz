@@ -24,6 +24,7 @@ from ui_qt.dialogs.order_row_typology_qt import OrderRowTypologyDialog
 from ui_qt.dialogs.order_row_dims_qt import OrderRowDimsDialog
 from ui_qt.dialogs.order_row_group_qt import OrderRowFormulasGroupDialog
 from ui_qt.dialogs.orders_manager_qt import OrdersManagerDialog
+from ui_qt.dialogs.cutlist_viewer_qt import CutlistViewerDialog
 
 try:
     from ui_qt.services.profiles_store import ProfilesStore
@@ -44,14 +45,13 @@ def _is_base_formula_valid(expr: Optional[str]) -> bool:
     t = expr.strip().lower()
     if not t:
         return False
-    # consideriamo "no", "-", "n" come disattivazione esplicita
     return t not in ("no", "-", "n")
 
 
 class QuoteVaniPage(QFrame):
     """
-    Commesse su DB + Formule multiple per gruppo con regole variabili (es. braccio).
-    Cutlist: visualizza Profilo + Elemento e aggrega correttamente su più tipologie.
+    Commesse su DB + Formule multiple (gruppi) con regole variabili (es. braccio).
+    Visualizzazione: finestra massimizzata della lista di taglio (Profilo + Elemento), già ordinata per profilo e lunghezza desc.
     """
     def __init__(self, appwin):
         super().__init__()
@@ -60,13 +60,14 @@ class QuoteVaniPage(QFrame):
         self._orders = OrdersStore(str(default_db_path()))
         self._profiles = None
         if ProfilesStore:
-            try:
-                self._profiles = ProfilesStore()
-            except Exception:
-                self._profiles = None
+            try: self._profiles = ProfilesStore()
+            except Exception: self._profiles = None
 
         self._rows: List[Dict[str, Any]] = []
         self._current_order_id: Optional[int] = None
+
+        # ultima lista calcolata per viewer/salvataggio
+        self._last_cuts: List[Dict[str, Any]] = []
         self._build()
 
     def _build(self):
@@ -91,6 +92,9 @@ class QuoteVaniPage(QFrame):
         btn_imp = QPushButton("Importa…"); btn_imp.clicked.connect(self._import_order)
         btn_exp = QPushButton("Esporta…"); btn_exp.clicked.connect(self._export_order)
         btn_save_cutlist = QPushButton("Salva lista di taglio"); btn_save_cutlist.clicked.connect(self._save_cutlist_as_order)
+        self.btn_view = QPushButton("Visualizza lista…")
+        self.btn_view.setEnabled(False)
+        self.btn_view.clicked.connect(self._open_viewer)
 
         actions_top.addWidget(btn_add)
         actions_top.addStretch(1)
@@ -99,8 +103,10 @@ class QuoteVaniPage(QFrame):
         actions_top.addWidget(self.ed_customer)
         actions_top.addWidget(btn_new); actions_top.addWidget(btn_save); actions_top.addWidget(btn_open)
         actions_top.addWidget(btn_imp); actions_top.addWidget(btn_exp); actions_top.addWidget(btn_save_cutlist)
+        actions_top.addWidget(self.btn_view)
         root.addLayout(actions_top)
 
+        # Tabella righe
         self.tbl_rows = QTableWidget(0, 6)
         self.tbl_rows.setHorizontalHeaderLabels(["#", "Tipologia", "Pezzi", "H", "L", "Gruppo formule"])
         hdr = self.tbl_rows.horizontalHeader()
@@ -112,41 +118,29 @@ class QuoteVaniPage(QFrame):
         hdr.setSectionResizeMode(5, QHeaderView.Stretch)
         root.addWidget(self.tbl_rows)
 
-        row_actions = QHBoxLayout()
-        btn_del = QPushButton("Rimuovi riga"); btn_del.clicked.connect(self._del_row)
-        btn_clr = QPushButton("Svuota"); btn_clr.clicked.connect(self._clear_rows)
-        row_actions.addWidget(btn_del); row_actions.addWidget(btn_clr); row_actions.addStretch(1)
-        root.addLayout(row_actions)
+        hint = QLabel("Se selezioni un Gruppo: applico le formule associate e aggiungo eventuali elementi extra; se non selezioni un Gruppo: uso solo le formule base valide. 'no' o vuoto = escluso.")
+        hint.setStyleSheet("color:#7f8c8d;")
+        root.addWidget(hint, 0)
 
         act = QHBoxLayout()
-        btn_calc = QPushButton("Calcola lista taglio"); btn_calc.clicked.connect(self._calc_and_aggregate)
+        btn_calc = QPushButton("Calcola lista taglio"); btn_calc.clicked.connect(self._calc_and_store)
         act.addWidget(btn_calc); act.addStretch(1)
         root.addLayout(act)
 
-        # Elenco taglio: colonna "Elemento"
-        self.tbl_cut = QTableWidget(0, 7)
-        self.tbl_cut.setHorizontalHeaderLabels(["Profilo", "Elemento", "Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà", "Note"])
-        h2 = self.tbl_cut.horizontalHeader()
-        h2.setSectionResizeMode(0, QHeaderView.Stretch)
-        h2.setSectionResizeMode(1, QHeaderView.Stretch)
-        h2.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        h2.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        h2.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        h2.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        h2.setSectionResizeMode(6, QHeaderView.Stretch)
-        root.addWidget(self.tbl_cut, 1)
-
-        hint = QLabel("Se selezioni un Gruppo: applico le formule associate e aggiungo eventuali elementi extra; se non selezioni un Gruppo: uso solo le formule base valide. 'no' o vuoto = elemento escluso.")
-        hint.setStyleSheet("color:#7f8c8d;")
-        root.addWidget(hint, 0)
+    # ----- Viewer -----
+    def _open_viewer(self):
+        if not self._last_cuts:
+            QMessageBox.information(self, "Lista", "Calcola prima la lista di taglio."); return
+        CutlistViewerDialog(self, self._last_cuts).exec()
 
     # ----- Orders DB -----
     def _new_order(self):
         self._current_order_id = None
         self._rows.clear()
-        self.tbl_cut.setRowCount(0)
+        self._last_cuts = []
         self._refresh_rows_table()
         self.ed_customer.setText("")
+        self.btn_view.setEnabled(False)
         QMessageBox.information(self, "Commessa", "Nuova commessa creata (non salvata).")
 
     def _save_order_to_db(self):
@@ -180,6 +174,8 @@ class QuoteVaniPage(QFrame):
             rows = data.get("rows") or []
             self._rows = rows
             self._current_order_id = oid
+            self._last_cuts = []
+            self.btn_view.setEnabled(False)
             self.ed_customer.setText(str(ord_item.get("customer") or ""))
             self._refresh_rows_table()
             QMessageBox.information(self, "Apri", f"Commessa aperta: {ord_item.get('name')} (id={oid}).")
@@ -224,23 +220,19 @@ class QuoteVaniPage(QFrame):
             self.tbl_rows.setItem(ri, 4, QTableWidgetItem(f"{r['L']:.1f}"))
             self.tbl_rows.setItem(ri, 5, QTableWidgetItem(gtxt))
 
-    def _del_row(self):
-        idx = self.tbl_rows.currentRow()
-        if idx < 0: return
-        if 0 <= idx < len(self._rows):
-            del self._rows[idx]
-            self._refresh_rows_table()
+    # ----- Calcolo / store lista -----
+    def _calc_and_store(self):
+        cuts = self._calc_cutlist()
+        if cuts is None:
+            return
+        self._last_cuts = cuts
+        self.btn_view.setEnabled(bool(self._last_cuts))
+        if self._last_cuts:
+            QMessageBox.information(self, "Lista", f"Lista di taglio calcolata: {len(self._last_cuts)} righe. Clicca 'Visualizza lista…'")
 
-    def _clear_rows(self):
-        self._rows.clear()
-        self._refresh_rows_table()
-        self.tbl_cut.setRowCount(0)
-
-    # ----- Calcolo / aggregazione -----
-    def _calc_and_aggregate(self):
-        self.tbl_cut.setRowCount(0)
+    def _calc_cutlist(self) -> Optional[List[Dict[str, Any]]]:
         if not self._rows:
-            QMessageBox.information(self, "Commessa", "Aggiungi almeno una riga."); return
+            QMessageBox.information(self, "Commessa", "Aggiungi almeno una riga."); return None
 
         # Token profili (spessori sanitizzati)
         prof_tokens: Dict[str, float] = {}
@@ -252,8 +244,10 @@ class QuoteVaniPage(QFrame):
             except Exception:
                 pass
 
-        # aggregated[profilo][(elemento, length, ax, ad)] = qty
-        aggregated: Dict[str, Dict[Tuple[str, float, float, float], int]] = defaultdict(lambda: defaultdict(int))
+        # aggregated[profile][(element, length, ax, ad, note)] = qty
+        aggregated: Dict[str, Dict[Tuple[str, float, float, float, str], int]] = defaultdict(lambda: defaultdict(int))
+        profile_order: List[str] = []  # ordine di apparizione per gruppi profilo
+        cuts_out: List[Dict[str, Any]] = []  # per eventuale bisogno
 
         for r in self._rows:
             t = self._store.get_typology_full(int(r["tid"]))
@@ -261,13 +255,11 @@ class QuoteVaniPage(QFrame):
                 continue
             H = float(r["H"]); L = float(r["L"]); qty_row = int(r["qty"])
 
-            # Ambiente base
             env_base: Dict[str, Any] = {"H": H, "L": L}
             env_base.update(t.get("variabili_locali") or {})
             env_base.update(r.get("vars") or {})
             env_base.update(prof_tokens)
 
-            # Gruppo + regole variabili
             grp = r.get("formula_group")
             mf_map: Dict[str, Dict[str, Any]] = {}
             var_rules: List[Dict[str, Any]] = []
@@ -281,11 +273,11 @@ class QuoteVaniPage(QFrame):
                     mf_map = {}
                     var_rules = []
 
-            # Applica regole variabili per L (es. braccio tipo0/1/2)
+            # Varianti (es. braccio) selezionate
+            variants_used: Dict[str, str] = {}
             if var_rules:
                 by_var: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-                for vr in var_rules:
-                    by_var[vr["var_name"]].append(vr)
+                for vr in var_rules: by_var[vr["var_name"]].append(vr)
                 for var_name, rules in by_var.items():
                     matches = [vr for vr in rules if float(vr["l_min"]) <= L <= float(vr["l_max"])]
                     if matches:
@@ -295,12 +287,13 @@ class QuoteVaniPage(QFrame):
                         variant = (chosen.get("variant") or "").strip()
                         if variant:
                             env_base[f"{var_name}_variant"] = variant
+                            variants_used[var_name] = variant
 
-            # Componenti tipologia: se gruppo selezionato, usa formula gruppo quando presente, altrimenti formula base valida;
-            # se gruppo non selezionato, usa SOLO formula base valida; elementi con base "no"/vuoto sono esclusi
             comps = t.get("componenti") or []
             used_labels: set[str] = set()
             c_values: Dict[str, float] = {}
+
+            # Componenti tipologia (base o gruppo)
             for c in comps:
                 elemento = (c.get("nome") or "").strip() or "-"
                 elemento_key = _norm_label(elemento)
@@ -311,17 +304,23 @@ class QuoteVaniPage(QFrame):
                 base_expr_raw = c.get("formula_lunghezza", None)
                 offs = float(c.get("offset_mm", 0.0) or 0.0)
 
-                env = dict(env_base)
-                env.update(c_values)
+                env = dict(env_base); env.update(c_values)
 
                 expr_to_use: Optional[str] = None
+                note_str_parts: List[str] = []
+
                 if grp and elemento_key in mf_map:
                     fm = (mf_map[elemento_key].get("formula") or "").strip()
                     if fm:
                         expr_to_use = fm
                         used_labels.add(elemento_key)
+                        # note dalla riga gruppo (se presente)
+                        rnote = (mf_map[elemento_key].get("note") or "").strip()
+                        if rnote: note_str_parts.append(rnote)
+                        # variant (es. braccio=tipoX)
+                        if "braccio" in variants_used:
+                            note_str_parts.append(f"braccio={variants_used['braccio']}")
                 else:
-                    # se non c'è gruppo o non c'è match, uso la base SOLO se valida
                     if _is_base_formula_valid(base_expr_raw):
                         expr_to_use = (base_expr_raw or "").strip()
 
@@ -330,54 +329,64 @@ class QuoteVaniPage(QFrame):
                         length = float(eval_formula(expr_to_use, env)) + offs
                     except Exception:
                         length = 0.0
-                    aggregated[prof][(elemento, round(length, 2), angsx, angdx)] += qty
-
-                    # aggiorna C_<id> per dipendenze successive
+                    note_str = " | ".join(note_str_parts) if note_str_parts else ""
+                    key = (elemento, round(length, 2), angsx, angdx, note_str)
+                    aggregated[prof][key] += qty
+                    if prof not in profile_order:
+                        profile_order.append(prof)
                     rid = c.get("id_riga", "")
                     if rid:
                         c_values[f"C_{rid}"] = length
 
-            # Elementi extra dal gruppo: solo se gruppo selezionato, aggiungo tutte le label non usate
+            # Elementi extra del gruppo
             if grp and mf_map:
                 for lbl_key, itm in mf_map.items():
                     if lbl_key in used_labels:
                         continue
                     elemento = (itm.get("label") or "").strip() or "-"
                     expr = (itm.get("formula") or "").strip()
-                    if not _is_base_formula_valid(expr):  # anche qui rispetto "no"/vuoto
+                    if not _is_base_formula_valid(expr):
                         continue
                     prof = (itm.get("profile_name") or "ASTINA") or "ASTINA"
                     q = int(itm.get("qty", 1) or 1) * qty_row
                     ax = float(itm.get("ang_sx", 0.0) or 0.0)
                     ad = float(itm.get("ang_dx", 0.0) or 0.0)
                     offs = float(itm.get("offset", 0.0) or 0.0)
-
-                    env = dict(env_base)
-                    env.update(c_values)  # gli extra vedono le C_<id> già calcolate
-
+                    env = dict(env_base); env.update(c_values)
                     try:
                         length = float(eval_formula(expr, env)) + offs
                     except Exception:
                         length = 0.0
-
+                    note_parts = []
+                    rnote = (itm.get("note") or "").strip()
+                    if rnote: note_parts.append(rnote)
+                    if "braccio" in variants_used:
+                        note_parts.append(f"braccio={variants_used['braccio']}")
+                    note_str = " | ".join(note_parts) if note_parts else ""
+                    key = (elemento, round(length, 2), ax, ad, note_str)
                     if q > 0:
-                        aggregated[prof][(elemento, round(length, 2), ax, ad)] += q
+                        aggregated[prof][key] += q
+                        if prof not in profile_order:
+                            profile_order.append(prof)
 
-        # Popola tabella taglio (per profilo, ordina per lunghezza decrescente)
-        self.tbl_cut.setRowCount(0)
-        for prof in sorted(aggregated.keys()):
-            # lines: (elemento, length, ax, ad, qty)
-            lines = [(elt, Ls, ax, ad, q) for (elt, Ls, ax, ad), q in aggregated[prof].items()]
-            lines.sort(key=lambda x: x[1], reverse=True)
-            for elemento, length, ax, ad, q in lines:
-                ri = self.tbl_cut.rowCount(); self.tbl_cut.insertRow(ri)
-                self.tbl_cut.setItem(ri, 0, QTableWidgetItem(str(prof)))
-                self.tbl_cut.setItem(ri, 1, QTableWidgetItem(str(elemento)))
-                self.tbl_cut.setItem(ri, 2, QTableWidgetItem(f"{length:.2f}"))
-                self.tbl_cut.setItem(ri, 3, QTableWidgetItem(f"{ax:.1f}"))
-                self.tbl_cut.setItem(ri, 4, QTableWidgetItem(f"{ad:.1f}"))
-                self.tbl_cut.setItem(ri, 5, QTableWidgetItem(str(q)))
-                self.tbl_cut.setItem(ri, 6, QTableWidgetItem(""))
+        # Costruisci lista finale seguendo l'ordine profili apparizione e lunghezze desc
+        cuts_final: List[Dict[str, Any]] = []
+        for prof in profile_order:
+            if prof not in aggregated:
+                continue
+            items = [(elt, Ls, ax, ad, note, q) for (elt, Ls, ax, ad, note), q in aggregated[prof].items()]
+            items.sort(key=lambda x: x[1], reverse=True)
+            for elt, Ls, ax, ad, note, q in items:
+                cuts_final.append({
+                    "profile": prof,
+                    "element": elt,
+                    "length_mm": float(Ls),
+                    "ang_sx": float(ax),
+                    "ang_dx": float(ad),
+                    "qty": int(q),
+                    "note": note
+                })
+        return cuts_final
 
     # ----- Export/Import JSON -----
     def _export_order(self):
@@ -418,37 +427,21 @@ class QuoteVaniPage(QFrame):
                 })
             except Exception:
                 continue
+        self._last_cuts = []
+        self.btn_view.setEnabled(False)
         cust = data.get("customer") or ""
         self.ed_customer.setText(str(cust))
         self._refresh_rows_table()
 
     def _save_cutlist_as_order(self):
-        if self.tbl_cut.rowCount() == 0:
-            QMessageBox.information(self, "Salva lista", "La lista di taglio è vuota."); return
+        if not self._last_cuts:
+            QMessageBox.information(self, "Salva lista", "Calcola prima la lista di taglio (pulsante Calcola)."); return
         default_name = f"Cutlist {datetime.utcnow().isoformat()}"
         name, ok = QInputDialog.getText(self, "Salva lista di taglio", "Nome lista:", text=default_name)
         if not ok or not (name or "").strip(): return
         name = name.strip()
         customer = (self.ed_customer.text() or "").strip()
-        cuts = []
-        for r in range(self.tbl_cut.rowCount()):
-            prof = self.tbl_cut.item(r, 0).text()
-            elemento = self.tbl_cut.item(r, 1).text()
-            length = float(self.tbl_cut.item(r, 2).text())
-            ax = float(self.tbl_cut.item(r, 3).text())
-            ad = float(self.tbl_cut.item(r, 4).text())
-            qty = int(self.tbl_cut.item(r, 5).text())
-            note = self.tbl_cut.item(r, 6).text() if self.tbl_cut.item(r, 6) else ""
-            cuts.append({
-                "profile": prof,
-                "element": elemento,
-                "length_mm": length,
-                "ang_sx": ax,
-                "ang_dx": ad,
-                "qty": qty,
-                "note": note
-            })
-        data = {"type": "cutlist", "cuts": cuts, "saved_at": datetime.utcnow().isoformat() + "Z"}
+        data = {"type": "cutlist", "cuts": self._last_cuts, "saved_at": datetime.utcnow().isoformat() + "Z"}
         try:
             oid = self._orders.create_order(name, customer, data)
             QMessageBox.information(self, "Salva lista", f"Lista salvata come ordine id={oid}.")
