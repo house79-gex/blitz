@@ -1,8 +1,8 @@
 from __future__ import annotations
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any
 from collections import defaultdict
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QBrush, QFont
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
@@ -11,21 +11,17 @@ from PySide6.QtWidgets import (
 
 class CutlistViewerDialog(QDialog):
     """
-    Viewer sola-visualizzazione (no edit) della lista di taglio, raggruppata per profilo.
+    Viewer sola-visualizzazione della lista di taglio, raggruppata per profilo.
     - Righe di intestazione per ciascun profilo (bold, grigio).
     - Evidenziazione selezione forte.
-    - Doppio click su riga di intestazione: chiede conferma per ottimizzare quel profilo
-      e invoca on_optimize_profile(profile) se fornito.
+    - Nessun callback/azione: è solamente una finestra di visualizzazione/esportazione.
     """
-    optimizeRequested = Signal(str)  # profilo
-
-    def __init__(self, parent, cuts: List[Dict[str, Any]], on_optimize_profile: Optional[Callable[[str], None]] = None):
+    def __init__(self, parent, cuts: List[Dict[str, Any]]):
         super().__init__(parent)
         self.setWindowTitle("Lista di taglio")
         self.setModal(True)
         self.setWindowState(Qt.WindowMaximized)
         self._cuts = cuts or []
-        self._on_optimize_profile = on_optimize_profile
         self._build()
         self._fill_grouped()
 
@@ -54,7 +50,6 @@ class CutlistViewerDialog(QDialog):
         self.tbl.setStyleSheet("""
             QTableWidget::item:selected { background:#1976d2; color:#ffffff; font-weight:700; }
         """)
-        self.tbl.cellDoubleClicked.connect(self._maybe_optimize)
 
         root.addWidget(self.tbl, 1)
 
@@ -81,7 +76,6 @@ class CutlistViewerDialog(QDialog):
             it.setFont(font)
             it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             items.append(it)
-        # colora tutta la riga
         for it in items:
             it.setBackground(bg)
         return items
@@ -115,32 +109,11 @@ class CutlistViewerDialog(QDialog):
                     QTableWidgetItem(str(int(c.get("qty",0)))),
                     QTableWidgetItem(str(c.get("note","")))
                 ]
-                # marca come data normale
+                # metadata per distinguere item/header
                 row_items[0].setData(Qt.UserRole, {"type": "item", "profile": prof})
                 for col, it in enumerate(row_items):
                     it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                     self.tbl.setItem(r, col, it)
-
-    def _row_is_header(self, row: int) -> Optional[str]:
-        it = self.tbl.item(row, 0)
-        if not it:
-            return None
-        meta = it.data(Qt.UserRole)
-        if isinstance(meta, dict) and meta.get("type") == "header":
-            return str(meta.get("profile",""))
-        return None
-
-    def _maybe_optimize(self, row: int, _col: int):
-        prof = self._row_is_header(row)
-        if not prof:
-            return
-        from PySide6.QtWidgets import QMessageBox as MB
-        if MB.question(self, "Ottimizza", f"Vuoi ottimizzare il profilo '{prof}'?") == MB.Yes:
-            # callback se presente
-            if callable(self._on_optimize_profile):
-                self._on_optimize_profile(prof)
-            # segnala comunque via signal
-            self.optimizeRequested.emit(prof)
 
     def _export_json(self):
         path, _ = QFileDialog.getSaveFileName(self, "Salva lista (JSON)", "", "JSON (*.json)")
