@@ -461,6 +461,14 @@ class AutomaticoPage(QWidget):
         self._move_and_arm(p["len"], p["ax"], p["ad"], self._plan_profile, f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
 
     # ---------------- UI helpers ----------------
+    def _toast(self, msg: str, level: str = "info"):
+        # Notifica non-bloccante, se il sistema di toast è disponibile
+        if hasattr(self.appwin, "toast"):
+            try:
+                self.appwin.toast.show(msg, level, 2500)
+            except Exception:
+                pass
+
     def _mark_row_finished(self, row: int):
         self._finished_rows.add(row)
         for c in range(self.tbl_cut.columnCount()):
