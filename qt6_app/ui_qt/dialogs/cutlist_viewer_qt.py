@@ -1,27 +1,33 @@
 from __future__ import annotations
-from typing import List, Dict, Any
-import json
-from pathlib import Path
+from typing import List, Dict, Any, Optional, Callable
+from collections import defaultdict
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QBrush, QFont
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QFileDialog, QMessageBox
+    QHeaderView, QFileDialog, QMessageBox, QAbstractItemView
 )
 
 class CutlistViewerDialog(QDialog):
     """
-    Finestra massimizzata per visualizzare una lista di taglio.
-    Attesa struttura cuts: [{profile, element, length_mm, ang_sx, ang_dx, qty, note}]
+    Viewer sola-visualizzazione (no edit) della lista di taglio, raggruppata per profilo.
+    - Righe di intestazione per ciascun profilo (bold, grigio).
+    - Evidenziazione selezione forte.
+    - Doppio click su riga di intestazione: chiede conferma per ottimizzare quel profilo
+      e invoca on_optimize_profile(profile) se fornito.
     """
-    def __init__(self, parent, cuts: List[Dict[str, Any]]):
+    optimizeRequested = Signal(str)  # profilo
+
+    def __init__(self, parent, cuts: List[Dict[str, Any]], on_optimize_profile: Optional[Callable[[str], None]] = None):
         super().__init__(parent)
         self.setWindowTitle("Lista di taglio")
         self.setModal(True)
         self.setWindowState(Qt.WindowMaximized)
         self._cuts = cuts or []
+        self._on_optimize_profile = on_optimize_profile
         self._build()
-        self._fill()
+        self._fill_grouped()
 
     def _build(self):
         root = QVBoxLayout(self)
@@ -39,30 +45,108 @@ class CutlistViewerDialog(QDialog):
         hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(6, QHeaderView.Stretch)
+
+        # Sola visualizzazione
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tbl.setAlternatingRowColors(True)
+        self.tbl.setStyleSheet("""
+            QTableWidget::item:selected { background:#1976d2; color:#ffffff; font-weight:700; }
+        """)
+        self.tbl.cellDoubleClicked.connect(self._maybe_optimize)
+
         root.addWidget(self.tbl, 1)
 
         row = QHBoxLayout()
+        btn_export_json = QPushButton("Salva JSON…"); btn_export_json.setToolTip("Esporta la lista in JSON")
+        btn_export_json.clicked.connect(self._export_json)
+        btn_export_csv = QPushButton("Salva CSV…"); btn_export_csv.setToolTip("Esporta la lista in CSV")
+        btn_export_csv.clicked.connect(self._export_csv)
         btn_close = QPushButton("Chiudi"); btn_close.clicked.connect(self.accept)
-        btn_export_json = QPushButton("Salva JSON…"); btn_export_json.clicked.connect(self._export_json)
-        btn_export_csv = QPushButton("Salva CSV…"); btn_export_csv.clicked.connect(self._export_csv)
         row.addStretch(1); row.addWidget(btn_export_json); row.addWidget(btn_export_csv); row.addWidget(btn_close)
         root.addLayout(row)
 
-    def _fill(self):
-        self.tbl.setRowCount(0)
+    def _header_row(self, profile: str) -> List[QTableWidgetItem]:
+        it_prof = QTableWidgetItem(profile)
+        it_prof.setData(Qt.UserRole, {"type": "header", "profile": profile})
+        it_prof.setForeground(QBrush(Qt.black))
+        font = QFont(); font.setBold(True)
+        it_prof.setFont(font)
+        bg = QBrush(QColor("#ecf0f1"))
+        items = [it_prof]
+        for _ in range(6):
+            it = QTableWidgetItem("")
+            it.setBackground(bg)
+            it.setFont(font)
+            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            items.append(it)
+        # colora tutta la riga
+        for it in items:
+            it.setBackground(bg)
+        return items
+
+    def _fill_grouped(self):
+        # Raggruppa per profilo mantenendo ordine d'apparizione
+        groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        order: List[str] = []
         for c in self._cuts:
+            p = str(c.get("profile", "")).strip()
+            if p not in groups:
+                order.append(p)
+            groups[p].append(c)
+
+        self.tbl.setRowCount(0)
+        for prof in order:
+            # Intestazione profilo
             r = self.tbl.rowCount(); self.tbl.insertRow(r)
-            self.tbl.setItem(r, 0, QTableWidgetItem(str(c.get("profile",""))))
-            self.tbl.setItem(r, 1, QTableWidgetItem(str(c.get("element",""))))
-            self.tbl.setItem(r, 2, QTableWidgetItem(f"{float(c.get('length_mm',0.0)):.2f}"))
-            self.tbl.setItem(r, 3, QTableWidgetItem(f"{float(c.get('ang_sx',0.0)):.1f}"))
-            self.tbl.setItem(r, 4, QTableWidgetItem(f"{float(c.get('ang_dx',0.0)):.1f}"))
-            self.tbl.setItem(r, 5, QTableWidgetItem(str(int(c.get("qty",0)))))
-            self.tbl.setItem(r, 6, QTableWidgetItem(str(c.get("note",""))))
+            hdr_items = self._header_row(prof)
+            for col, it in enumerate(hdr_items):
+                self.tbl.setItem(r, col, it)
+            # Righe elementi del profilo
+            for c in groups[prof]:
+                r = self.tbl.rowCount(); self.tbl.insertRow(r)
+                row_items = [
+                    QTableWidgetItem(str(c.get("profile",""))),
+                    QTableWidgetItem(str(c.get("element",""))),
+                    QTableWidgetItem(f"{float(c.get('length_mm',0.0)):.2f}"),
+                    QTableWidgetItem(f"{float(c.get('ang_sx',0.0)):.1f}"),
+                    QTableWidgetItem(f"{float(c.get('ang_dx',0.0)):.1f}"),
+                    QTableWidgetItem(str(int(c.get("qty",0)))),
+                    QTableWidgetItem(str(c.get("note","")))
+                ]
+                # marca come data normale
+                row_items[0].setData(Qt.UserRole, {"type": "item", "profile": prof})
+                for col, it in enumerate(row_items):
+                    it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                    self.tbl.setItem(r, col, it)
+
+    def _row_is_header(self, row: int) -> Optional[str]:
+        it = self.tbl.item(row, 0)
+        if not it:
+            return None
+        meta = it.data(Qt.UserRole)
+        if isinstance(meta, dict) and meta.get("type") == "header":
+            return str(meta.get("profile",""))
+        return None
+
+    def _maybe_optimize(self, row: int, _col: int):
+        prof = self._row_is_header(row)
+        if not prof:
+            return
+        from PySide6.QtWidgets import QMessageBox as MB
+        if MB.question(self, "Ottimizza", f"Vuoi ottimizzare il profilo '{prof}'?") == MB.Yes:
+            # callback se presente
+            if callable(self._on_optimize_profile):
+                self._on_optimize_profile(prof)
+            # segnala comunque via signal
+            self.optimizeRequested.emit(prof)
 
     def _export_json(self):
         path, _ = QFileDialog.getSaveFileName(self, "Salva lista (JSON)", "", "JSON (*.json)")
         if not path: return
+        import json
+        from pathlib import Path
         try:
             Path(path).write_text(json.dumps(self._cuts, indent=2, ensure_ascii=False), encoding="utf-8")
             QMessageBox.information(self, "Salva", "Salvato.")
@@ -72,15 +156,19 @@ class CutlistViewerDialog(QDialog):
     def _export_csv(self):
         path, _ = QFileDialog.getSaveFileName(self, "Salva lista (CSV)", "", "CSV (*.csv)")
         if not path: return
+        import csv
         try:
-            import csv
             with open(path, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f, delimiter=";")
                 w.writerow(["Profilo","Elemento","Lunghezza (mm)","Ang SX","Ang DX","Q.tà","Note"])
                 for c in self._cuts:
-                    w.writerow([c.get("profile",""), c.get("element",""), f"{float(c.get('length_mm',0.0)):.2f}",
-                                f"{float(c.get('ang_sx',0.0)):.1f}", f"{float(c.get('ang_dx',0.0)):.1f}",
-                                int(c.get("qty",0)), c.get("note","")])
+                    w.writerow([
+                        c.get("profile",""), c.get("element",""),
+                        f"{float(c.get('length_mm',0.0)):.2f}",
+                        f"{float(c.get('ang_sx',0.0)):.1f}",
+                        f"{float(c.get('ang_dx',0.0)):.1f}",
+                        int(c.get("qty",0)), c.get("note","")
+                    ])
             QMessageBox.information(self, "Salva", "Salvato.")
         except Exception as e:
             QMessageBox.critical(self, "Errore", str(e))
