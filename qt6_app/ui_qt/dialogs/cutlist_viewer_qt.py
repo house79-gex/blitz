@@ -12,9 +12,9 @@ from PySide6.QtWidgets import (
 class CutlistViewerDialog(QDialog):
     """
     Viewer sola-visualizzazione della lista di taglio, raggruppata per profilo.
-    - Righe di intestazione per ciascun profilo (bold, grigio).
-    - Evidenziazione selezione forte.
-    - Nessun callback/azione: è solamente una finestra di visualizzazione/esportazione.
+    - Righe di intestazione per ciascun profilo (bold, grigio), NON selezionabili.
+    - Evidenziazione selezione forte sulle righe elemento.
+    - Nessuna integrazione con Automatico qui.
     """
     def __init__(self, parent, cuts: List[Dict[str, Any]]):
         super().__init__(parent)
@@ -62,26 +62,25 @@ class CutlistViewerDialog(QDialog):
         row.addStretch(1); row.addWidget(btn_export_json); row.addWidget(btn_export_csv); row.addWidget(btn_close)
         root.addLayout(row)
 
-    def _header_row(self, profile: str) -> List[QTableWidgetItem]:
-        it_prof = QTableWidgetItem(profile)
-        it_prof.setData(Qt.UserRole, {"type": "header", "profile": profile})
-        it_prof.setForeground(QBrush(Qt.black))
+    def _header_row_items(self, profile: str) -> List[QTableWidgetItem]:
         font = QFont(); font.setBold(True)
-        it_prof.setFont(font)
         bg = QBrush(QColor("#ecf0f1"))
+        it_prof = QTableWidgetItem(profile)
+        it_prof.setFont(font)
+        it_prof.setBackground(bg)
+        it_prof.setForeground(QBrush(Qt.black))
+        # NON selezionabile per evitare “bianco su bianco”
+        it_prof.setFlags(Qt.ItemIsEnabled)
         items = [it_prof]
         for _ in range(6):
             it = QTableWidgetItem("")
-            it.setBackground(bg)
             it.setFont(font)
-            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            items.append(it)
-        for it in items:
             it.setBackground(bg)
+            it.setFlags(Qt.ItemIsEnabled)
+            items.append(it)
         return items
 
     def _fill_grouped(self):
-        # Raggruppa per profilo mantenendo ordine d'apparizione
         groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         order: List[str] = []
         for c in self._cuts:
@@ -94,8 +93,7 @@ class CutlistViewerDialog(QDialog):
         for prof in order:
             # Intestazione profilo
             r = self.tbl.rowCount(); self.tbl.insertRow(r)
-            hdr_items = self._header_row(prof)
-            for col, it in enumerate(hdr_items):
+            for col, it in enumerate(self._header_row_items(prof or "—")):
                 self.tbl.setItem(r, col, it)
             # Righe elementi del profilo
             for c in groups[prof]:
@@ -109,10 +107,9 @@ class CutlistViewerDialog(QDialog):
                     QTableWidgetItem(str(int(c.get("qty",0)))),
                     QTableWidgetItem(str(c.get("note","")))
                 ]
-                # metadata per distinguere item/header
-                row_items[0].setData(Qt.UserRole, {"type": "item", "profile": prof})
-                for col, it in enumerate(row_items):
+                for it in row_items:
                     it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                for col, it in enumerate(row_items):
                     self.tbl.setItem(r, col, it)
 
     def _export_json(self):
