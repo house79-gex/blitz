@@ -5,19 +5,16 @@ import time
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
-    QComboBox, QSpinBox, QTableWidget, QTableWidgetItem, QHeaderView,
+    QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
     QCheckBox, QMessageBox, QAbstractItemView
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut, QColor, QBrush, QFont
+from PySide6.QtGui import QKeySequence, QShortcut, QColor, QBrush, QFont, QKeyEvent
 
 from ui_qt.widgets.header import Header
-        # Status pannello già presente nell'app (mostra IO macchina)
 from ui_qt.widgets.status_panel import StatusPanel
-
-from ui_qt.logic.planner import plan_ilp, plan_bfd  # (facoltativo, solo informativo)
-from ui_qt.logic.sequencer import Sequencer         # segnali/log (non usiamo ciclo)
-
+from ui_qt.logic.planner import plan_ilp, plan_bfd
+from ui_qt.logic.sequencer import Sequencer
 from ui_qt.services.orders_store import OrdersStore
 from ui_qt.dialogs.orders_manager_qt import OrdersManagerDialog
 
@@ -30,42 +27,40 @@ except Exception:
 
 PANEL_W = 420
 PANEL_H = 220
-
-# Dimensioni maggiorate del riquadro "Numero pezzi"
 COUNTER_W = 540
 COUNTER_H = 180
 
 
 class AutomaticoPage(QWidget):
     """
-    Automatico (pulito):
-    - Lista raggruppata per profilo con righe di intestazione (come la viewer) e sola visualizzazione.
-    - Start riga: posiziona, attende in‑pos (encoder, tolleranza), quindi BLOCCA; conteggio su input lama; allo scadere target → SBLOCCA.
-    - Riquadro Numero pezzi: sola visualizzazione (Target/Tagliati/Rimanenti), senza input né pulsanti; dimensioni aumentate.
-    - Ottimizzazione: resta con pulsante 'Ottimizza' (non mostrata qui per brevità), si può mantenere la logica a pezzo/pressione Start fisico.
+    Automatico:
+    - Lista raggruppata per profilo con righe intestazione NON selezionabili.
+    - Start riga: move → in-pos (encoder, tol) → BLOCCA → conteggio lama → SBLOCCA.
+    - Numero pezzi: sola visualizzazione, pannello più grande.
+    - Doppio click su intestazione profilo: avvia ottimizzazione per quel profilo e abilita Start fisico.
+    - F8: simula un taglio (incrementa contatore come pulse lama).
     """
-
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
         self.machine = appwin.machine
 
-        # Sequencer per log
         self.plan: Dict[str, Any] = {"solver": "", "steps": []}
         self.seq = Sequencer(appwin)
         self.seq.step_started.connect(self._on_step_started)
         self.seq.step_finished.connect(self._on_step_finished)
         self.seq.finished.connect(self._on_seq_done)
 
-        # UI refs
         self.status: Optional[StatusPanel] = None
         self._poll: Optional[QTimer] = None
+
+        # UI
         self.tbl_cut: Optional[QTableWidget] = None
         self.lbl_target: Optional[QLabel] = None
         self.lbl_done: Optional[QLabel] = None
         self.lbl_remaining: Optional[QLabel] = None
-        self.chk_start_phys: Optional[QCheckBox] = None
         self.cmb_profile: Optional[QComboBox] = None
+        self.chk_start_phys: Optional[QCheckBox] = None
 
         # Dati
         self._orders = OrdersStore()
@@ -78,13 +73,13 @@ class AutomaticoPage(QWidget):
         self._manual_job: Optional[Dict[str, Any]] = None
         self._finished_rows: set[int] = set()
 
-        # Piano (se usi ottimizzazione)
+        # Piano
         self._plan_profile: str = ""
         self._bars: List[List[Dict[str, float]]] = []
         self._bar_idx: int = -1
         self._piece_idx: int = -1
 
-        # IO & posizionamento
+        # IO runtime
         self._brake_locked: bool = False
         self._blade_prev: bool = False
         self._start_prev: bool = False
@@ -94,7 +89,7 @@ class AutomaticoPage(QWidget):
 
         self._build()
 
-    # ---------------- UI ----------------
+    # ---------------- UI build ----------------
     def _build(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -103,56 +98,42 @@ class AutomaticoPage(QWidget):
         root.addWidget(Header(self.appwin, "AUTOMATICO", mode="default",
                               on_home=self._nav_home, on_reset=self._reset_and_home))
 
-        top = QHBoxLayout(); top.setSpacing(8); root.addLayout(top)
-        btn_import = QPushButton("Importa…"); btn_import.setMinimumWidth(110)
-        btn_import.setToolTip("Importa una cutlist salvata"); btn_import.clicked.connect(self._import_cutlist)
+        top = QHBoxLayout(); root.addLayout(top)
+        btn_import = QPushButton("Importa…"); btn_import.setToolTip("Importa una cutlist salvata"); btn_import.clicked.connect(self._import_cutlist)
         top.addWidget(btn_import)
 
         top.addWidget(QLabel("Profilo:"))
-        self.cmb_profile = QComboBox(); self.cmb_profile.setMinimumWidth(160)
+        self.cmb_profile = QComboBox()
+        self.cmb_profile.setMinimumWidth(160)
         top.addWidget(self.cmb_profile)
 
-        btn_opt = QPushButton("Ottimizza"); btn_opt.setMinimumWidth(110)
-        btn_opt.setToolTip("Ottimizza per il profilo selezionato")
-        btn_opt.clicked.connect(self._optimize_profile)
+        btn_opt = QPushButton("Ottimizza")
+        btn_opt.setToolTip("Ottimizza il profilo selezionato")
+        btn_opt.clicked.connect(lambda: self._optimize_profile(self.cmb_profile.currentText().strip()))
         top.addWidget(btn_opt)
 
-        self.chk_start_phys = QCheckBox("Start fisico")
-        self.chk_start_phys.setToolTip("Usa il pulsante fisico per avanzare i pezzi in ottimizzazione")
+        self.chk_start_phys = QCheckBox("Start fisico"); self.chk_start_phys.setToolTip("Pulsante fisico per avanzare i pezzi")
         top.addWidget(self.chk_start_phys)
 
         top.addStretch(1)
 
-        body = QHBoxLayout(); body.setSpacing(8); root.addLayout(body, 1)
+        body = QHBoxLayout(); root.addLayout(body, 1)
 
-        # Colonna sinistra: Numero pezzi (visual) + cutlist raggruppata
+        # Sinistra: Numero pezzi (solo visual) + lista raggruppata
         left = QFrame(); body.addWidget(left, 2)
-        ll = QVBoxLayout(left); ll.setContentsMargins(6, 6, 6, 6); ll.setSpacing(8)
+        ll = QVBoxLayout(left); ll.setContentsMargins(6, 6, 6, 6)
 
-        # Numero pezzi (solo visual, più grande)
         cnt_box = QFrame(); cnt_box.setFixedSize(COUNTER_W, COUNTER_H); cnt_box.setFrameShape(QFrame.StyledPanel)
         cnl = QVBoxLayout(cnt_box); cnl.setContentsMargins(12, 12, 12, 12)
         title_cnt = QLabel("NUMERO PEZZI"); title_cnt.setStyleSheet("font-weight:800; font-size:16px;")
         cnl.addWidget(title_cnt)
-
-        row1 = QHBoxLayout()
-        row2 = QHBoxLayout()
-        row3 = QHBoxLayout()
-        big_font = "font-size:24px; font-weight:800;"
-        lbl_t = QLabel("Target:"); lbl_t.setStyleSheet(big_font)
-        self.lbl_target = QLabel("0"); self.lbl_target.setStyleSheet(big_font)
-        row1.addWidget(lbl_t); row1.addWidget(self.lbl_target); row1.addStretch(1)
-        lbl_d = QLabel("Tagliati:"); lbl_d.setStyleSheet(big_font)
-        self.lbl_done = QLabel("0"); self.lbl_done.setStyleSheet(big_font + "color:#2ecc71;")
-        row2.addWidget(lbl_d); row2.addWidget(self.lbl_done); row2.addStretch(1)
-        lbl_r = QLabel("Rimanenti:"); lbl_r.setStyleSheet(big_font)
-        self.lbl_remaining = QLabel("-"); self.lbl_remaining.setStyleSheet(big_font + "color:#f39c12;")
-        row3.addWidget(lbl_r); row3.addWidget(self.lbl_remaining); row3.addStretch(1)
-
+        big = "font-size:24px; font-weight:800;"
+        row1 = QHBoxLayout(); row1.addWidget(QLabel("Target:")); self.lbl_target = QLabel("0"); self.lbl_target.setStyleSheet(big); row1.addWidget(self.lbl_target); row1.addStretch(1)
+        row2 = QHBoxLayout(); row2.addWidget(QLabel("Tagliati:")); self.lbl_done = QLabel("0"); self.lbl_done.setStyleSheet(big + "color:#2ecc71;"); row2.addWidget(self.lbl_done); row2.addStretch(1)
+        row3 = QHBoxLayout(); row3.addWidget(QLabel("Rimanenti:")); self.lbl_remaining = QLabel("-"); self.lbl_remaining.setStyleSheet(big + "color:#f39c12;"); row3.addWidget(self.lbl_remaining); row3.addStretch(1)
         cnl.addLayout(row1); cnl.addLayout(row2); cnl.addLayout(row3)
         ll.addWidget(cnt_box, 0, alignment=Qt.AlignLeft | Qt.AlignTop)
 
-        # Cutlist raggruppata per profilo (header rows)
         ll.addWidget(QLabel("Cutlist"))
         self.tbl_cut = QTableWidget(0, 7)
         self.tbl_cut.setHorizontalHeaderLabels(["Profilo", "Elemento", "Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà", "Note"])
@@ -169,63 +150,49 @@ class AutomaticoPage(QWidget):
         self.tbl_cut.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_cut.setAlternatingRowColors(True)
         self.tbl_cut.setStyleSheet("QTableWidget::item:selected { background:#1976d2; color:#ffffff; font-weight:700; }")
+        self.tbl_cut.cellDoubleClicked.connect(self._on_cell_double_clicked)  # doppio click su intestazione → ottimizza
         ll.addWidget(self.tbl_cut, 1)
 
-        # Azioni riga/ottimizzazione
         row = QHBoxLayout()
-        btn_start_row = QPushButton("Start riga"); btn_start_row.setMinimumWidth(120)
-        btn_start_row.setToolTip("Posiziona → in‑pos (encoder) → BLOCCA → conteggio lama → SBLOCCA")
+        btn_start_row = QPushButton("Start riga")
+        btn_start_row.setToolTip("Posiziona → in‑pos (encoder) → BLOCCA → conta → SBLOCCA")
         btn_start_row.clicked.connect(self._start_row)
         row.addWidget(btn_start_row)
-        btn_next = QPushButton("Avanza (piano)"); btn_next.setMinimumWidth(120)
-        btn_next.setToolTip("In ottimizzazione: arma pezzo successivo (target=1), posiziona+blocca; conta su input lama")
-        btn_next.clicked.connect(lambda: self._handle_start_trigger(force_plan=True))
-        row.addWidget(btn_next)
         row.addStretch(1)
         ll.addLayout(row)
 
         # Destra: stato macchina
-        right = QFrame(); right.setFixedWidth(PANEL_W); body.addWidget(right, 0)
+        right = QFrame(); right.setFixedWidth(PANEL_W)
         rl = QVBoxLayout(right); rl.setContentsMargins(6, 6, 6, 6)
         self.status = StatusPanel(self.machine, "STATO", right)
         rl.addWidget(self.status, 1)
+        body.addWidget(right, 0)
 
         # Space = Start fisico (fallback)
         QShortcut(QKeySequence("Space"), self, activated=self._handle_start_trigger)
 
-    # -------- Helpers UI --------
+    # ---------------- Helpers: righe intestazione ----------------
     def _header_items(self, profile: str) -> List[QTableWidgetItem]:
-        it_prof = QTableWidgetItem(profile)
-        it_prof.setData(Qt.UserRole, {"type": "header", "profile": profile})
         font = QFont(); font.setBold(True)
-        it_prof.setFont(font)
         bg = QBrush(QColor("#ecf0f1"))
-        items = [it_prof]
+        items: List[QTableWidgetItem] = []
+        itp = QTableWidgetItem(profile or "—")
+        itp.setFont(font); itp.setBackground(bg); itp.setForeground(QBrush(Qt.black))
+        itp.setFlags(Qt.ItemIsEnabled)  # NON selezionabile per evitare testo bianco su bianco
+        items.append(itp)
         for _ in range(6):
             it = QTableWidgetItem("")
-            it.setBackground(bg)
-            it.setFont(font)
-            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            it.setFont(font); it.setBackground(bg); it.setFlags(Qt.ItemIsEnabled)
             items.append(it)
-        for it in items:
-            it.setBackground(bg)
         return items
 
     def _row_is_header(self, row: int) -> bool:
         it = self.tbl_cut.item(row, 0)
         if not it: return False
-        meta = it.data(Qt.UserRole)
-        return isinstance(meta, dict) and meta.get("type") == "header"
+        # Se l'item non è selezionabile (solo Enabled) lo consideriamo header
+        return not bool(it.flags() & Qt.ItemIsSelectable)
 
-    def _mark_row_finished(self, row: int):
-        self._finished_rows.add(row)
-        for c in range(self.tbl_cut.columnCount()):
-            it = self.tbl_cut.item(row, c)
-            if it:
-                it.setBackground(QBrush(QColor("#d5f5e3")))
-        self.tbl_cut.selectRow(row)
-
-    # -------- Navigazione/Reset --------
+    # ---------------- Navigazione/Reset ----------------
     def _nav_home(self) -> bool:
         if hasattr(self.appwin, "show_page") and callable(getattr(self.appwin, "show_page")):
             try: self.appwin.show_page("home"); return True
@@ -244,7 +211,7 @@ class AutomaticoPage(QWidget):
         self._move_target_mm = 0.0; self._inpos_since = 0.0; self._lock_on_inpos = False
         if self.tbl_cut: self.tbl_cut.setRowCount(0)
 
-    # -------- Import cutlist --------
+    # ---------------- Import cutlist ----------------
     def _import_cutlist(self):
         dlg = OrdersManagerDialog(self, self._orders)
         if dlg.exec() and getattr(dlg, "selected_order_id", None):
@@ -263,7 +230,6 @@ class AutomaticoPage(QWidget):
         self._cutlist = list(cuts)
         seen = set(); profs: List[str] = []
         self.tbl_cut.setRowCount(0)
-        # Raggruppa per profilo mantenendo l’ordine di apparizione
         groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         order: List[str] = []
         for c in self._cutlist:
@@ -271,16 +237,14 @@ class AutomaticoPage(QWidget):
             if p not in groups:
                 order.append(p)
             groups[p].append(c)
-
         for prof in order:
             if prof and prof not in seen:
                 seen.add(prof); profs.append(prof)
-            # Header riga
+            # header
             r = self.tbl_cut.rowCount(); self.tbl_cut.insertRow(r)
-            hdr_items = self._header_items(prof or "—")
-            for col, it in enumerate(hdr_items):
+            for col, it in enumerate(self._header_items(prof)):
                 self.tbl_cut.setItem(r, col, it)
-            # Items
+            # items
             for c in groups[prof]:
                 r = self.tbl_cut.rowCount(); self.tbl_cut.insertRow(r)
                 row = [
@@ -292,10 +256,9 @@ class AutomaticoPage(QWidget):
                     QTableWidgetItem(str(int(c.get("qty",0)))),
                     QTableWidgetItem(str(c.get("note","")))
                 ]
-                # marca come item
-                row[0].setData(Qt.UserRole, {"type": "item", "profile": prof})
-                for col, it in enumerate(row):
+                for it in row:
                     it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                for col, it in enumerate(row):
                     self.tbl_cut.setItem(r, col, it)
 
         self._profiles = profs
@@ -303,13 +266,24 @@ class AutomaticoPage(QWidget):
         self._mode = "idle"; self._active_row = None; self._manual_job = None
         self._finished_rows.clear()
 
-    # -------- Manuale: Start riga --------
+    # ---------------- Doppio click: intestazione → ottimizza ----------------
+    def _on_cell_double_clicked(self, row: int, col: int):
+        if self._row_is_header(row):
+            profile = self.tbl_cut.item(row, 0).text().strip()
+            if profile:
+                # seleziona profilo in combo
+                self.cmb_profile.setCurrentText(profile)
+                # abilita start fisico e avvia ottimizzazione
+                if self.chk_start_phys: self.chk_start_phys.setChecked(True)
+                self._optimize_profile(profile)
+
+    # ---------------- Manuale: Start riga ----------------
     def _start_row(self):
         r = self.tbl_cut.currentRow()
         if r < 0:
             QMessageBox.information(self, "Start", "Seleziona una riga."); return
         if self._row_is_header(r):
-            QMessageBox.information(self, "Start", "Seleziona una riga di elemento (non l’intestazione profilo)."); return
+            QMessageBox.information(self, "Start", "Seleziona un elemento (non l’intestazione profilo)."); return
         try:
             prof = self.tbl_cut.item(r, 0).text().strip()
             elem = self.tbl_cut.item(r, 1).text().strip()
@@ -321,21 +295,23 @@ class AutomaticoPage(QWidget):
             QMessageBox.critical(self, "Start", "Riga non valida."); return
         if qty <= 0:
             QMessageBox.information(self, "Start", "Quantità esaurita per questa riga."); return
-        # Arma contapezzi dai dati della riga
+
+        # Arma contapezzi dalla riga
         try:
             setattr(self.machine, "semi_auto_target_pieces", int(qty))
             setattr(self.machine, "semi_auto_count_done", 0)
         except Exception: pass
+
         self._mode = "manual"; self._active_row = r
         self._manual_job = {"profile": prof, "element": elem, "length": L, "ax": ax, "ad": ad}
         self._move_and_arm(L, ax, ad, prof, elem)
 
-    # -------- Ottimizzazione (facoltativo, logica invariata) --------
-    def _optimize_profile(self):
-        prof = (self.cmb_profile.currentText() or "").strip()
+    # ---------------- Ottimizza profilo ----------------
+    def _optimize_profile(self, profile: str):
+        prof = (profile or "").strip()
         if not prof:
             QMessageBox.information(self, "Ottimizza", "Seleziona un profilo."); return
-        # Aggrega tutti i pezzi di quel profilo
+        # costruisci pezzi unitari per il profilo
         items: Dict[Tuple[float, float, float], int] = defaultdict(int)
         for r in range(self.tbl_cut.rowCount()):
             if self._row_is_header(r): continue
@@ -350,7 +326,8 @@ class AutomaticoPage(QWidget):
                 if q > 0:
                     items[(L, ax, ad)] += q
         if not items:
-            QMessageBox.information(self, "Ottimizza", f"Nessun pezzo disponibile per '{prof}'."); return
+            QMessageBox.information(self, "Ottimizza", f"Nessun pezzo per '{prof}'."); return
+
         cfg = read_settings()
         stock = float(cfg.get("opt_stock_mm", 6500.0))
         kerf = float(cfg.get("opt_kerf_mm", 3.0))
@@ -367,24 +344,26 @@ class AutomaticoPage(QWidget):
                     bars[i].append(p); rem[i] -= (need + extra); placed = True; break
             if not placed:
                 bars.append([p]); rem.append(max(stock - need, 0.0))
+
         # stato piano
         self._plan_profile = prof; self._bars = bars; self._bar_idx = 0; self._piece_idx = -1
         self._mode = "plan"
-        # (Opz) calcolo informativo con ILP/BFD
-        solver = str(cfg.get("opt_solver", "ILP")).upper()
-        tl = int(cfg.get("opt_time_limit_s", 15))
+        # abilita start fisico auto
+        if self.chk_start_phys: self.chk_start_phys.setChecked(True)
+
+        # facoltativo: piano informativo
         try:
             agg_len: Dict[float, int] = defaultdict(int)
             for p in pieces: agg_len[round(p["len"], 2)] += 1
             jobs = [{"id": f"{prof} {L:.2f}", "len": float(L), "qty": int(q)} for L, q in sorted(agg_len.items(), key=lambda t: t[0], reverse=True)]
-            self.plan = plan_ilp(jobs, stock=stock, time_limit_s=tl) if solver == "ILP" else plan_bfd(jobs, stock=stock)
+            solver = str(cfg.get("opt_solver", "ILP")).upper()
+            self.plan = plan_ilp(jobs, stock=stock, time_limit_s=int(cfg.get("opt_time_limit_s", 15))) if solver == "ILP" else plan_bfd(jobs, stock=stock)
         except Exception:
-            self.plan = {"solver": solver, "steps": []}
-        # abilita Start fisico auto
-        if self.chk_start_phys: self.chk_start_phys.setChecked(True)
-        self._toast(f"Ottimizzazione pronta per {prof}. Usa Start fisico o 'Avanza (piano)'.", "info")
+            self.plan = {"solver":"BFD","steps":[]}
 
-    # -------- Movimento / Lock freno --------
+        self._toast(f"Ottimizzazione pronta per {prof}. Premi Start fisico o Space.", "info")
+
+    # ---------------- Movimento / Encoder / Freno ----------------
     def _move_and_arm(self, length: float, ax: float, ad: float, profile: str, element: str):
         self._unlock_brake(silent=True)
         if hasattr(self.machine, "set_active_mode"):
@@ -435,7 +414,7 @@ class AutomaticoPage(QWidget):
             self._brake_locked = False
         except Exception: pass
 
-    # -------- Start fisico / Avanza piano --------
+    # ---------------- Start fisico / avanzamento piano ----------------
     def _read_input(self, key: str) -> bool:
         try:
             if hasattr(self.machine, "read_input") and callable(getattr(self.machine, "read_input")):
@@ -456,38 +435,41 @@ class AutomaticoPage(QWidget):
             if self._read_input(k): return True
         return False
 
-    def _handle_start_trigger(self, force_plan: bool = False):
-        if (self._mode != "plan") and not force_plan:
+    def _handle_start_trigger(self):
+        # in piano: arma un pezzo (target=1) e posiziona; se già armato, attende taglio
+        if self._mode != "plan" or not self._bars:
             return
-        if not self._bars:
-            return
-        # se già armato (target=1 e freno on), attendi il taglio
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
         if self._brake_locked and tgt > 0 and done < tgt:
             return
-        # Avanza al prossimo pezzo del piano
         if self._bar_idx < 0: self._bar_idx = 0
         if self._bar_idx >= len(self._bars):
-            self._toast("Piano completato", "ok"); self._set_start_light(False); return
+            self._toast("Piano completato", "ok"); return
         bar = self._bars[self._bar_idx]
         self._piece_idx += 1
         if self._piece_idx >= len(bar):
             self._bar_idx += 1; self._piece_idx = 0
             if self._bar_idx >= len(self._bars):
-                self._toast("Piano completato", "ok"); self._set_start_light(False); return
+                self._toast("Piano completato", "ok"); return
             bar = self._bars[self._bar_idx]
-        piece = bar[self._piece_idx]
+        p = bar[self._piece_idx]
         try:
             setattr(self.machine, "semi_auto_target_pieces", 1)
             setattr(self.machine, "semi_auto_count_done", 0)
         except Exception: pass
-        self._move_and_arm(piece["len"], piece["ax"], piece["ad"], self._plan_profile, f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
-        self._set_start_light(False)
+        self._move_and_arm(p["len"], p["ax"], p["ad"], self._plan_profile, f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
 
-    # -------- UI update / qty --------
+    # ---------------- UI helpers ----------------
+    def _mark_row_finished(self, row: int):
+        self._finished_rows.add(row)
+        for c in range(self.tbl_cut.columnCount()):
+            it = self.tbl_cut.item(row, c)
+            if it:
+                it.setBackground(QBrush(QColor("#d5f5e3")))
+        self.tbl_cut.selectRow(row)
+
     def _dec_row_qty_match(self, profile: str, length: float, ax: float, ad: float):
-        # scala la prima riga che matcha profilo+lunghezza+angoli
         n = self.tbl_cut.rowCount()
         for r in range(n):
             if self._row_is_header(r): continue
@@ -510,33 +492,42 @@ class AutomaticoPage(QWidget):
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
         target = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         remaining = max(target - done, 0)
-        if self.lbl_done: self.lbl_done.setText(str(done))
         if self.lbl_target: self.lbl_target.setText(str(target))
+        if self.lbl_done: self.lbl_done.setText(str(done))
         if self.lbl_remaining: self.lbl_remaining.setText(str(remaining))
-        # Aggiorna qty riga attiva in manuale
         if self._mode == "manual" and self._active_row is not None and 0 <= self._active_row < self.tbl_cut.rowCount():
             if not self._row_is_header(self._active_row):
                 self.tbl_cut.setItem(self._active_row, 5, QTableWidgetItem(str(remaining)))
                 if remaining == 0:
                     self._mark_row_finished(self._active_row)
 
-    def _set_start_light(self, on: bool):
-        try:
-            if hasattr(self.machine, "set_light"): self.machine.set_light("start", bool(on))
-            else: setattr(self.machine, "start_light_on", bool(on))
-        except Exception: pass
+    # ---------------- Eventi / Poll ----------------
+    def keyPressEvent(self, event: QKeyEvent):
+        # F8: simula taglio (come pulse lama)
+        if event.key() == Qt.Key_F8:
+            tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
+            done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
+            remaining = max(tgt - done, 0)
+            if self._brake_locked and tgt > 0 and remaining > 0:
+                try: setattr(self.machine, "semi_auto_count_done", done + 1)
+                except Exception: pass
+                # effettua gli stessi side-effects del tick
+                if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
+                    p = self._bars[self._bar_idx][self._piece_idx]
+                    self._dec_row_qty_match(self._plan_profile, float(p["len"]), float(p["ax"]), float(p["ad"]))
+                if (done + 1) >= tgt:
+                    self._unlock_brake()
+                    if self._mode == "manual" and self._active_row is not None:
+                        self._mark_row_finished(self._active_row)
+                        self._mode = "idle"
+            event.accept(); return
+        # Space (fallback Start fisico)
+        if event.key() == Qt.Key_Space:
+            if self.chk_start_phys and self.chk_start_phys.isChecked():
+                self._handle_start_trigger()
+                event.accept(); return
+        super().keyPressEvent(event)
 
-    def _toast(self, msg, level="info"):
-        if hasattr(self.appwin, "toast"):
-            try: self.appwin.toast.show(msg, level, 2500)
-            except Exception: pass
-
-    # -------- Sequencer hooks --------
-    def _on_step_started(self, idx: int, step: dict): pass
-    def _on_step_finished(self, idx: int, step: dict): pass
-    def _on_seq_done(self): self._toast("Automatico: completato", "ok")
-
-    # -------- Polling --------
     def on_show(self):
         if hasattr(self.machine, "set_active_mode"):
             try: self.machine.set_active_mode("semi")
@@ -550,10 +541,9 @@ class AutomaticoPage(QWidget):
         try: self.status.refresh()
         except Exception: pass
 
-        # Lock su in‑pos encoder
         self._try_lock_on_inpos()
 
-        # Start fisico per piano
+        # Start fisico
         if self.chk_start_phys and self.chk_start_phys.isChecked():
             cur = self._read_start_button()
             if cur and not self._start_prev:
@@ -562,7 +552,7 @@ class AutomaticoPage(QWidget):
         else:
             self._start_prev = False
 
-        # Pulse lama → incremento contatore + effetti
+        # Pulse lama
         cur_blade = self._read_blade_pulse()
         if cur_blade and not self._blade_prev:
             tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
@@ -571,14 +561,11 @@ class AutomaticoPage(QWidget):
             if self._brake_locked and tgt > 0 and remaining > 0:
                 try: setattr(self.machine, "semi_auto_count_done", done + 1)
                 except Exception: pass
-                # In piano: scala anche la tabella
                 if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
                     p = self._bars[self._bar_idx][self._piece_idx]
                     self._dec_row_qty_match(self._plan_profile, float(p["len"]), float(p["ax"]), float(p["ad"]))
-                # Target raggiunto → sblocca e abilita luce
                 if (done + 1) >= tgt:
                     self._unlock_brake()
-                    self._set_start_light(True)
                     if self._mode == "manual" and self._active_row is not None:
                         self._mark_row_finished(self._active_row)
                         self._mode = "idle"
@@ -593,3 +580,8 @@ class AutomaticoPage(QWidget):
             self._poll = None
         self._unlock_brake(silent=True)
         super().hideEvent(ev)
+
+    # --- Sequencer logs (no-op) ---
+    def _on_step_started(self, idx: int, step: dict): pass
+    def _on_step_finished(self, idx: int, step: dict): pass
+    def _on_seq_done(self): self._toast("Automatico: completato", "ok")
