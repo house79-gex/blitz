@@ -9,8 +9,7 @@ import re
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QHBoxLayout, QFileDialog, QLineEdit, QInputDialog,
-    QWidget
+    QHeaderView, QMessageBox, QHBoxLayout, QFileDialog, QLineEdit, QInputDialog
 )
 
 try:
@@ -51,9 +50,8 @@ def _is_base_formula_valid(expr: Optional[str]) -> bool:
 
 class QuoteVaniPage(QFrame):
     """
-    Commesse su DB + Formule multiple (gruppi) con regole variabili (es. braccio).
-    Visualizzazione: finestra massimizzata della lista di taglio (Profilo + Elemento), già ordinata per profilo e lunghezza desc.
-    Dalla viewer: doppio click sull'intestazione profilo → prompt "Ottimizzare?" → apre Automatico e avvia l'ottimizzazione del profilo.
+    Commessa Quote Vani + calcolo lista di taglio.
+    Viewer lista: sola visualizzazione, raggruppata per profilo con intestazioni.
     """
     def __init__(self, appwin):
         super().__init__()
@@ -67,8 +65,6 @@ class QuoteVaniPage(QFrame):
 
         self._rows: List[Dict[str, Any]] = []
         self._current_order_id: Optional[int] = None
-
-        # ultima lista calcolata per viewer/salvataggio
         self._last_cuts: List[Dict[str, Any]] = []
         self._build()
 
@@ -108,7 +104,6 @@ class QuoteVaniPage(QFrame):
         actions_top.addWidget(self.btn_view)
         root.addLayout(actions_top)
 
-        # Tabella righe
         self.tbl_rows = QTableWidget(0, 6)
         self.tbl_rows.setHorizontalHeaderLabels(["#", "Tipologia", "Pezzi", "H", "L", "Gruppo formule"])
         hdr = self.tbl_rows.horizontalHeader()
@@ -120,7 +115,7 @@ class QuoteVaniPage(QFrame):
         hdr.setSectionResizeMode(5, QHeaderView.Stretch)
         root.addWidget(self.tbl_rows)
 
-        hint = QLabel("Se selezioni un Gruppo: applico le formule associate e aggiungo eventuali elementi extra; se non selezioni un Gruppo: uso solo le formule base valide. 'no' o vuoto = escluso.")
+        hint = QLabel("Se selezioni un Gruppo: applico le formule associate; se non selezioni un Gruppo: uso solo le formule base valide ('no' o vuoto = escluso).")
         hint.setStyleSheet("color:#7f8c8d;")
         root.addWidget(hint, 0)
 
@@ -129,52 +124,11 @@ class QuoteVaniPage(QFrame):
         act.addWidget(btn_calc); act.addStretch(1)
         root.addLayout(act)
 
-    # ----- Viewer -----
+    # Viewer: sola visualizzazione
     def _open_viewer(self):
         if not self._last_cuts:
             QMessageBox.information(self, "Lista", "Calcola prima la lista di taglio."); return
-
-        # callback per avviare ottimizzazione direttamente da una riga di intestazione profilo nella viewer
-        def _opt_cb(profile: str):
-            try:
-                # prova a mostrare la pagina Automatico
-                if hasattr(self.appwin, "show_page") and callable(getattr(self.appwin, "show_page")):
-                    self.appwin.show_page("automatico")
-                # trova l'istanza della pagina Automatico
-                auto_page = None
-                # getter esplicito
-                if hasattr(self.appwin, "get_page") and callable(getattr(self.appwin, "get_page")):
-                    try:
-                        auto_page = self.appwin.get_page("automatico")
-                    except Exception:
-                        auto_page = None
-                # attributi comuni
-                if auto_page is None:
-                    for attr in ("page_automatico", "automatico_page"):
-                        if hasattr(self.appwin, attr):
-                            auto_page = getattr(self.appwin, attr)
-                            if auto_page:
-                                break
-                # fallback: cerca tra i figli Qt
-                if auto_page is None:
-                    try:
-                        for child in self.appwin.findChildren(QWidget):
-                            if child.__class__.__name__ == "AutomaticoPage":
-                                auto_page = child
-                                break
-                    except Exception:
-                        pass
-                # invoca l'API pubblica della pagina per avviare l'ottimizzazione del profilo
-                if auto_page and hasattr(auto_page, "run_optimization_for_profile") and callable(getattr(auto_page, "run_optimization_for_profile")):
-                    auto_page.run_optimization_for_profile(profile)
-                else:
-                    QMessageBox.information(self, "Ottimizza", "Pagina Automatico non trovata o non compatibile.")
-            except Exception as e:
-                QMessageBox.critical(self, "Ottimizza", f"Impossibile aprire Automatico:\n{e}")
-
-        # Apri la viewer in sola visualizzazione, raggruppata per profilo (richiede la CutlistViewerDialog aggiornata)
-        dlg = CutlistViewerDialog(self, self._last_cuts, on_optimize_profile=_opt_cb)
-        dlg.exec()
+        CutlistViewerDialog(self, self._last_cuts).exec()
 
     # ----- Orders DB -----
     def _new_order(self):
@@ -277,7 +231,6 @@ class QuoteVaniPage(QFrame):
         if not self._rows:
             QMessageBox.information(self, "Commessa", "Aggiungi almeno una riga."); return None
 
-        # Token profili (spessori sanitizzati)
         prof_tokens: Dict[str, float] = {}
         if self._profiles:
             try:
@@ -287,9 +240,8 @@ class QuoteVaniPage(QFrame):
             except Exception:
                 pass
 
-        # aggregated[profile][(element, length, ax, ad, note)] = qty
         aggregated: Dict[str, Dict[Tuple[str, float, float, float, str], int]] = defaultdict(lambda: defaultdict(int))
-        profile_order: List[str] = []  # ordine di apparizione per gruppi profilo
+        profile_order: List[str] = []
 
         for r in self._rows:
             t = self._store.get_typology_full(int(r["tid"]))
@@ -315,7 +267,6 @@ class QuoteVaniPage(QFrame):
                     mf_map = {}
                     var_rules = []
 
-            # Varianti (es. braccio) selezionate
             variants_used: Dict[str, str] = {}
             if var_rules:
                 by_var: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -335,7 +286,6 @@ class QuoteVaniPage(QFrame):
             used_labels: set[str] = set()
             c_values: Dict[str, float] = {}
 
-            # Componenti tipologia (base o gruppo)
             for c in comps:
                 elemento = (c.get("nome") or "").strip() or "-"
                 elemento_key = _norm_label(elemento)
@@ -356,10 +306,8 @@ class QuoteVaniPage(QFrame):
                     if fm:
                         expr_to_use = fm
                         used_labels.add(elemento_key)
-                        # note dalla riga gruppo (se presente)
                         rnote = (mf_map[elemento_key].get("note") or "").strip()
                         if rnote: note_str_parts.append(rnote)
-                        # variant (es. braccio=tipoX)
                         if "braccio" in variants_used:
                             note_str_parts.append(f"braccio={variants_used['braccio']}")
                 else:
@@ -380,7 +328,6 @@ class QuoteVaniPage(QFrame):
                     if rid:
                         c_values[f"C_{rid}"] = length
 
-            # Elementi extra del gruppo
             if grp and mf_map:
                 for lbl_key, itm in mf_map.items():
                     if lbl_key in used_labels:
@@ -411,7 +358,6 @@ class QuoteVaniPage(QFrame):
                         if prof not in profile_order:
                             profile_order.append(prof)
 
-        # Costruisci lista finale seguendo l'ordine profili apparizione e lunghezze desc
         cuts_final: List[Dict[str, Any]] = []
         for prof in profile_order:
             if prof not in aggregated:
