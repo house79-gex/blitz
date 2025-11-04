@@ -9,7 +9,8 @@ import re
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QHBoxLayout, QFileDialog, QLineEdit, QInputDialog
+    QHeaderView, QMessageBox, QHBoxLayout, QFileDialog, QLineEdit, QInputDialog,
+    QWidget
 )
 
 try:
@@ -52,6 +53,7 @@ class QuoteVaniPage(QFrame):
     """
     Commesse su DB + Formule multiple (gruppi) con regole variabili (es. braccio).
     Visualizzazione: finestra massimizzata della lista di taglio (Profilo + Elemento), già ordinata per profilo e lunghezza desc.
+    Dalla viewer: doppio click sull'intestazione profilo → prompt "Ottimizzare?" → apre Automatico e avvia l'ottimizzazione del profilo.
     """
     def __init__(self, appwin):
         super().__init__()
@@ -131,7 +133,48 @@ class QuoteVaniPage(QFrame):
     def _open_viewer(self):
         if not self._last_cuts:
             QMessageBox.information(self, "Lista", "Calcola prima la lista di taglio."); return
-        CutlistViewerDialog(self, self._last_cuts).exec()
+
+        # callback per avviare ottimizzazione direttamente da una riga di intestazione profilo nella viewer
+        def _opt_cb(profile: str):
+            try:
+                # prova a mostrare la pagina Automatico
+                if hasattr(self.appwin, "show_page") and callable(getattr(self.appwin, "show_page")):
+                    self.appwin.show_page("automatico")
+                # trova l'istanza della pagina Automatico
+                auto_page = None
+                # getter esplicito
+                if hasattr(self.appwin, "get_page") and callable(getattr(self.appwin, "get_page")):
+                    try:
+                        auto_page = self.appwin.get_page("automatico")
+                    except Exception:
+                        auto_page = None
+                # attributi comuni
+                if auto_page is None:
+                    for attr in ("page_automatico", "automatico_page"):
+                        if hasattr(self.appwin, attr):
+                            auto_page = getattr(self.appwin, attr)
+                            if auto_page:
+                                break
+                # fallback: cerca tra i figli Qt
+                if auto_page is None:
+                    try:
+                        for child in self.appwin.findChildren(QWidget):
+                            if child.__class__.__name__ == "AutomaticoPage":
+                                auto_page = child
+                                break
+                    except Exception:
+                        pass
+                # invoca l'API pubblica della pagina per avviare l'ottimizzazione del profilo
+                if auto_page and hasattr(auto_page, "run_optimization_for_profile") and callable(getattr(auto_page, "run_optimization_for_profile")):
+                    auto_page.run_optimization_for_profile(profile)
+                else:
+                    QMessageBox.information(self, "Ottimizza", "Pagina Automatico non trovata o non compatibile.")
+            except Exception as e:
+                QMessageBox.critical(self, "Ottimizza", f"Impossibile aprire Automatico:\n{e}")
+
+        # Apri la viewer in sola visualizzazione, raggruppata per profilo (richiede la CutlistViewerDialog aggiornata)
+        dlg = CutlistViewerDialog(self, self._last_cuts, on_optimize_profile=_opt_cb)
+        dlg.exec()
 
     # ----- Orders DB -----
     def _new_order(self):
@@ -247,7 +290,6 @@ class QuoteVaniPage(QFrame):
         # aggregated[profile][(element, length, ax, ad, note)] = qty
         aggregated: Dict[str, Dict[Tuple[str, float, float, float, str], int]] = defaultdict(lambda: defaultdict(int))
         profile_order: List[str] = []  # ordine di apparizione per gruppi profilo
-        cuts_out: List[Dict[str, Any]] = []  # per eventuale bisogno
 
         for r in self._rows:
             t = self._store.get_typology_full(int(r["tid"]))
