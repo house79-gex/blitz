@@ -92,6 +92,17 @@ class SectionPreviewWidget(QWidget):
                 b = wcs_pts[i + 1]
                 add_seg_wcs(a[0], a[1], b[0], b[1])
 
+        def add_line_wcs(start_x, start_y, end_x, end_y, extrusion, elevation: float = 0.0):
+            """Convert and add a LINE segment from OCS to WCS."""
+            try:
+                start_wcs = to_wcs_pts([(start_x, start_y)], extrusion, elevation)
+                end_wcs = to_wcs_pts([(end_x, end_y)], extrusion, elevation)
+                if start_wcs and end_wcs:
+                    add_seg_wcs(start_wcs[0][0], start_wcs[0][1], 
+                              end_wcs[0][0], end_wcs[0][1])
+            except Exception:
+                pass
+
         def flatten_entity(e):
             """Flatten/approximate entity and convert to WCS."""
             try:
@@ -116,18 +127,11 @@ class SectionPreviewWidget(QWidget):
                     dxft = sub.dxftype()
                     if dxft == "LINE":
                         # Convert LINE endpoints
-                        try:
-                            extrusion = getattr(sub.dxf, "extrusion", (0, 0, 1))
-                            elevation = getattr(sub.dxf, "elevation", 0.0)
-                            start_pt = [(sub.dxf.start.x, sub.dxf.start.y)]
-                            end_pt = [(sub.dxf.end.x, sub.dxf.end.y)]
-                            start_wcs = to_wcs_pts(start_pt, extrusion, elevation)
-                            end_wcs = to_wcs_pts(end_pt, extrusion, elevation)
-                            if start_wcs and end_wcs:
-                                add_seg_wcs(start_wcs[0][0], start_wcs[0][1], 
-                                          end_wcs[0][0], end_wcs[0][1])
-                        except Exception:
-                            pass
+                        extrusion = getattr(sub.dxf, "extrusion", (0, 0, 1))
+                        elevation = getattr(sub.dxf, "elevation", 0.0)
+                        add_line_wcs(sub.dxf.start.x, sub.dxf.start.y,
+                                   sub.dxf.end.x, sub.dxf.end.y,
+                                   extrusion, elevation)
                     else:
                         flatten_entity(sub)
             except Exception:
@@ -138,13 +142,9 @@ class SectionPreviewWidget(QWidget):
             try:
                 extrusion = getattr(e.dxf, "extrusion", (0, 0, 1))
                 elevation = getattr(e.dxf, "elevation", 0.0)
-                start_pt = [(e.dxf.start.x, e.dxf.start.y)]
-                end_pt = [(e.dxf.end.x, e.dxf.end.y)]
-                start_wcs = to_wcs_pts(start_pt, extrusion, elevation)
-                end_wcs = to_wcs_pts(end_pt, extrusion, elevation)
-                if start_wcs and end_wcs:
-                    add_seg_wcs(start_wcs[0][0], start_wcs[0][1], 
-                              end_wcs[0][0], end_wcs[0][1])
+                add_line_wcs(e.dxf.start.x, e.dxf.start.y,
+                           e.dxf.end.x, e.dxf.end.y,
+                           extrusion, elevation)
             except Exception:
                 pass
 
