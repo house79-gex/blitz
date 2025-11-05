@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple, Iterable
 
 from PySide6.QtCore import QSize, QRectF, QPointF
 from PySide6.QtGui import QPainter, QColor, QPen
@@ -38,6 +38,7 @@ class SectionPreviewWidget(QWidget):
             return
         try:
             import ezdxf  # type: ignore
+            from ezdxf.math import OCS  # type: ignore
         except Exception:
             self.clear()
             return
@@ -51,7 +52,8 @@ class SectionPreviewWidget(QWidget):
         segs: List[tuple[QPointF, QPointF]] = []
         bounds: Optional[QRectF] = None
 
-        def add_seg(x1, y1, x2, y2):
+        def add_seg_wcs(x1, y1, x2, y2):
+            """Add a segment directly in WCS coordinates."""
             a = QPointF(float(x1), float(y1))
             b = QPointF(float(x2), float(y2))
             segs.append((a, b))
@@ -59,81 +61,156 @@ class SectionPreviewWidget(QWidget):
             r = QRectF(a, b).normalized()
             bounds = r if bounds is None else bounds.united(r)
 
-        def add_poly_pts(pts):
-            pts = list(pts) if pts is not None else []
-            if len(pts) < 2:
-                return
-            for i in range(len(pts) - 1):
-                a = pts[i]; b = pts[i + 1]
-                add_seg(a[0], a[1], b[0], b[1])
-
-        def add_entity_generic(e):
+        def to_wcs_pts(pts: Iterable, extrusion, elevation: float = 0.0) -> List[Tuple[float, float]]:
+            """Convert a list of (x, y[, z]) points from OCS to WCS, returning (x, y) in WCS."""
+            pts_list = list(pts) if pts is not None else []
+            if not pts_list:
+                return []
             try:
+                ocs = OCS(extrusion)
+                result = []
+                for pt in pts_list:
+                    # Handle 2D or 3D points
+                    if len(pt) >= 3:
+                        z = float(pt[2])
+                    else:
+                        z = elevation
+                    ocs_point = (float(pt[0]), float(pt[1]), z)
+                    wcs_point = ocs.to_wcs(ocs_point)
+                    result.append((wcs_point.x, wcs_point.y))
+                return result
+            except Exception:
+                # Fallback: return points as-is if conversion fails
+                return [(float(pt[0]), float(pt[1])) for pt in pts_list]
+
+        def add_poly_from_pts_wcs(wcs_pts: List[Tuple[float, float]]):
+            """Add polyline segments from WCS points."""
+            if len(wcs_pts) < 2:
+                return
+            for i in range(len(wcs_pts) - 1):
+                a = wcs_pts[i]
+                b = wcs_pts[i + 1]
+                add_seg_wcs(a[0], a[1], b[0], b[1])
+
+        def flatten_entity(e):
+            """Flatten/approximate entity and convert to WCS."""
+            try:
+                extrusion = getattr(e.dxf, "extrusion", (0, 0, 1))
+                elevation = getattr(e.dxf, "elevation", 0.0)
+                
                 if hasattr(e, "flattening"):
-                    pts = list(e.flattening(distance=0.6))
-                    add_poly_pts(pts)
+                    pts = list(e.flattening(distance=0.25))
+                    wcs_pts = to_wcs_pts(pts, extrusion, elevation)
+                    add_poly_from_pts_wcs(wcs_pts)
                 elif hasattr(e, "approximate"):
                     pts = list(e.approximate(240))
-                    add_poly_pts(pts)
+                    wcs_pts = to_wcs_pts(pts, extrusion, elevation)
+                    add_poly_from_pts_wcs(wcs_pts)
             except Exception:
                 pass
 
-        def add_virtual_entities(e):
+        def add_virtual(e):
+            """Process virtual entities with OCS→WCS conversion."""
             try:
                 for sub in e.virtual_entities():
                     dxft = sub.dxftype()
                     if dxft == "LINE":
-                        add_seg(sub.dxf.start.x, sub.dxf.start.y, sub.dxf.end.x, sub.dxf.end.y)
+                        # Convert LINE endpoints
+                        try:
+                            extrusion = getattr(sub.dxf, "extrusion", (0, 0, 1))
+                            elevation = getattr(sub.dxf, "elevation", 0.0)
+                            start_pt = [(sub.dxf.start.x, sub.dxf.start.y)]
+                            end_pt = [(sub.dxf.end.x, sub.dxf.end.y)]
+                            start_wcs = to_wcs_pts(start_pt, extrusion, elevation)
+                            end_wcs = to_wcs_pts(end_pt, extrusion, elevation)
+                            if start_wcs and end_wcs:
+                                add_seg_wcs(start_wcs[0][0], start_wcs[0][1], 
+                                          end_wcs[0][0], end_wcs[0][1])
+                        except Exception:
+                            pass
                     else:
-                        add_entity_generic(sub)
+                        flatten_entity(sub)
             except Exception:
                 pass
 
-        # Entities
+        # LINE entities
         for e in msp.query("LINE"):
-            try: add_seg(e.dxf.start.x, e.dxf.start.y, e.dxf.end.x, e.dxf.end.y)
-            except Exception: pass
+            try:
+                extrusion = getattr(e.dxf, "extrusion", (0, 0, 1))
+                elevation = getattr(e.dxf, "elevation", 0.0)
+                start_pt = [(e.dxf.start.x, e.dxf.start.y)]
+                end_pt = [(e.dxf.end.x, e.dxf.end.y)]
+                start_wcs = to_wcs_pts(start_pt, extrusion, elevation)
+                end_wcs = to_wcs_pts(end_pt, extrusion, elevation)
+                if start_wcs and end_wcs:
+                    add_seg_wcs(start_wcs[0][0], start_wcs[0][1], 
+                              end_wcs[0][0], end_wcs[0][1])
+            except Exception:
+                pass
 
+        # LWPOLYLINE and POLYLINE (via virtual entities)
         for e in msp.query("LWPOLYLINE"):
-            add_virtual_entities(e)
+            add_virtual(e)
         for e in msp.query("POLYLINE"):
-            add_virtual_entities(e)
+            add_virtual(e)
 
+        # ARC entities
         for e in msp.query("ARC"):
-            add_entity_generic(e)
+            flatten_entity(e)
+
+        # CIRCLE entities - close the loop
         for e in msp.query("CIRCLE"):
             try:
-                pts = list(e.flattening(distance=0.6))
-                if pts: pts.append(pts[0])
-                add_poly_pts(pts)
+                extrusion = getattr(e.dxf, "extrusion", (0, 0, 1))
+                elevation = getattr(e.dxf, "elevation", 0.0)
+                pts = list(e.flattening(distance=0.25))
+                if pts:
+                    pts.append(pts[0])  # Close the circle
+                wcs_pts = to_wcs_pts(pts, extrusion, elevation)
+                add_poly_from_pts_wcs(wcs_pts)
             except Exception:
                 pass
-        for e in msp.query("ELLIPSE"):
-            add_entity_generic(e)
-        for e in msp.query("SPLINE"):
-            add_entity_generic(e)
 
+        # ELLIPSE entities
+        for e in msp.query("ELLIPSE"):
+            flatten_entity(e)
+
+        # SPLINE entities
+        for e in msp.query("SPLINE"):
+            flatten_entity(e)
+
+        # HATCH entities - use HATCH's OCS for all edges
         for h in msp.query("HATCH"):
             try:
+                h_extrusion = getattr(h.dxf, "extrusion", (0, 0, 1))
+                h_elevation = getattr(h.dxf, "elevation", 0.0)
+                
                 for path in h.paths:
                     for edge in path.edges:
                         et = getattr(edge, "EDGE_TYPE", "")
                         try:
                             if et == "LineEdge":
-                                add_seg(edge.start[0], edge.start[1], edge.end[0], edge.end[1])
+                                pts = [edge.start, edge.end]
+                                wcs_pts = to_wcs_pts(pts, h_extrusion, h_elevation)
+                                if len(wcs_pts) >= 2:
+                                    add_seg_wcs(wcs_pts[0][0], wcs_pts[0][1],
+                                              wcs_pts[1][0], wcs_pts[1][1])
                             elif et in ("ArcEdge", "EllipseEdge"):
-                                pts = list(edge.flattening(distance=0.6))
-                                add_poly_pts(pts)
+                                pts = list(edge.flattening(distance=0.25))
+                                wcs_pts = to_wcs_pts(pts, h_extrusion, h_elevation)
+                                add_poly_from_pts_wcs(wcs_pts)
                             elif et == "SplineEdge":
                                 pts = list(edge.approximate(240))
-                                add_poly_pts(pts)
+                                wcs_pts = to_wcs_pts(pts, h_extrusion, h_elevation)
+                                add_poly_from_pts_wcs(wcs_pts)
                         except Exception:
                             pass
             except Exception:
                 pass
 
+        # INSERT entities (blocks)
         for ins in msp.query("INSERT"):
-            add_virtual_entities(ins)
+            add_virtual(ins)
 
         self._segments = segs
         self._bounds = bounds
