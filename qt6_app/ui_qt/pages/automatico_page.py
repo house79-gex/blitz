@@ -31,6 +31,10 @@ PANEL_H = 220
 COUNTER_W = 540
 COUNTER_H = 180
 
+# Tolerances for auto-continue same job detection
+SAME_LEN_TOL_MM = 0.10
+SAME_ANG_TOL_DEG = 0.10
+
 
 class AutomaticoPage(QWidget):
     """
@@ -62,6 +66,7 @@ class AutomaticoPage(QWidget):
         self.lbl_remaining: Optional[QLabel] = None
         self.cmb_profile: Optional[QComboBox] = None
         self.chk_start_phys: Optional[QCheckBox] = None
+        self.chk_auto_same: Optional[QCheckBox] = None
 
         # Dati
         self._orders = OrdersStore()
@@ -118,6 +123,11 @@ class AutomaticoPage(QWidget):
 
         self.chk_start_phys = QCheckBox("Start fisico"); self.chk_start_phys.setToolTip("Pulsante fisico per avanzare i pezzi")
         top.addWidget(self.chk_start_phys)
+
+        self.chk_auto_same = QCheckBox("Auto-continue stessa quota")
+        self.chk_auto_same.setToolTip("Esegue automaticamente il pezzo successivo se quota e angoli coincidono (entro tolleranza) senza premere START.")
+        self.chk_auto_same.setChecked(True)  # Default: enabled
+        top.addWidget(self.chk_auto_same)
 
         top.addStretch(1)
 
@@ -408,6 +418,52 @@ class AutomaticoPage(QWidget):
 
         self._toast(f"Ottimizzazione pronta per {prof}. Premi Start fisico o Space.", "info")
 
+    # ---------------- Auto-continue helpers ----------------
+    def _auto_continue_enabled(self) -> bool:
+        """Check if auto-continue is enabled via checkbox."""
+        return bool(self.chk_auto_same and self.chk_auto_same.isChecked())
+
+    def _peek_next_piece(self) -> Optional[Dict[str, float]]:
+        """Return the next piece dict (len/ax/ad) or None, using current indices."""
+        if not self._bars or self._bar_idx < 0:
+            return None
+        
+        # Calculate next indices
+        next_bar_idx = self._bar_idx
+        next_piece_idx = self._piece_idx + 1
+        
+        # Check if we need to move to the next bar
+        if next_bar_idx >= len(self._bars):
+            return None
+        
+        bar = self._bars[next_bar_idx]
+        if next_piece_idx >= len(bar):
+            next_bar_idx += 1
+            next_piece_idx = 0
+            if next_bar_idx >= len(self._bars):
+                return None
+            bar = self._bars[next_bar_idx]
+        
+        if next_piece_idx < len(bar):
+            return bar[next_piece_idx]
+        return None
+
+    def _same_job(self, p_curr: Optional[Dict[str, float]], p_next: Optional[Dict[str, float]]) -> bool:
+        """Compare two pieces: True if length and angles match within tolerances."""
+        if not p_curr or not p_next:
+            return False
+        
+        # Load tolerances from settings or use defaults
+        cfg = read_settings()
+        len_tol = float(cfg.get("auto_continue_len_tol_mm", SAME_LEN_TOL_MM))
+        ang_tol = float(cfg.get("auto_continue_ang_tol_deg", SAME_ANG_TOL_DEG))
+        
+        len_match = abs(p_curr.get("len", 0.0) - p_next.get("len", 0.0)) <= len_tol
+        ax_match = abs(p_curr.get("ax", 0.0) - p_next.get("ax", 0.0)) <= ang_tol
+        ad_match = abs(p_curr.get("ad", 0.0) - p_next.get("ad", 0.0)) <= ang_tol
+        
+        return len_match and ax_match and ad_match
+
     # ---------------- Movimento / Encoder / Freno ----------------
     def _move_and_arm(self, length: float, ax: float, ad: float, profile: str, element: str):
         self._unlock_brake(silent=True)
@@ -551,6 +607,13 @@ class AutomaticoPage(QWidget):
                 setattr(self.machine, "semi_auto_count_done", 0)
             except Exception:
                 pass
+            
+            # Auto-continue: check if we should automatically move to next piece
+            if self._mode == "plan" and self._auto_continue_enabled():
+                next_piece = self._peek_next_piece()
+                if next_piece and self._same_job(cur_piece, next_piece):
+                    # Automatically arm and move to the next piece
+                    self._handle_start_trigger()
 
         self._update_counters_ui()
 
