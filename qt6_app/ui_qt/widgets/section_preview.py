@@ -95,11 +95,10 @@ class SectionPreviewWidget(QWidget):
         def add_line_wcs(start_x, start_y, end_x, end_y, extrusion, elevation: float = 0.0):
             """Convert and add a LINE segment from OCS to WCS."""
             try:
-                start_wcs = to_wcs_pts([(start_x, start_y)], extrusion, elevation)
-                end_wcs = to_wcs_pts([(end_x, end_y)], extrusion, elevation)
-                if start_wcs and end_wcs:
-                    add_seg_wcs(start_wcs[0][0], start_wcs[0][1], 
-                              end_wcs[0][0], end_wcs[0][1])
+                wcs_pts = to_wcs_pts([(start_x, start_y), (end_x, end_y)], extrusion, elevation)
+                if len(wcs_pts) >= 2:
+                    add_seg_wcs(wcs_pts[0][0], wcs_pts[0][1], 
+                              wcs_pts[1][0], wcs_pts[1][1])
             except Exception:
                 pass
 
