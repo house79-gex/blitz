@@ -319,6 +319,8 @@ class AutomaticoPage(QWidget):
         self._opt_dialog = OptimizationRunDialog(self, prof, rows)
         self._opt_dialog.finished.connect(lambda _p: setattr(self, "_opt_dialog", None))
         self._opt_dialog.show()
+        # Avviso visivo anche nella schermata principale
+        self._toast("Ottimizzazione avviata: usa il pulsante fisico o 'Simula START' nella finestra di riepilogo.", "info")
 
     # ---------------- Manuale: Start riga ----------------
     def _start_row(self):
@@ -519,7 +521,8 @@ class AutomaticoPage(QWidget):
         for c in range(self.tbl_cut.columnCount()):
             it = self.tbl_cut.item(row, c)
             if it:
-                it.setBackground(QBrush(QColor("#d5f5e3")))
+                it.setBackground(QBrush(QColor("#2ecc71")))  # verde più acceso
+                it.setForeground(QBrush(Qt.black))           # testo a contrasto
         self.tbl_cut.selectRow(row)
 
     def _dec_row_qty_match(self, profile: str, length: float, ax: float, ad: float):
@@ -556,15 +559,15 @@ class AutomaticoPage(QWidget):
 
     # ---------------- Eventi / Poll ----------------
     def keyPressEvent(self, event: QKeyEvent):
-        # F7 (e F8 legacy): simula taglio (come pulse lama)
-        if event.key() in (Qt.Key_F7, Qt.Key_F8):
+        # F7: simula taglio (come pulse lama)
+        if event.key() == Qt.Key_F7:
             tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
             done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
             remaining = max(tgt - done, 0)
             if self._brake_locked and tgt > 0 and remaining > 0:
                 try: setattr(self.machine, "semi_auto_count_done", done + 1)
                 except Exception: pass
-                # side-effects come nel tick
+                # effettua gli stessi side-effects del tick
                 if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
                     p = self._bars[self._bar_idx][self._piece_idx]
                     self._dec_row_qty_match(self._plan_profile, float(p["len"]), float(p["ax"]), float(p["ad"]))
