@@ -95,6 +95,10 @@ class AutomaticoPage(QWidget):
         self._move_target_mm: float = 0.0
         self._inpos_since: float = 0.0
         self._lock_on_inpos: bool = False
+        
+        # Auto-continue tolerances cache
+        self._cached_len_tol: Optional[float] = None
+        self._cached_ang_tol: Optional[float] = None
 
         self._build()
 
@@ -453,14 +457,15 @@ class AutomaticoPage(QWidget):
         if not p_curr or not p_next:
             return False
         
-        # Load tolerances from settings or use defaults
-        cfg = read_settings()
-        len_tol = float(cfg.get("auto_continue_len_tol_mm", SAME_LEN_TOL_MM))
-        ang_tol = float(cfg.get("auto_continue_ang_tol_deg", SAME_ANG_TOL_DEG))
+        # Use cached tolerances or read from settings
+        if self._cached_len_tol is None or self._cached_ang_tol is None:
+            cfg = read_settings()
+            self._cached_len_tol = float(cfg.get("auto_continue_len_tol_mm", SAME_LEN_TOL_MM))
+            self._cached_ang_tol = float(cfg.get("auto_continue_ang_tol_deg", SAME_ANG_TOL_DEG))
         
-        len_match = abs(p_curr.get("len", 0.0) - p_next.get("len", 0.0)) <= len_tol
-        ax_match = abs(p_curr.get("ax", 0.0) - p_next.get("ax", 0.0)) <= ang_tol
-        ad_match = abs(p_curr.get("ad", 0.0) - p_next.get("ad", 0.0)) <= ang_tol
+        len_match = abs(p_curr.get("len", 0.0) - p_next.get("len", 0.0)) <= self._cached_len_tol
+        ax_match = abs(p_curr.get("ax", 0.0) - p_next.get("ax", 0.0)) <= self._cached_ang_tol
+        ad_match = abs(p_curr.get("ad", 0.0) - p_next.get("ad", 0.0)) <= self._cached_ang_tol
         
         return len_match and ax_match and ad_match
 
@@ -610,10 +615,14 @@ class AutomaticoPage(QWidget):
             
             # Auto-continue: check if we should automatically move to next piece
             if self._mode == "plan" and self._auto_continue_enabled():
-                next_piece = self._peek_next_piece()
-                if next_piece and self._same_job(cur_piece, next_piece):
-                    # Automatically arm and move to the next piece
-                    self._handle_start_trigger()
+                try:
+                    next_piece = self._peek_next_piece()
+                    if next_piece and self._same_job(cur_piece, next_piece):
+                        # Automatically arm and move to the next piece
+                        self._handle_start_trigger()
+                except Exception:
+                    # If auto-continue fails, silently continue - user can press START manually
+                    pass
 
         self._update_counters_ui()
 
