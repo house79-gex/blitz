@@ -507,6 +507,53 @@ class AutomaticoPage(QWidget):
         except Exception: pass
         self._move_and_arm(p["len"], p["ax"], p["ad"], self._plan_profile, f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
 
+    # --------- Simulazioni taglio (riusabili anche dalla dialog) ---------
+    def simulate_cut_from_dialog(self):
+        """Richiamata dalla finestra Ottimizzazione quando si preme F7."""
+        self._simulate_cut_once()
+
+    def _simulate_cut_once(self):
+        """Simula un singolo 'pulse lama': incrementa contatore, aggiorna UI, riepilogo e sblocca a fine conto."""
+        tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
+        done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
+        remaining = max(tgt - done, 0)
+        if not (self._brake_locked and tgt > 0 and remaining > 0):
+            return
+
+        new_done = done + 1
+        try: setattr(self.machine, "semi_auto_count_done", new_done)
+        except Exception: pass
+
+        # Identifica il pezzo attuale (piano)
+        cur_piece = None
+        if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
+            cur_piece = self._bars[self._bar_idx][self._piece_idx]
+
+        # Aggiorna tabella principale cutlist
+        if cur_piece:
+            self._dec_row_qty_match(self._plan_profile, float(cur_piece["len"]), float(cur_piece["ax"]), float(cur_piece["ad"]))
+
+        # Aggiorna dialog (riepilogo)
+        if self._opt_dialog and cur_piece:
+            try:
+                self._opt_dialog.update_after_cut(length_mm=float(cur_piece["len"]), ang_sx=float(cur_piece["ax"]), ang_dx=float(cur_piece["ad"]))
+            except Exception:
+                pass
+
+        # Fine conteggio → sblocca e azzera i contatori a 0 (non 1)
+        if new_done >= tgt:
+            self._unlock_brake()
+            if self._mode == "manual" and self._active_row is not None:
+                self._mark_row_finished(self._active_row)
+                self._mode = "idle"
+            try:
+                setattr(self.machine, "semi_auto_target_pieces", 0)
+                setattr(self.machine, "semi_auto_count_done", 0)
+            except Exception:
+                pass
+
+        self._update_counters_ui()
+
     # ---------------- UI helpers ----------------
     def _toast(self, msg: str, level: str = "info"):
         # Notifica non-bloccante, se il sistema di toast è disponibile
@@ -559,23 +606,9 @@ class AutomaticoPage(QWidget):
 
     # ---------------- Eventi / Poll ----------------
     def keyPressEvent(self, event: QKeyEvent):
-        # F7: simula taglio (come pulse lama)
+        # F7: simula taglio (come pulse lama) anche da pagina principale
         if event.key() == Qt.Key_F7:
-            tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
-            done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
-            remaining = max(tgt - done, 0)
-            if self._brake_locked and tgt > 0 and remaining > 0:
-                try: setattr(self.machine, "semi_auto_count_done", done + 1)
-                except Exception: pass
-                # effettua gli stessi side-effects del tick
-                if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
-                    p = self._bars[self._bar_idx][self._piece_idx]
-                    self._dec_row_qty_match(self._plan_profile, float(p["len"]), float(p["ax"]), float(p["ad"]))
-                if (done + 1) >= tgt:
-                    self._unlock_brake()
-                    if self._mode == "manual" and self._active_row is not None:
-                        self._mark_row_finished(self._active_row)
-                        self._mode = "idle"
+            self._simulate_cut_once()
             event.accept(); return
         # Space (fallback Start fisico)
         if event.key() == Qt.Key_Space:
@@ -608,23 +641,11 @@ class AutomaticoPage(QWidget):
         else:
             self._start_prev = False
 
-        # Pulse lama
+        # Pulse lama reale
         cur_blade = self._read_blade_pulse()
         if cur_blade and not self._blade_prev:
-            tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
-            done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
-            remaining = max(tgt - done, 0)
-            if self._brake_locked and tgt > 0 and remaining > 0:
-                try: setattr(self.machine, "semi_auto_count_done", done + 1)
-                except Exception: pass
-                if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
-                    p = self._bars[self._bar_idx][self._piece_idx]
-                    self._dec_row_qty_match(self._plan_profile, float(p["len"]), float(p["ax"]), float(p["ad"]))
-                if (done + 1) >= tgt:
-                    self._unlock_brake()
-                    if self._mode == "manual" and self._active_row is not None:
-                        self._mark_row_finished(self._active_row)
-                        self._mode = "idle"
+            # riusa la stessa logica della simulazione per coerenza
+            self._simulate_cut_once()
         self._blade_prev = cur_blade
 
         self._update_counters_ui()
