@@ -15,8 +15,10 @@ class OptimizationRunDialog(QDialog):
     - Mostra le righe della cutlist del profilo selezionato (aggregate per length/angoli).
     - Evidenziazione forte; righe finite in verde acceso con testo a contrasto.
     - Indicatori di stato START: BLU=pronto a posizionarsi, ROSSO=in posizione (bloccato), VERDE=profilo finito.
-    - Funzione di test per simulare la pressione del tasto fisico (pulsante e F9).
-    - Non si chiude automaticamente: a fine profilo mostra luce verde e rimane in attesa di nuovo input.
+    - Funzione di test:
+        * F9 / pulsante: simula la pressione del tasto fisico START (posizionamento+blocco).
+        * F7: simula il taglio (interagisce con “Numero pezzi” e con il riepilogo).
+    - A profilo completato: luce VERDE, sblocca e attende nuovo input (non chiude automaticamente).
     """
     finished = Signal(str)  # profile
 
@@ -26,7 +28,7 @@ class OptimizationRunDialog(QDialog):
         self.setModal(False)
         self.resize(900, 560)
         self.profile = profile
-        self._page = parent  # riferimento alla pagina Automatico
+        self._page = parent  # riferimento a AutomaticoPage
 
         # Aggrega per (len, ang_sx, ang_dx) sommando qty
         agg = defaultdict(int)
@@ -108,8 +110,8 @@ class OptimizationRunDialog(QDialog):
         for c in range(self.tbl.columnCount()):
             it = self.tbl.item(row, c)
             if not it: continue
-            it.setBackground(QBrush(QColor("#2ecc71")))  # verde più acceso
-            it.setForeground(QBrush(Qt.black))           # testo a contrasto
+            it.setBackground(QBrush(QColor("#2ecc71")))  # verde acceso
+            it.setForeground(QBrush(Qt.black))           # testo nero a contrasto
 
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
         """Scala qty per la riga che matcha e aggiorna UI; se tutte 0 → stato FINITO (non chiude)."""
@@ -135,10 +137,10 @@ class OptimizationRunDialog(QDialog):
                 if q == 0:
                     self._mark_finished_row(r)
                 break
-        # verifica chiusura logica (tutte 0 → VERDE)
+        # verifica chiusura logica (tutte 0 → VERDE, sblocca nella pagina)
         if self._all_zero():
             self.finished.emit(self.profile)
-            # mostreremo luce verde e attesa nuovo input; non chiudiamo
+            # lo sblocco e lo stop sono gestiti in _update_state()
 
     # ---------- Stato/LED ----------
     def _start_poll(self):
@@ -163,9 +165,14 @@ class OptimizationRunDialog(QDialog):
             # Profilo finito
             self._set_led("green", "FINITO")
             self.banner.setText("Ottimizzazione completata per questo profilo. Attesa nuovo input/sequenza.")
-            # assicura sblocco
-            try: self._page._unlock_brake(silent=True)
-            except Exception: pass
+            # assicura sblocco e azzera contatori (rimangono 0)
+            try:
+                self._page._unlock_brake(silent=True)
+                setattr(self._page.machine, "semi_auto_target_pieces", 0)
+                setattr(self._page.machine, "semi_auto_count_done", 0)
+                self._page._update_counters_ui()
+            except Exception:
+                pass
             # disabilita test START
             self.btn_start_sim.setEnabled(False)
             return
@@ -174,7 +181,7 @@ class OptimizationRunDialog(QDialog):
         if brake:
             # in posizione (bloccato) → ROSSO
             self._set_led("red", "IN POSIZIONE")
-            self.banner.setText("In posizione. Effettua i tagli necessari (F7 per simulare il taglio nella schermata principale).")
+            self.banner.setText("In posizione. Effettua i tagli necessari (F7 per simulare il taglio).")
             # test START disabilitato mentre bloccato (attendi tagli)
             self.btn_start_sim.setEnabled(False)
         else:
@@ -204,11 +211,10 @@ class OptimizationRunDialog(QDialog):
         fg = "#ffffff"  # su sfondi saturi, testo bianco offre buon contrasto
         return f"background:{bg}; color:{fg}; font-weight:800; padding:8px 12px; border:none; border-radius:8px;"
 
-    # ---------- Test START ----------
+    # ---------- Test START / Taglio ----------
     def _simulate_start_pressed(self):
         # Simula la pressione del tasto fisico START
         try:
-            # abilita start fisico nella pagina (se non già)
             if getattr(self._page, "chk_start_phys", None):
                 try: self._page.chk_start_phys.setChecked(True)
                 except Exception: pass
@@ -221,6 +227,13 @@ class OptimizationRunDialog(QDialog):
         # F9: Simula START (tasto fisico)
         if ev.key() == Qt.Key_F9:
             self._simulate_start_pressed()
+            ev.accept(); return
+        # F7: Simula taglio (interagisce con Numero pezzi e con il riepilogo)
+        if ev.key() == Qt.Key_F7:
+            try:
+                self._page.simulate_cut_from_dialog()
+            except Exception:
+                pass
             ev.accept(); return
         super().keyPressEvent(ev)
 
