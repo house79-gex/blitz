@@ -17,6 +17,7 @@ from ui_qt.logic.planner import plan_ilp, plan_bfd
 from ui_qt.logic.sequencer import Sequencer
 from ui_qt.services.orders_store import OrdersStore
 from ui_qt.dialogs.orders_manager_qt import OrdersManagerDialog
+from ui_qt.dialogs.optimization_run_qt import OptimizationRunDialog
 
 try:
     from ui_qt.utils.settings import read_settings, write_settings
@@ -38,7 +39,7 @@ class AutomaticoPage(QWidget):
     - Start riga: move → in-pos (encoder, tol) → BLOCCA → conteggio lama → SBLOCCA.
     - Numero pezzi: sola visualizzazione, pannello più grande.
     - Doppio click su intestazione profilo: avvia ottimizzazione per quel profilo e abilita Start fisico.
-    - F8: simula un taglio (incrementa contatore come pulse lama).
+    - F7: simula un taglio (incrementa contatore come pulse lama).
     """
     def __init__(self, appwin):
         super().__init__()
@@ -79,6 +80,9 @@ class AutomaticoPage(QWidget):
         self._bar_idx: int = -1
         self._piece_idx: int = -1
 
+        # Dialog ottimizzazione
+        self._opt_dialog: Optional[OptimizationRunDialog] = None
+
         # IO runtime
         self._brake_locked: bool = False
         self._blade_prev: bool = False
@@ -109,7 +113,7 @@ class AutomaticoPage(QWidget):
 
         btn_opt = QPushButton("Ottimizza")
         btn_opt.setToolTip("Ottimizza il profilo selezionato")
-        btn_opt.clicked.connect(lambda: self._optimize_profile(self.cmb_profile.currentText().strip()))
+        btn_opt.clicked.connect(self._on_optimize_clicked)
         top.addWidget(btn_opt)
 
         self.chk_start_phys = QCheckBox("Start fisico"); self.chk_start_phys.setToolTip("Pulsante fisico per avanzare i pezzi")
@@ -150,7 +154,7 @@ class AutomaticoPage(QWidget):
         self.tbl_cut.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_cut.setAlternatingRowColors(True)
         self.tbl_cut.setStyleSheet("QTableWidget::item:selected { background:#1976d2; color:#ffffff; font-weight:700; }")
-        self.tbl_cut.cellDoubleClicked.connect(self._on_cell_double_clicked)  # doppio click su intestazione → ottimizza
+        self.tbl_cut.cellDoubleClicked.connect(self._on_cell_double_clicked)  # doppio click su intestazione → ottimizza + dialog
         ll.addWidget(self.tbl_cut, 1)
 
         row = QHBoxLayout()
@@ -266,7 +270,13 @@ class AutomaticoPage(QWidget):
         self._mode = "idle"; self._active_row = None; self._manual_job = None
         self._finished_rows.clear()
 
-    # ---------------- Doppio click: intestazione → ottimizza ----------------
+    # ---------------- Click Ottimizza → ottimizza + dialog ----------------
+    def _on_optimize_clicked(self):
+        prof = (self.cmb_profile.currentText() or "").strip()
+        self._optimize_profile(prof)
+        self._open_opt_dialog(prof)
+
+    # ---------------- Doppio click: intestazione → ottimizza + dialog ----------------
     def _on_cell_double_clicked(self, row: int, col: int):
         if self._row_is_header(row):
             profile = self.tbl_cut.item(row, 0).text().strip()
@@ -276,6 +286,39 @@ class AutomaticoPage(QWidget):
                 # abilita start fisico e avvia ottimizzazione
                 if self.chk_start_phys: self.chk_start_phys.setChecked(True)
                 self._optimize_profile(profile)
+                # apri riepilogo
+                self._open_opt_dialog(profile)
+
+    # ---------------- Riepilogo ottimizzazione (dialog) ----------------
+    def _open_opt_dialog(self, profile: str):
+        prof = (profile or "").strip()
+        if not prof:
+            return
+        rows: List[Dict[str, Any]] = []
+        for r in range(self.tbl_cut.rowCount()):
+            if self._row_is_header(r): continue
+            if self.tbl_cut.item(r, 0) and self.tbl_cut.item(r, 0).text().strip() == prof:
+                try:
+                    L = float(self.tbl_cut.item(r, 2).text())
+                    ax = float(self.tbl_cut.item(r, 3).text())
+                    ad = float(self.tbl_cut.item(r, 4).text())
+                    q = int(self.tbl_cut.item(r, 5).text())
+                except Exception:
+                    continue
+                if q > 0:
+                    rows.append({"length_mm": round(L, 2), "ang_sx": ax, "ang_dx": ad, "qty": q})
+        if not rows:
+            return
+        if self._opt_dialog and self._opt_dialog.profile == prof:
+            try:
+                self._opt_dialog.raise_()
+                self._opt_dialog.activateWindow()
+            except Exception:
+                pass
+            return
+        self._opt_dialog = OptimizationRunDialog(self, prof, rows)
+        self._opt_dialog.finished.connect(lambda _p: setattr(self, "_opt_dialog", None))
+        self._opt_dialog.show()
 
     # ---------------- Manuale: Start riga ----------------
     def _start_row(self):
@@ -372,6 +415,8 @@ class AutomaticoPage(QWidget):
         try:
             if hasattr(self.machine, "position_for_cut"):
                 self.machine.position_for_cut(float(length), float(ax), float(ad), profile, element)
+            elif hasattr(self.machine, "move_to_length_and_angles"):
+                self.machine.move_to_length_and_angles(length_mm=float(length), ang_sx=float(ax), ang_dx=float(ad))
             elif hasattr(self.machine, "move_to_length"):
                 self.machine.move_to_length(float(length))
             else:
@@ -511,15 +556,15 @@ class AutomaticoPage(QWidget):
 
     # ---------------- Eventi / Poll ----------------
     def keyPressEvent(self, event: QKeyEvent):
-        # F8: simula taglio (come pulse lama)
-        if event.key() == Qt.Key_F8:
+        # F7 (e F8 legacy): simula taglio (come pulse lama)
+        if event.key() in (Qt.Key_F7, Qt.Key_F8):
             tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
             done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
             remaining = max(tgt - done, 0)
             if self._brake_locked and tgt > 0 and remaining > 0:
                 try: setattr(self.machine, "semi_auto_count_done", done + 1)
                 except Exception: pass
-                # effettua gli stessi side-effects del tick
+                # side-effects come nel tick
                 if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
                     p = self._bars[self._bar_idx][self._piece_idx]
                     self._dec_row_qty_match(self._plan_profile, float(p["len"]), float(p["ax"]), float(p["ad"]))
