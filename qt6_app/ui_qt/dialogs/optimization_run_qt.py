@@ -1,242 +1,247 @@
 from __future__ import annotations
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
 
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QColor, QBrush, QKeyEvent
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QTableWidget, QTableWidgetItem,
-    QHeaderView, QPushButton, QHBoxLayout, QAbstractItemView, QWidget, QSizePolicy
+    QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QTableWidget,
+    QTableWidgetItem, QHeaderView, QCheckBox, QSizePolicy
 )
+
+try:
+    from ui_qt.utils.settings import read_settings, write_settings
+except Exception:
+    def read_settings(): return {}
+    def write_settings(_): pass
+
+from ui_qt.widgets.plan_visualizer import PlanVisualizerWidget
+
 
 class OptimizationRunDialog(QDialog):
     """
-    Finestra di riepilogo ottimizzazione per profilo:
-    - Mostra le righe della cutlist del profilo selezionato (aggregate per length/angoli).
-    - Evidenziazione forte; righe finite in verde acceso con testo a contrasto.
-    - Indicatori di stato START: BLU=pronto a posizionarsi, ROSSO=in posizione (bloccato), VERDE=profilo finito.
-    - Funzione di test:
-        * F9 / pulsante: simula la pressione del tasto fisico START (posizionamento+blocco).
-        * F7: simula il taglio (interagisce con “Numero pezzi” e con il riepilogo).
-    - A profilo completato: luce VERDE, sblocca e attende nuovo input (non chiude automaticamente).
-    """
-    finished = Signal(str)  # profile
+    Dialog ottimizzazione con:
+    - Tabella riepilogo pezzi (come prima)
+    - Riepilogo barre (numero barre, residui)
+    - Visualizzazione grafica piano barre/pezzi (trapezi/rette)
+    - Opzioni: mostra/nascondi riepilogo e grafica
 
-    def __init__(self, parent: QWidget, profile: str, rows: List[Dict[str, Any]]):
+    API retrocompatibile:
+    - update_after_cut(length_mm, ang_sx, ang_dx): decrementa qty e aggiorna viste
+    - proprietà 'profile'
+    """
+    # Conserva la compatibilità con eventuali segnali già usati
+    simulationRequested = Signal()
+
+    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]]):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
-        self.resize(900, 560)
         self.profile = profile
-        self._page = parent  # riferimento a AutomaticoPage
+        # rows: [{length_mm, ang_sx, ang_dx, qty}]
+        self._rows: List[Dict[str, Any]] = [dict(r) for r in rows]
 
-        # Aggrega per (len, ang_sx, ang_dx) sommando qty
-        agg = defaultdict(int)
-        for r in rows:
-            k = (round(float(r["length_mm"]), 2), float(r["ang_sx"]), float(r["ang_dx"]))
-            agg[k] += int(r["qty"])
-        self._data = [(L, ax, ad, q) for (L, ax, ad), q in agg.items()]
+        self._tbl: Optional[QTableWidget] = None
+        self._lbl_bars: Optional[QLabel] = None
+        self._panel_summary: Optional[QFrame] = None
+        self._panel_graph: Optional[QFrame] = None
+        self._chk_summary: Optional[QCheckBox] = None
+        self._chk_graph: Optional[QCheckBox] = None
+        self._graph: Optional[PlanVisualizerWidget] = None
 
-        self._poll: QTimer | None = None
+        # Settings
+        cfg = read_settings()
+        self._stock = float(cfg.get("opt_stock_mm", 6500.0))
+        self._kerf = float(cfg.get("opt_kerf_mm", 3.0))
+        self._show_summary = bool(cfg.get("opt_show_summary", True))
+        self._show_graph = bool(cfg.get("opt_show_graph", True))
+
+        # Piano calcolato localmente
+        self._bars: List[List[Dict[str, float]]] = []
+        self._bars_residuals: List[float] = []
 
         self._build()
-        self._fill()
-        self._start_poll()
+        self._recompute_plan_and_refresh()
 
-    def _build(self):
-        root = QVBoxLayout(self)
-
-        # Banner di stato/avviso
-        self.banner = QLabel("START fisico attivo: premi il pulsante fisico oppure 'Simula START (Test)'.")
-        self.banner.setStyleSheet("font-weight:700; color:#154360; background:#d6eaf8; padding:8px; border-radius:6px;")
-        root.addWidget(self.banner)
-
-        # Riga indicatori + bottone test
-        top = QHBoxLayout()
-        self.btn_state = QPushButton("PRONTO")
-        self.btn_state.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        self.btn_state.setStyleSheet(self._style_led("blue"))
-        self.btn_state.setEnabled(False)
-        top.addWidget(QLabel(f"Profilo: {self.profile}"))
-        top.addStretch(1)
-        top.addWidget(self.btn_state)
-        root.addLayout(top)
-
-        # Tabella
-        self.tbl = QTableWidget(0, 5)
-        self.tbl.setHorizontalHeaderLabels(["Profilo", "Elemento", "Lunghezza (mm)", "Ang SX", "Ang DX"])
-        hdr = self.tbl.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tbl.setAlternatingRowColors(True)
-        self.tbl.setStyleSheet("""
-            QTableWidget::item:selected { background:#1976d2; color:#ffffff; font-weight:700; }
-        """)
-        root.addWidget(self.tbl, 1)
-
-        # Barra comandi
-        bar = QHBoxLayout()
-        self.btn_start_sim = QPushButton("Simula START (Test)")
-        self.btn_start_sim.setToolTip("Simula la pressione del tasto fisico START per posizionare e bloccare la testa (tasto F9).")
-        self.btn_start_sim.clicked.connect(self._simulate_start_pressed)
-        bar.addWidget(self.btn_start_sim)
-        bar.addStretch(1)
-        self.btn_close = QPushButton("Chiudi")
-        self.btn_close.clicked.connect(self.close)
-        bar.addWidget(self.btn_close)
-        root.addLayout(bar)
-
-    def _fill(self):
-        self.tbl.setRowCount(0)
-        # ordina per lunghezza decrescente
-        self._data.sort(key=lambda x: x[0], reverse=True)
-        for (L, ax, ad, q) in self._data:
-            r = self.tbl.rowCount(); self.tbl.insertRow(r)
-            self.tbl.setItem(r, 0, QTableWidgetItem(self.profile))
-            self.tbl.setItem(r, 1, QTableWidgetItem(f"— x{q}"))
-            self.tbl.setItem(r, 2, QTableWidgetItem(f"{float(L):.2f}"))
-            self.tbl.setItem(r, 3, QTableWidgetItem(f"{float(ax):.1f}"))
-            self.tbl.setItem(r, 4, QTableWidgetItem(f"{float(ad):.1f}"))
-            if q == 0:
-                self._mark_finished_row(r)
-
-    def _mark_finished_row(self, row: int):
-        for c in range(self.tbl.columnCount()):
-            it = self.tbl.item(row, c)
-            if not it: continue
-            it.setBackground(QBrush(QColor("#2ecc71")))  # verde acceso
-            it.setForeground(QBrush(Qt.black))           # testo nero a contrasto
-
-    def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        """Scala qty per la riga che matcha e aggiorna UI; se tutte 0 → stato FINITO (non chiude)."""
-        tgtL = round(float(length_mm), 2)
-        ax = float(ang_sx); ad = float(ang_dx)
-        # Trova riga
-        for r in range(self.tbl.rowCount()):
-            try:
-                L = round(float(self.tbl.item(r, 2).text()), 2)
-                a1 = float(self.tbl.item(r, 3).text())
-                a2 = float(self.tbl.item(r, 4).text())
-            except Exception:
-                continue
-            if abs(L - tgtL) <= 0.01 and abs(a1 - ax) <= 0.01 and abs(a2 - ad) <= 0.01:
-                # parse qty in "— xQ"
-                elem = self.tbl.item(r, 1).text()
-                try:
-                    q = int(elem.split("x")[-1].strip())
-                except Exception:
-                    q = 1
-                q = max(0, q - 1)
-                self.tbl.setItem(r, 1, QTableWidgetItem(f"— x{q}"))
-                if q == 0:
-                    self._mark_finished_row(r)
-                break
-        # verifica chiusura logica (tutte 0 → VERDE, sblocca nella pagina)
-        if self._all_zero():
-            self.finished.emit(self.profile)
-            # lo sblocco e lo stop sono gestiti in _update_state()
-
-    # ---------- Stato/LED ----------
-    def _start_poll(self):
-        if self._poll is None:
-            self._poll = QTimer(self)
-            self._poll.timeout.connect(self._update_state)
-            self._poll.start(120)
-
-    def _stop_poll(self):
-        if self._poll:
-            try: self._poll.stop()
-            except Exception: pass
-            self._poll = None
-
-    def _update_state(self):
         try:
-            brake = bool(getattr(self._page, "_brake_locked", False))
-        except Exception:
-            brake = False
-
-        if self._all_zero():
-            # Profilo finito
-            self._set_led("green", "FINITO")
-            self.banner.setText("Ottimizzazione completata per questo profilo. Attesa nuovo input/sequenza.")
-            # assicura sblocco e azzera contatori (rimangono 0)
-            try:
-                self._page._unlock_brake(silent=True)
-                setattr(self._page.machine, "semi_auto_target_pieces", 0)
-                setattr(self._page.machine, "semi_auto_count_done", 0)
-                self._page._update_counters_ui()
-            except Exception:
-                pass
-            # disabilita test START
-            self.btn_start_sim.setEnabled(False)
-            return
-
-        # Non finito: controlla stato freno/posizione
-        if brake:
-            # in posizione (bloccato) → ROSSO
-            self._set_led("red", "IN POSIZIONE")
-            self.banner.setText("In posizione. Effettua i tagli necessari (F7 per simulare il taglio).")
-            # test START disabilitato mentre bloccato (attendi tagli)
-            self.btn_start_sim.setEnabled(False)
-        else:
-            # pronto a posizionarsi → BLU
-            self._set_led("blue", "PRONTO")
-            self.banner.setText("START fisico attivo: premi il pulsante fisico oppure 'Simula START (Test)'.")
-            self.btn_start_sim.setEnabled(True)
-
-    def _all_zero(self) -> bool:
-        for r in range(self.tbl.rowCount()):
-            elem = self.tbl.item(r, 1).text()
-            try:
-                q = int(elem.split("x")[-1].strip())
-            except Exception:
-                q = 0
-            if q > 0:
-                return False
-        return True
-
-    def _set_led(self, color: str, text: str):
-        self.btn_state.setText(text)
-        self.btn_state.setStyleSheet(self._style_led(color))
-
-    def _style_led(self, color: str) -> str:
-        # Colori: blue, red, green
-        bg = {"blue": "#2980b9", "red": "#e74c3c", "green": "#2ecc71"}.get(color, "#7f8c8d")
-        fg = "#ffffff"  # su sfondi saturi, testo bianco offre buon contrasto
-        return f"background:{bg}; color:{fg}; font-weight:800; padding:8px 12px; border:none; border-radius:8px;"
-
-    # ---------- Test START / Taglio ----------
-    def _simulate_start_pressed(self):
-        # Simula la pressione del tasto fisico START
-        try:
-            if getattr(self._page, "chk_start_phys", None):
-                try: self._page.chk_start_phys.setChecked(True)
-                except Exception: pass
-            self._page._handle_start_trigger()
+            self.resize(920, 620)
         except Exception:
             pass
 
-    # ---------- Eventi ----------
-    def keyPressEvent(self, ev: QKeyEvent):
-        # F9: Simula START (tasto fisico)
-        if ev.key() == Qt.Key_F9:
-            self._simulate_start_pressed()
-            ev.accept(); return
-        # F7: Simula taglio (interagisce con Numero pezzi e con il riepilogo)
-        if ev.key() == Qt.Key_F7:
-            try:
-                self._page.simulate_cut_from_dialog()
-            except Exception:
-                pass
-            ev.accept(); return
-        super().keyPressEvent(ev)
+    # ---------- Build UI ----------
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
 
-    def closeEvent(self, ev):
-        self._stop_poll()
-        super().closeEvent(ev)
+        # Top options
+        opts = QHBoxLayout()
+        self._chk_summary = QCheckBox("Mostra riepilogo barre"); self._chk_summary.setChecked(self._show_summary)
+        self._chk_summary.toggled.connect(self._toggle_summary)
+        self._chk_graph = QCheckBox("Mostra grafica piano"); self._chk_graph.setChecked(self._show_graph)
+        self._chk_graph.toggled.connect(self._toggle_graph)
+        btn_sim = QPushButton("Simula START (F7)")
+        btn_sim.setToolTip("Simula un taglio come pulse lama")
+        btn_sim.clicked.connect(lambda: self.simulationRequested.emit())
+        opts.addWidget(self._chk_summary)
+        opts.addWidget(self._chk_graph)
+        opts.addStretch(1)
+        opts.addWidget(btn_sim)
+        root.addLayout(opts)
+
+        # Riepilogo barre
+        self._panel_summary = QFrame()
+        self._panel_summary.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
+        sl = QVBoxLayout(self._panel_summary); sl.setContentsMargins(8,8,8,8); sl.setSpacing(6)
+        self._lbl_bars = QLabel("—")
+        sl.addWidget(QLabel("Riepilogo barre"))
+        sl.addWidget(self._lbl_bars)
+        root.addWidget(self._panel_summary, 0)
+
+        # Grafica piano
+        self._panel_graph = QFrame()
+        self._panel_graph.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
+        gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(8,8,8,8); gl.setSpacing(6)
+        self._graph = PlanVisualizerWidget(self)
+        gl.addWidget(self._graph, 1)
+        root.addWidget(self._panel_graph, 1)
+
+        # Tabella pezzi (sotto)
+        self._tbl = QTableWidget(0, 4)
+        self._tbl.setHorizontalHeaderLabels(["Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà"])
+        hdr = self._tbl.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        root.addWidget(self._tbl, 0)
+
+        self._apply_toggles()
+
+    def _apply_toggles(self):
+        if self._panel_summary: self._panel_summary.setVisible(self._show_summary)
+        if self._panel_graph: self._panel_graph.setVisible(self._show_graph)
+
+    def _toggle_summary(self, on: bool):
+        self._show_summary = bool(on)
+        self._apply_toggles()
+        cfg = dict(read_settings()); cfg["opt_show_summary"] = self._show_summary; write_settings(cfg)
+
+    def _toggle_graph(self, on: bool):
+        self._show_graph = bool(on)
+        self._apply_toggles()
+        cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
+
+    # ---------- Plan computation ----------
+    def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
+        pieces: List[Dict[str, float]] = []
+        for r in self._rows:
+            try:
+                q = int(r.get("qty", 0))
+                L = float(r.get("length_mm", 0.0))
+                ax = float(r.get("ang_sx", 0.0))
+                ad = float(r.get("ang_dx", 0.0))
+            except Exception:
+                continue
+            for _ in range(max(0, q)):
+                pieces.append({"len": L, "ax": ax, "ad": ad})
+        # ordinamento decrescente lunghezze
+        pieces.sort(key=lambda x: x["len"], reverse=True)
+        return pieces
+
+    def _pack_bars_bfd(self, pieces: List[Dict[str, float]]) -> Tuple[List[List[Dict[str, float]]], List[float]]:
+        bars: List[List[Dict[str, float]]] = []
+        rem: List[float] = []
+        for p in pieces:
+            need = float(p["len"])
+            placed = False
+            for i in range(len(bars)):
+                extra = self._kerf if bars[i] else 0.0
+                if rem[i] >= (need + extra):
+                    bars[i].append(p); rem[i] -= (need + extra); placed = True; break
+            if not placed:
+                bars.append([p]); rem.append(max(self._stock - need, 0.0))
+        return bars, rem
+
+    def _recompute_plan_and_refresh(self):
+        pieces = self._expand_rows_to_unit_pieces()
+        self._bars, self._bars_residuals = self._pack_bars_bfd(pieces)
+        # Summary text
+        nb = len(self._bars)
+        if nb == 0:
+            txt = "Nessuna barra necessaria."
+        else:
+            residui = " | ".join([f"B{i+1} residuo: {r:.1f} mm" for i, r in enumerate(self._bars_residuals)])
+            txt = f"Barre necessarie: {nb} — {residui}"
+        if self._lbl_bars:
+            self._lbl_bars.setText(txt)
+        # Graph
+        if self._graph:
+            self._graph.set_data(self._bars, stock_mm=self._stock, kerf_mm=self._kerf)
+        # Table
+        self._reload_table()
+
+    # ---------- Table ----------
+    def _reload_table(self):
+        if not self._tbl:
+            return
+        self._tbl.setRowCount(0)
+        for r in self._rows:
+            q = int(r.get("qty", 0))
+            if q <= 0:
+                continue
+            row = self._tbl.rowCount()
+            self._tbl.insertRow(row)
+            self._tbl.setItem(row, 0, QTableWidgetItem(f"{float(r.get('length_mm', 0.0)):.2f}"))
+            self._tbl.setItem(row, 1, QTableWidgetItem(f"{float(r.get('ang_sx', 0.0)):.1f}"))
+            self._tbl.setItem(row, 2, QTableWidgetItem(f"{float(r.get('ang_dx', 0.0)):.1f}"))
+            self._tbl.setItem(row, 3, QTableWidgetItem(str(q)))
+
+    # ---------- Public API ----------
+    def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
+        """
+        Decrementa qty della riga corrispondente (≈ con piccola tolleranza) e ricalcola piano/grafica.
+        """
+        tol_L = 0.01
+        tol_A = 0.01
+        # 1) match numerico
+        for r in self._rows:
+            try:
+                if abs(float(r.get("length_mm", 0.0)) - float(length_mm)) <= tol_L \
+                   and abs(float(r.get("ang_sx", 0.0)) - float(ang_sx)) <= tol_A \
+                   and abs(float(r.get("ang_dx", 0.0)) - float(ang_dx)) <= tol_A:
+                    q = max(0, int(r.get("qty", 0)) - 1)
+                    r["qty"] = q
+                    break
+            except Exception:
+                continue
+        else:
+            # 2) match su stringhe formattate
+            Ls = f"{float(length_mm):.2f}"
+            Axs = f"{float(ang_sx):.1f}"
+            Ads = f"{float(ang_dx):.1f}"
+            for r in self._rows:
+                try:
+                    if f"{float(r.get('length_mm', 0.0)):.2f}" == Ls \
+                       and f"{float(r.get('ang_sx', 0.0)):.1f}" == Axs \
+                       and f"{float(r.get('ang_dx', 0.0)):.1f}" == Ads:
+                        q = max(0, int(r.get("qty", 0)) - 1)
+                        r["qty"] = q
+                        break
+                except Exception:
+                    continue
+
+        # Ricalcola piano e aggiorna viste
+        self._recompute_plan_and_refresh()
+
+    # ---------- Lifecycle ----------
+    def accept(self):
+        # salva preferenze di visibilità
+        cfg = dict(read_settings())
+        cfg["opt_show_summary"] = bool(self._chk_summary and self._chk_summary.isChecked())
+        cfg["opt_show_graph"] = bool(self._chk_graph and self._chk_graph.isChecked())
+        write_settings(cfg)
+        super().accept()
+
+    def reject(self):
+        # idem in chiusura via ESC/X
+        self.accept()
