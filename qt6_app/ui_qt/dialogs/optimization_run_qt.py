@@ -4,7 +4,7 @@ import csv
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal, QRect
-from PySide6.QtGui import QKeyEvent, QTextDocument, QColor
+from PySide6.QtGui import QKeyEvent, QTextDocument, QColor, QBrush
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
@@ -16,16 +16,25 @@ except Exception:
     QPrinter = None
 
 try:
-    from ui_qt.utils.settings import read_settings
+    from ui_qt.utils.settings import read_settings, write_settings
 except Exception:
     def read_settings(): return {}
+    def write_settings(_): pass
 
 from ui_qt.widgets.plan_visualizer import PlanVisualizerWidget
-from ui_qt.logic.refiner import bar_used_length, compute_bar_breakdown
+from ui_qt.logic.refiner import (
+    pack_bars_knapsack_ilp,
+    refine_tail_ilp,
+    bar_used_length,
+    residuals,
+    joint_consumption,
+    compute_bar_breakdown
+)
+
 
 class OptimizationSummaryDialog(QDialog):
     """
-    Riepilogo ottimizzazione con breakdown:
+    Riepilogo ottimizzazione con breakdown aggiuntivo:
       - Kerf angolare (dopo recupero)
       - Ripasso totale
       - Recupero totale
@@ -36,14 +45,14 @@ class OptimizationSummaryDialog(QDialog):
 
     def __init__(self, parent: QWidget, profile: str,
                  bars: List[List[Dict[str, float]]],
-                 residuals: List[float],
+                 residuals_list: List[float],
                  stock_mm: float):
         super().__init__(parent)
         self.setWindowTitle(f"Riepilogo ottimizzazione — {profile}")
         self.setModal(False)
         self._profile = profile
         self._bars = bars or []
-        self._residuals = residuals or []
+        self._residuals = residuals_list or []
         self._stock = float(stock_mm or 6500.0)
 
         cfg = read_settings()
@@ -68,8 +77,7 @@ class OptimizationSummaryDialog(QDialog):
         self.tbl.setHorizontalHeaderLabels(self.COLS)
         hh = self.tbl.horizontalHeader()
         for i in range(len(self.COLS)):
-            mode = QHeaderView.ResizeToContents if i < 9 else QHeaderView.ResizeToContents
-            hh.setSectionResizeMode(i, mode)
+            hh.setSectionResizeMode(i, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(8, QHeaderView.Stretch)
         root.addWidget(self.tbl, 1)
 
@@ -88,7 +96,7 @@ class OptimizationSummaryDialog(QDialog):
         self.btn_pdf.clicked.connect(self._export_pdf)
 
         self._fill_table()
-        self.resize(1100, 520)
+        self.resize(1120, 520)
 
     def _fill_table(self):
         warn_color = QColor("#ffcccc")
@@ -127,10 +135,11 @@ class OptimizationSummaryDialog(QDialog):
                 self.tbl.setItem(r, c, it)
 
     def _export_csv(self):
-        import os
-        path, _ = QFileDialog.getSaveFileName(self, "Esporta CSV",
-                                              f"riepilogo_{self._profile}_{datetime.now():%Y%m%d_%H%M%S}.csv",
-                                              "CSV (*.csv)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Esporta CSV",
+            f"riepilogo_{self._profile}_{datetime.now():%Y%m%d_%H%M%S}.csv",
+            "CSV (*.csv)"
+        )
         if not path:
             return
         try:
@@ -147,9 +156,11 @@ class OptimizationSummaryDialog(QDialog):
     def _export_pdf(self):
         if QPrinter is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Esporta PDF",
-                                              f"riepilogo_{self._profile}_{datetime.now():%Y%m%d_%H%M%S}.pdf",
-                                              "PDF (*.pdf)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Esporta PDF",
+            f"riepilogo_{self._profile}_{datetime.now():%Y%m%d_%H%M%S}.pdf",
+            "PDF (*.pdf)"
+        )
         if not path:
             return
         html_rows = []
@@ -159,14 +170,14 @@ class OptimizationSummaryDialog(QDialog):
             html_rows.append(f"<tr>{tds}</tr>")
         html = f"""
         <html><head><meta charset='utf-8'><style>
-        table{{border-collapse:collapse;width:100%;font-size:12px}} th,td{{border:1px solid #999;padding:4px 6px}}
+        table{{border-collapse:collapse;width:100%;font-size:12px}}
+        th,td{{border:1px solid #999;padding:4px 6px}}
         th{{background:#f0f0f0}}
         </style></head><body>
         <h2>Riepilogo ottimizzazione — {self._profile}</h2>
         <div>Stock: {self._stock:.0f} mm — Generato: {datetime.now():%Y-%m-%d %H:%M:%S}</div><br/>
-        <table><thead><tr>
-        {''.join(f'<th>{c}</th>' for c in self.COLS)}
-        </tr></thead><tbody>{''.join(html_rows)}</tbody></table></body></html>
+        <table><thead><tr>{''.join(f'<th>{c}</th>' for c in self.COLS)}</tr></thead>
+        <tbody>{''.join(html_rows)}</tbody></table></body></html>
         """
         doc = QTextDocument(); doc.setHtml(html)
         printer = QPrinter(QPrinter.HighResolution)
@@ -176,6 +187,13 @@ class OptimizationSummaryDialog(QDialog):
 
 
 class OptimizationRunDialog(QDialog):
+    """
+    Dialog ottimizzazione (overlay opzionale):
+    - Visualizza piano barre
+    - Tabella elementi
+    - Riepilogo con breakdown (kerf angolare, ripasso, recupero)
+    - F7 simula taglio, F9 avanza al prossimo pezzo
+    """
     simulationRequested = Signal()
     startRequested = Signal()
 
@@ -192,6 +210,9 @@ class OptimizationRunDialog(QDialog):
 
         cfg = read_settings()
         self._stock = float(cfg.get("opt_stock_mm", 6500.0))
+        stock_use = float(cfg.get("opt_stock_usable_mm", 0.0))
+        if stock_use > 0:
+            self._stock = stock_use
         self._kerf_base = float(cfg.get("opt_kerf_mm", 3.0))
         self._ripasso = float(cfg.get("opt_ripasso_mm", 0.0))
         self._reversible = bool(cfg.get("opt_current_profile_reversible", False))
@@ -200,6 +221,11 @@ class OptimizationRunDialog(QDialog):
         self._max_angle = float(cfg.get("opt_kerf_max_angle_deg", 60.0))
         self._max_factor = float(cfg.get("opt_kerf_max_factor", 2.0))
         self._warn_thr = float(cfg.get("opt_warn_overflow_mm", 0.5))
+        self._solver = str(cfg.get("opt_solver", "ILP_KNAP")).upper()
+        self._per_bar_time = int(cfg.get("opt_time_limit_s", 15))
+        self._tail_n = int(cfg.get("opt_refine_tail_bars", 6))
+        self._tail_t = int(cfg.get("opt_refine_time_s", 25))
+        self._cons_angle = float(cfg.get("opt_knap_conservative_angle_deg", 45.0))
 
         self._overlay_target: Optional[QWidget] = overlay_target
         self._show_graph = True if self._overlay_target is not None else bool(cfg.get("opt_show_graph", True))
@@ -213,8 +239,10 @@ class OptimizationRunDialog(QDialog):
         self._apply_geometry()
         self._resize_graph_area()
 
+    # ---------- UI build ----------
     def _build(self):
-        root = QVBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(6)
+        root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
+
         opts = QFrame(); ol = QHBoxLayout(opts); ol.setContentsMargins(0,0,0,0); ol.setSpacing(6)
         self._chk_graph = QCheckBox("Mostra grafica piano"); self._chk_graph.setChecked(self._show_graph)
         self._chk_graph.toggled.connect(self._toggle_graph)
@@ -230,31 +258,32 @@ class OptimizationRunDialog(QDialog):
         gl.addWidget(self._graph, 1)
         root.addWidget(self._panel_graph, 0)
 
-        self._tbl = QTableWidget(0,4)
-        self._tbl.setHorizontalHeaderLabels(["Lunghezza (mm)","Ang SX","Ang DX","Q.tà"])
+        self._tbl = QTableWidget(0, 4)
+        self._tbl.setHorizontalHeaderLabels(["Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà"])
         hdr = self._tbl.horizontalHeader()
-        for i in range(4): hdr.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        for i in range(4):
+            hdr.setSectionResizeMode(i, QHeaderView.ResizeToContents)
         self._tbl.setMinimumHeight(self.TABLE_MIN_H)
         root.addWidget(self._tbl, 1)
 
         self._apply_toggles()
 
-    def _toggle_graph(self, on: bool):
-        self._show_graph = bool(on); self._apply_toggles()
-        if self._overlay_target is None:
-            cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph
-            try: write_settings(cfg)
-            except Exception: pass
-        self._resize_graph_area()
-
     def _apply_toggles(self):
         self._panel_graph.setVisible(self._show_graph)
 
+    def _toggle_graph(self, on: bool):
+        self._show_graph = bool(on); self._apply_toggles()
+        if self._overlay_target is None:
+            cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
+        self._resize_graph_area()
+
+    # ---------- Summary ----------
     def _open_summary(self):
         dlg = OptimizationSummaryDialog(self, self.profile, self._bars, self._bars_residuals, self._stock)
         dlg.setAttribute(Qt.WA_DeleteOnClose, True)
         dlg.show()
 
+    # ---------- Plan computation ----------
     def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
         pieces: List[Dict[str, float]] = []
         for r in self._rows:
@@ -265,7 +294,7 @@ class OptimizationRunDialog(QDialog):
         pieces.sort(key=lambda x: x["len"], reverse=True)
         return pieces
 
-    def _pack_bfd(self, pieces: List[Dict[str, float]], stock: float) -> Tuple[List[List[Dict[str, float]]], List[float]]:
+    def _pack_bfd(self, pieces: List[Dict[str, float]]) -> Tuple[List[List[Dict[str, float]]], List[float]]:
         bars: List[List[Dict[str, float]]] = []
         for p in pieces:
             placed = False
@@ -276,14 +305,14 @@ class OptimizationRunDialog(QDialog):
                 extra = joint_consumption(b[-1], self._kerf_base, self._ripasso,
                                           self._reversible, self._thickness,
                                           self._angle_tol, self._max_angle, self._max_factor)[0] if b else 0.0
-                if used + p["len"] + extra <= stock + 1e-6:
+                if used + p["len"] + extra <= self._stock + 1e-6:
                     b.append(p); placed = True; break
             if not placed:
-                if p["len"] <= stock + 1e-6:
+                if p["len"] <= self._stock + 1e-6:
                     bars.append([p])
                 else:
                     bars.append([p])
-        rem = residuals(bars, stock, self._kerf_base, self._ripasso,
+        rem = residuals(bars, self._stock, self._kerf_base, self._ripasso,
                         self._reversible, self._thickness,
                         self._angle_tol, self._max_angle, self._max_factor)
         if rem:
@@ -294,32 +323,38 @@ class OptimizationRunDialog(QDialog):
 
     def _compute_plan_once(self):
         pieces = self._expand_rows_to_unit_pieces()
-        stock = self._stock  # (se vuoi usare stock_usable, passa qui)
-        solver = str(read_settings().get("opt_solver", "ILP_KNAP")).upper()
-        per_bar_time = int(read_settings().get("opt_time_limit_s", 15))
-        if solver in ("ILP_KNAP", "ILP"):
+        if self._solver in ("ILP_KNAP", "ILP"):
             bars, rem = pack_bars_knapsack_ilp(
-                pieces, stock, self._kerf_base, self._ripasso,
-                read_settings().get("opt_knap_conservative_angle_deg", 45.0),
-                self._max_angle, self._max_factor,
-                self._reversible, self._thickness, self._angle_tol,
-                per_bar_time_s=per_bar_time
+                pieces=pieces,
+                stock=self._stock,
+                kerf_base=self._kerf_base,
+                ripasso_mm=self._ripasso,
+                conservative_angle_deg=self._cons_angle,
+                max_angle=self._max_angle,
+                max_factor=self._max_factor,
+                reversible=self._reversible,
+                thickness_mm=self._thickness,
+                angle_tol=self._angle_tol,
+                per_bar_time_s=self._per_bar_time
             )
             if not bars:
-                bars, rem = self._pack_bfd(pieces, stock)
+                bars, rem = self._pack_bfd(pieces)
         else:
-            bars, rem = self._pack_bfd(pieces, stock)
+            bars, rem = self._pack_bfd(pieces)
 
-        # No refine qui (lo fa la pagina)
+        # (Refine opzionale non applicato qui, è gestito nella pagina principale)
         self._bars = bars
         self._bars_residuals = rem
 
+    # ---------- Views refresh ----------
     def _refresh_views(self):
-        self._graph.set_data(self._bars, stock_mm=self._stock,
-                             kerf_base=self._kerf_base, ripasso_mm=self._ripasso,
-                             reversible=self._reversible, thickness_mm=self._thickness,
-                             angle_tol=self._angle_tol, max_angle=self._max_angle,
-                             max_factor=self._max_factor, warn_threshold_mm=self._warn_thr)
+        self._graph.set_data(
+            self._bars, stock_mm=self._stock,
+            kerf_base=self._kerf_base, ripasso_mm=self._ripasso,
+            reversible=self._reversible, thickness_mm=self._thickness,
+            angle_tol=self._angle_tol, max_angle=self._max_angle,
+            max_factor=self._max_factor, warn_threshold_mm=self._warn_thr
+        )
         self._reload_table()
         self._resize_graph_area()
 
@@ -333,6 +368,7 @@ class OptimizationRunDialog(QDialog):
             self._tbl.setItem(row, 2, QTableWidgetItem(f"{float(r.get('ang_dx',0.0)):.1f}"))
             self._tbl.setItem(row, 3, QTableWidgetItem(str(q)))
 
+    # ---------- Geometry and sizing ----------
     def _apply_geometry(self):
         if self._overlay_target is not None:
             try:
@@ -355,7 +391,8 @@ class OptimizationRunDialog(QDialog):
 
     def _resize_graph_area(self):
         if not (self._panel_graph and self._graph and self._tbl): return
-        total_h = self.height(); opts_h = self._chk_graph.sizeHint().height()
+        total_h = self.height()
+        opts_h = self._chk_graph.sizeHint().height()
         table_min = self.TABLE_MIN_H
         margins = 8 + 8 + 6
         avail_for_graph = max(100, total_h - (opts_h + margins + table_min))
@@ -367,24 +404,43 @@ class OptimizationRunDialog(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event); self._resize_graph_area()
 
+    # ---------- Public API ----------
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
+        # Evidenzia nel grafico
         self._graph.mark_done(length_mm, ang_sx, ang_dx)
-        # Decremento riga
+        # Decrementa qty locale
         tol_L = 0.01; tol_A = 0.01
         for r in self._rows:
-            if abs(float(r.get("length_mm",0.0)) - length_mm) <= tol_L and \
-               abs(float(r.get("ang_sx",0.0)) - ang_sx) <= tol_A and \
-               abs(float(r.get("ang_dx",0.0)) - ang_dx) <= tol_A:
-                r["qty"] = max(0, int(r.get("qty",0)) - 1)
-                break
+            try:
+                if abs(float(r.get("length_mm",0.0)) - length_mm) <= tol_L \
+                   and abs(float(r.get("ang_sx",0.0)) - ang_sx) <= tol_A \
+                   and abs(float(r.get("ang_dx",0.0)) - ang_dx) <= tol_A:
+                    r["qty"] = max(0, int(r.get("qty",0)) - 1)
+                    break
+            except Exception:
+                continue
         self._refresh_views()
 
-    def _open_summary(self):
-        pass  # handled by button
-
+    # ---------- Keyboard ----------
     def keyPressEvent(self, ev: QKeyEvent):
-        if ev.key() == Qt.Key_F7:
-            self.simulationRequested.emit(); ev.accept(); return
-        if ev.key() == Qt.Key_F9:
-            self.startRequested.emit(); ev.accept(); return
+        try:
+            if ev.key() == Qt.Key_F7:
+                self.simulationRequested.emit()
+                ev.accept(); return
+            if ev.key() == Qt.Key_F9:
+                self.startRequested.emit()
+                ev.accept(); return
+        except Exception:
+            pass
         super().keyPressEvent(ev)
+
+    # ---------- Lifecycle ----------
+    def accept(self):
+        if self._overlay_target is None:
+            cfg = dict(read_settings())
+            cfg["opt_show_graph"] = bool(self._chk_graph and self._chk_graph.isChecked())
+            write_settings(cfg)
+        super().accept()
+
+    def reject(self):
+        self.accept()
