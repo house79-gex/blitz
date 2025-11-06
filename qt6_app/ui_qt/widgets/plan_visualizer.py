@@ -34,11 +34,11 @@ class PlanVisualizerWidget(QWidget):
         self._max_factor: float = 2.0
         self._warn_thr: float = 0.5
 
-        # Stili
+        # Stili (barre più distinguibili dai pezzi)
         self._bg = QColor("#ffffff")
-        self._bar_bg = QColor("#e9edf2")
-        self._bar_bg_active = QColor("#fff3cd")
-        self._bar_bg_done = QColor("#f2f2f2")
+        self._bar_bg = QColor("#f5f7fa")         # sfondo barra default (molto chiaro)
+        self._bar_bg_active = QColor("#ffe7ba")  # barra attiva (ambra chiaro)
+        self._bar_bg_done = QColor("#eef0f2")    # barra completata
         self._border = QColor("#3b4b5a")
         self._border_warn = QColor("#ff2d2d")
         self._piece_fg = QColor("#1976d2")
@@ -242,7 +242,3 @@ class PlanVisualizerWidget(QWidget):
             p.setPen(pen_bar)
             p.drawText(QRectF(x0 - 8, top - 1, 36, 16),
                        Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
-            if near_overflow:
-                p.drawText(QRectF(bar_rect.right() - 90, top - 1, 90, 16),
-                           Qt.AlignRight | Qt.AlignVCenter,
-                           f"Res {(self._stock - used_len):.1f}mm")
