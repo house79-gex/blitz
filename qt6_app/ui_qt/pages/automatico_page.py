@@ -6,7 +6,7 @@ import time
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QCheckBox, QMessageBox, QAbstractItemView
+    QCheckBox, QMessageBox, QAbstractItemView, QSizePolicy
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut, QColor, QBrush, QFont, QKeyEvent
@@ -25,22 +25,26 @@ except Exception:
     def read_settings() -> Dict[str, Any]: return {}
     def write_settings(d: Dict[str, Any]) -> None: pass
 
+# Compatibilità enum Expanding (PySide6 varie versioni)
+try:
+    POL_EXP = QSizePolicy.Policy.Expanding
+except AttributeError:
+    POL_EXP = QSizePolicy.Expanding
 
 PANEL_W = 420
-COUNTER_W = 540
-COUNTER_H = 180
 
 
 class AutomaticoPage(QWidget):
     """
-    Automatico (layout a due colonne come prima):
+    Automatico (layout a due colonne, come l'originale):
     - Sinistra: Cutlist viewer in un frame, più alta, con pulsante Start verde centrato sotto.
     - Destra: in alto due frame (Contapezzi e Status).
     - Toolbar: Importa, Ottimizza (su intestazione selezionata o prima), Start fisico, Auto-continue.
 
     Logica:
-    - Auto-continue: se pezzo successivo uguale, prosegue senza sbloccare/ribloccare il freno né muovere.
-    - Fix decremento quantità: la colonna Q.tà della viewer principale arriva a 0 correttamente.
+    - Auto-continue: se il pezzo successivo ha stessa quota/angoli entro tolleranza, prosegue senza
+      sbloccare/ribloccare il freno e senza muovere (arma solo contatore).
+    - Fix decremento quantità: la colonna Q.tà nella viewer principale arriva a 0 correttamente.
     """
 
     def __init__(self, appwin):
@@ -114,7 +118,7 @@ class AutomaticoPage(QWidget):
         root.addWidget(Header(self.appwin, "AUTOMATICO", mode="default",
                               on_home=self._nav_home, on_reset=self._reset_and_home))
 
-        # Toolbar (come prima, senza combo profilo)
+        # Toolbar (senza combo profilo)
         top = QHBoxLayout()
         btn_import = QPushButton("Importa…")
         btn_import.setToolTip("Importa una cutlist salvata")
@@ -144,9 +148,9 @@ class AutomaticoPage(QWidget):
         body.setSpacing(8)
         root.addLayout(body, 1)  # occupa tutto lo spazio
 
-        # Colonna sinistra
+        # Colonna sinistra (viewer + start)
         left = QFrame()
-        left.setSizePolicy(left.sizePolicy().Expanding, left.sizePolicy().Expanding)
+        left.setSizePolicy(POL_EXP, POL_EXP)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(8)
@@ -230,7 +234,7 @@ class AutomaticoPage(QWidget):
         swl.addWidget(self.status)
         rl.addWidget(status_wrap, 0)
 
-        rl.addStretch(1)  # lascia i due frame "in alto" a destra
+        rl.addStretch(1)  # mantiene i due frame "in alto" a destra
 
         body.addWidget(right, 0)
 
@@ -722,6 +726,10 @@ class AutomaticoPage(QWidget):
         self.tbl_cut.selectRow(row)
 
     def _dec_row_qty_match(self, profile: str, length: float, ax: float, ad: float) -> bool:
+        """
+        Decrementa la prima riga che corrisponde (prof, lunghezza≈, angoli≈).
+        Ritorna True se ha aggiornato, False se non ha trovato match.
+        """
         n = self.tbl_cut.rowCount()
         for r in range(n):
             if self._row_is_header(r): continue
@@ -742,6 +750,9 @@ class AutomaticoPage(QWidget):
         return False
 
     def _dec_row_qty_match_str(self, profile: str, Ls: str, Axs: str, Ads: str) -> bool:
+        """
+        Decremento di fallback: confronta le stringhe già formattate nelle celle.
+        """
         n = self.tbl_cut.rowCount()
         for r in range(n):
             if self._row_is_header(r): continue
