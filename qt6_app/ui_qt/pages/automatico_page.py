@@ -41,8 +41,9 @@ class AutomaticoPage(QWidget):
     - Doppio click su intestazione profilo: avvia ottimizzazione per quel profilo e abilita Start fisico.
     - F7: simula un taglio (incrementa contatore come pulse lama).
 
-    Miglioria: Auto-continue
-    - Se il pezzo successivo ha stessa quota e angoli entro tolleranza, parte automaticamente senza premere START.
+    Migliorie:
+    - Auto-continue: su pezzo successivo con stessa quota/angoli entro tolleranza, parte automaticamente.
+    - Se già bloccato e non serve muovere (stessa quota), NON sblocca/riblocca: arma solo contatore e prosegue.
     """
 
     def __init__(self, appwin):
@@ -66,7 +67,7 @@ class AutomaticoPage(QWidget):
         self.lbl_remaining: Optional[QLabel] = None
         self.cmb_profile: Optional[QComboBox] = None
         self.chk_start_phys: Optional[QCheckBox] = None
-        self.chk_auto_same: Optional[QCheckBox] = None  # NEW
+        self.chk_auto_same: Optional[QCheckBox] = None  # Auto-continue toggle
 
         # Dati
         self._orders = OrdersStore()
@@ -135,7 +136,6 @@ class AutomaticoPage(QWidget):
         self.chk_start_phys = QCheckBox("Start fisico"); self.chk_start_phys.setToolTip("Pulsante fisico per avanzare i pezzi")
         top.addWidget(self.chk_start_phys)
 
-        # NEW: checkbox Auto-continue
         self.chk_auto_same = QCheckBox("Auto-continue stessa quota")
         self.chk_auto_same.setToolTip("Esegue automaticamente il pezzo successivo se quota e angoli coincidono (entro tolleranza) senza premere START.")
         self.chk_auto_same.setChecked(True)
@@ -341,7 +341,6 @@ class AutomaticoPage(QWidget):
         self._opt_dialog = OptimizationRunDialog(self, prof, rows)
         self._opt_dialog.finished.connect(lambda _p: setattr(self, "_opt_dialog", None))
         self._opt_dialog.show()
-        # Avviso visivo anche nella schermata principale
         self._toast("Ottimizzazione avviata: usa il pulsante fisico o 'Simula START' nella finestra di riepilogo.", "info")
 
     # ---------------- Manuale: Start riga ----------------
@@ -363,7 +362,6 @@ class AutomaticoPage(QWidget):
         if qty <= 0:
             QMessageBox.information(self, "Start", "Quantità esaurita per questa riga."); return
 
-        # Arma contapezzi dalla riga
         try:
             setattr(self.machine, "semi_auto_target_pieces", int(qty))
             setattr(self.machine, "semi_auto_count_done", 0)
@@ -378,7 +376,6 @@ class AutomaticoPage(QWidget):
         prof = (profile or "").strip()
         if not prof:
             QMessageBox.information(self, "Ottimizza", "Seleziona un profilo."); return
-        # costruisci pezzi unitari per il profilo
         items: Dict[Tuple[float, float, float], int] = defaultdict(int)
         for r in range(self.tbl_cut.rowCount()):
             if self._row_is_header(r): continue
@@ -412,13 +409,10 @@ class AutomaticoPage(QWidget):
             if not placed:
                 bars.append([p]); rem.append(max(stock - need, 0.0))
 
-        # stato piano
         self._plan_profile = prof; self._bars = bars; self._bar_idx = 0; self._piece_idx = -1
         self._mode = "plan"
-        # abilita start fisico auto
         if self.chk_start_phys: self.chk_start_phys.setChecked(True)
 
-        # facoltativo: piano informativo
         try:
             agg_len: Dict[float, int] = defaultdict(int)
             for p in pieces: agg_len[round(p["len"], 2)] += 1
@@ -531,12 +525,14 @@ class AutomaticoPage(QWidget):
 
     # --------- Simulazioni taglio (riusabili anche dalla dialog) ---------
     def simulate_cut_from_dialog(self):
-        """Richiamata dalla finestra Ottimizzazione quando si preme F7."""
         self._simulate_cut_once()
 
     def _simulate_cut_once(self):
-        """Simula un singolo 'pulse lama': incrementa contatore, aggiorna UI, riepilogo e sblocca a fine conto.
-           A fine taglio: se auto-continue attivo e prossimo pezzo ha stessa quota/angoli entro tolleranza, parte automaticamente.
+        """
+        Simula un singolo 'pulse lama': incrementa contatore, aggiorna UI, riepilogo e sblocca a fine conto.
+        Auto-continue: se il prossimo pezzo è uguale ed auto-continue è attivo:
+          - se freno già bloccato e non serve muovere, NON sblocca e NON muove, arma solo target=1 e prosegue.
+          - altrimenti usa il flusso classico (start trigger → move).
         """
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
@@ -548,47 +544,59 @@ class AutomaticoPage(QWidget):
         try: setattr(self.machine, "semi_auto_count_done", new_done)
         except Exception: pass
 
-        # Identifica il pezzo attuale (piano)
+        # Pezzo attuale
         cur_piece = None
         if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
             cur_piece = self._bars[self._bar_idx][self._piece_idx]
 
-        # Aggiorna tabella principale cutlist
+        # Aggiorna tabella principale cutlist (decrementa)
         if cur_piece:
             self._dec_row_qty_match(self._plan_profile, float(cur_piece["len"]), float(cur_piece["ax"]), float(cur_piece["ad"]))
 
-        # Aggiorna dialog (riepilogo)
+        # Aggiorna dialog (riepilogo) best-effort
         if self._opt_dialog and cur_piece:
             try:
+                # metodo standard (decrementa di 1)
                 self._opt_dialog.update_after_cut(length_mm=float(cur_piece["len"]), ang_sx=float(cur_piece["ax"]), ang_dx=float(cur_piece["ad"]))
             except Exception:
                 pass
 
-        # Fine conteggio → sblocca e azzera i contatori a 0 (non 1)
         if new_done >= tgt:
-            self._unlock_brake()
-            if self._mode == "manual" and self._active_row is not None:
-                self._mark_row_finished(self._active_row)
-                self._mode = "idle"
+            # Fine pezzo: decidere come procedere
+            next_piece = self._peek_next_piece() if self._mode == "plan" else None
+            same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
+
+            # azzera contatori del ciclo appena concluso
             try:
                 setattr(self.machine, "semi_auto_target_pieces", 0)
                 setattr(self.machine, "semi_auto_count_done", 0)
             except Exception:
                 pass
 
-            # NEW: Auto-continue su stessa quota/angoli entro tolleranza
-            if self._mode == "plan" and cur_piece and self._auto_continue_enabled():
-                nxt = self._peek_next_piece()
-                if nxt and self._same_job(cur_piece, nxt):
-                    # Avvia direttamente il prossimo pezzo
-                    try:
-                        self._handle_start_trigger()
-                    except Exception:
-                        pass
+            if self._mode == "manual" and self._active_row is not None:
+                self._mark_row_finished(self._active_row)
+                self._mode = "idle"
+
+            if self._mode == "plan" and self._auto_continue_enabled() and same_next:
+                # AUTO-CONTINUE: se già bloccato e NON serve muovere → non stressare elettrovalvole
+                if self._brake_locked:
+                    # avanza indice pezzo e arma target=1 senza muovere e senza toccare il freno
+                    if self._advance_to_next_indices():
+                        self._arm_next_piece_without_move()
+                        # prova a forzare qty=0 nella dialog se siamo arrivati a 0 per quella riga
+                        self._notify_dialog_zero_if_needed(next_piece)
+                    else:
+                        self._toast("Piano completato", "ok")
+                else:
+                    # raro: freno non bloccato → usa flusso classico
+                    self._handle_start_trigger()
+            else:
+                # flusso classico: sblocca al termine
+                self._unlock_brake()
 
         self._update_counters_ui()
 
-    # ---------------- Auto-continue helpers (NEW) ----------------
+    # ---------------- Auto-continue helpers ----------------
     def _auto_continue_enabled(self) -> bool:
         try:
             return bool(self.chk_auto_same and self.chk_auto_same.isChecked())
@@ -596,10 +604,8 @@ class AutomaticoPage(QWidget):
             return False
 
     def _peek_next_piece(self) -> Optional[Dict[str, float]]:
-        """Ispeziona il prossimo pezzo del piano SENZA avanzare gli indici attuali."""
         if not self._bars or self._bar_idx >= len(self._bars):
             return None
-        # calcolo del prossimo indice
         next_bar_idx = self._bar_idx if self._bar_idx >= 0 else 0
         if not (0 <= next_bar_idx < len(self._bars)):
             return None
@@ -615,8 +621,39 @@ class AutomaticoPage(QWidget):
             return bar[next_piece_idx]
         return None
 
+    def _advance_to_next_indices(self) -> bool:
+        """Avanza gli indici al pezzo successivo; True se riuscito, False se piano terminato."""
+        if not self._bars:
+            return False
+        bar = self._bars[self._bar_idx] if (0 <= self._bar_idx < len(self._bars)) else []
+        if not bar:
+            return False
+        if self._piece_idx + 1 < len(bar):
+            self._piece_idx += 1
+            return True
+        # passa alla barra successiva
+        if self._bar_idx + 1 >= len(self._bars):
+            return False
+        self._bar_idx += 1
+        self._piece_idx = 0
+        return True
+
+    def _arm_next_piece_without_move(self):
+        """
+        Arma target=1 per il pezzo corrente (già selezionato dagli indici) SENZA muovere e SENZA sbloccare il freno.
+        Da usare quando next piece è la stessa quota/angoli del precedente e freno già bloccato.
+        """
+        try:
+            setattr(self.machine, "semi_auto_target_pieces", 1)
+            setattr(self.machine, "semi_auto_count_done", 0)
+        except Exception:
+            pass
+        # nessun movimento, niente lock_on_inpos: restiamo in stato bloccato pronti a contare
+        self._lock_on_inpos = False
+        # aggiornamento contatori UI
+        self._update_counters_ui()
+
     def _same_job(self, p1: Dict[str, float], p2: Dict[str, float]) -> bool:
-        """Confronta lunghezza e angoli con tolleranze configurate."""
         try:
             dl = abs(float(p1["len"]) - float(p2["len"])) <= self._same_len_tol
             dax = abs(float(p1["ax"]) - float(p2["ax"])) <= self._same_ang_tol
@@ -625,9 +662,26 @@ class AutomaticoPage(QWidget):
         except Exception:
             return False
 
+    def _notify_dialog_zero_if_needed(self, piece: Optional[Dict[str, float]]):
+        """
+        Best-effort: se la riga corrispondente è arrivata a 0, prova ad aggiornare la dialog se espone metodi ad hoc.
+        """
+        if not (self._opt_dialog and piece):
+            return
+        # Tentativi in ordine: metodi opzionali che potremmo avere in dialog
+        for meth in ("set_piece_qty", "update_remaining_for", "set_remaining_for_piece"):
+            if hasattr(self._opt_dialog, meth):
+                try:
+                    getattr(self._opt_dialog, meth)(
+                        length_mm=float(piece["len"]), ang_sx=float(piece["ax"]), ang_dx=float(piece["ad"]), qty=0
+                    )
+                    return
+                except Exception:
+                    pass
+        # Nessun metodo dedicato: niente, la dialog resterà coerente al prossimo refresh/apertura.
+
     # ---------------- UI helpers ----------------
     def _toast(self, msg: str, level: str = "info"):
-        # Notifica non-bloccante, se il sistema di toast è disponibile
         if hasattr(self.appwin, "toast"):
             try:
                 self.appwin.toast.show(msg, level, 2500)
@@ -639,8 +693,8 @@ class AutomaticoPage(QWidget):
         for c in range(self.tbl_cut.columnCount()):
             it = self.tbl_cut.item(row, c)
             if it:
-                it.setBackground(QBrush(QColor("#2ecc71")))  # verde più acceso
-                it.setForeground(QBrush(Qt.black))           # testo a contrasto
+                it.setBackground(QBrush(QColor("#2ecc71")))
+                it.setForeground(QBrush(Qt.black))
         self.tbl_cut.selectRow(row)
 
     def _dec_row_qty_match(self, profile: str, length: float, ax: float, ad: float):
@@ -677,11 +731,9 @@ class AutomaticoPage(QWidget):
 
     # ---------------- Eventi / Poll ----------------
     def keyPressEvent(self, event: QKeyEvent):
-        # F7: simula taglio (come pulse lama) anche da pagina principale
         if event.key() == Qt.Key_F7:
             self._simulate_cut_once()
             event.accept(); return
-        # Space (fallback Start fisico)
         if event.key() == Qt.Key_Space:
             if self.chk_start_phys and self.chk_start_phys.isChecked():
                 self._handle_start_trigger()
@@ -715,7 +767,6 @@ class AutomaticoPage(QWidget):
         # Pulse lama reale
         cur_blade = self._read_blade_pulse()
         if cur_blade and not self._blade_prev:
-            # riusa la stessa logica della simulazione per coerenza
             self._simulate_cut_once()
         self._blade_prev = cur_blade
 
