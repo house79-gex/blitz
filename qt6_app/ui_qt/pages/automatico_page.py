@@ -89,8 +89,8 @@ class AutomaticoPage(QWidget):
       Nota: "Start fisico" e "Auto-continue" non sono visibili: sono attivi automaticamente.
 
     Logica:
-    - Auto-continue: se il pezzo successivo ha stessa quota/angoli entro tolleranza, prosegue senza
-      sbloccare/ribloccare il freno e senza muovere (arma solo contatore).
+    - In ottimizzazione: il pannello contapezzi mostra il numero di pezzi relativi al tipo in lavorazione.
+      Viene contato un "blocco" di pezzi consecutivi uguali (stessa quota/angoli) sulla barra corrente.
     - Decremento quantità: la colonna Q.tà nella viewer principale arriva a 0 correttamente.
     """
 
@@ -594,126 +594,47 @@ class AutomaticoPage(QWidget):
             self._brake_locked = False
         except Exception: pass
 
-    # ---------------- Start fisico / avanzamento piano ----------------
-    def _read_input(self, key: str) -> bool:
+    # ---------------- Helpers Piano ----------------
+    def _same_job(self, p1: Dict[str, float], p2: Dict[str, float]) -> bool:
         try:
-            if hasattr(self.machine, "read_input") and callable(getattr(self.machine, "read_input")):
-                return bool(self.machine.read_input(key))
-            if hasattr(self.machine, key):
-                return bool(getattr(self.machine, key))
+            dl = abs(float(p1["len"]) - float(p2["len"])) <= self._same_len_tol
+            dax = abs(float(p1["ax"]) - float(p2["ax"])) <= self._same_ang_tol
+            dad = abs(float(p1["ad"]) - float(p2["ad"])) <= self._same_ang_tol
+            return dl and dax and dad
         except Exception:
-            pass
-        return False
+            return False
 
-    def _read_blade_pulse(self) -> bool:
-        for k in ("blade_cut", "blade_pulse", "cut_pulse", "lama_pulse"):
-            if self._read_input(k): return True
-        return False
+    def _count_consecutive_same_from_indices(self, bar_idx: int, piece_idx: int) -> int:
+        """Conta quanti pezzi consecutivi uguali (stessa quota/angoli) ci sono a partire dall'indice corrente, sulla barra corrente."""
+        if not self._bars or not (0 <= bar_idx < len(self._bars)):
+            return 0
+        bar = self._bars[bar_idx]
+        if not (0 <= piece_idx < len(bar)):
+            return 0
+        base = bar[piece_idx]
+        count = 1
+        j = piece_idx + 1
+        while j < len(bar) and self._same_job(base, bar[j]):
+            count += 1
+            j += 1
+        return count
 
-    def _read_start_button(self) -> bool:
-        for k in ("start_mobile", "mobile_start_pressed", "start_pressed"):
-            if self._read_input(k): return True
-        return False
-
-    def _handle_start_trigger(self):
-        # in piano: arma un pezzo (target=1) e posiziona; se già armato, attende taglio
-        if self._mode != "plan" or not self._bars:
+    def _advance_past_same_run(self):
+        """Sposta gli indici fino alla fine del blocco di pezzi uguali corrente (rimane sull'ultimo del blocco)."""
+        if not self._bars or not (0 <= self._bar_idx < len(self._bars)):
             return
-        tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
-        done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
-        if self._brake_locked and tgt > 0 and done < tgt:
-            return
-        if self._bar_idx < 0: self._bar_idx = 0
-        if self._bar_idx >= len(self._bars):
-            self._toast("Piano completato", "ok"); return
         bar = self._bars[self._bar_idx]
-        self._piece_idx += 1
-        if self._piece_idx >= len(bar):
-            self._bar_idx += 1; self._piece_idx = 0
-            if self._bar_idx >= len(self._bars):
-                self._toast("Piano completato", "ok"); return
-            bar = self._bars[self._bar_idx]
-        p = bar[self._piece_idx]
-        try:
-            setattr(self.machine, "semi_auto_target_pieces", 1)
-            setattr(self.machine, "semi_auto_count_done", 0)
-        except Exception: pass
-        self._move_and_arm(p["len"], p["ax"], p["ad"], self._plan_profile, f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
-
-    # --------- Simulazioni taglio / pulse lama ---------
-    def simulate_cut_from_dialog(self):
-        self._simulate_cut_once()
-
-    def _simulate_cut_once(self):
-        tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
-        done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
-        remaining = max(tgt - done, 0)
-
-        # in dummy, forza lock per permettere la simulazione
-        self._ensure_test_lock(tgt, remaining)
-
-        if not (self._brake_locked and tgt > 0 and remaining > 0):
+        if not (0 <= self._piece_idx < len(bar)):
             return
-
-        new_done = done + 1
-        try: setattr(self.machine, "semi_auto_count_done", new_done)
-        except Exception: pass
-
-        # Pezzo attuale
-        cur_piece = None
-        if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
-            cur_piece = self._bars[self._bar_idx][self._piece_idx]
-
-        # Decremento robusto sulla tabella principale
-        if cur_piece:
-            if not self._dec_row_qty_match(self._plan_profile, float(cur_piece["len"]), float(cur_piece["ax"]), float(cur_piece["ad"])):
-                try:
-                    self._dec_row_qty_match_str(self._plan_profile, f"{float(cur_piece['len']):.2f}",
-                                                f"{float(cur_piece['ax']):.1f}", f"{float(cur_piece['ad']):.1f}")
-                except Exception:
-                    pass
-
-        # Aggiorna dialog (best-effort: evidenzia pezzo tagliato e decrementa qty)
-        if self._opt_dialog and cur_piece:
-            try:
-                self._opt_dialog.update_after_cut(length_mm=float(cur_piece["len"]), ang_sx=float(cur_piece["ax"]), ang_dx=float(cur_piece["ad"]))
-            except Exception:
-                pass
-
-        if new_done >= tgt:
-            # Fine pezzo: decide prossimo
-            next_piece = self._peek_next_piece() if self._mode == "plan" else None
-            same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
-
-            # azzera contatori
-            try:
-                setattr(self.machine, "semi_auto_target_pieces", 0)
-                setattr(self.machine, "semi_auto_count_done", 0)
-            except Exception:
-                pass
-
-            if self._mode == "manual" and self._active_row is not None:
-                # riflette remaining=0 sulla riga attiva
-                self.tbl_cut.setItem(self._active_row, 5, QTableWidgetItem("0"))
-                self._mark_row_finished(self._active_row)
-                self._mode = "idle"
-
-            if self._mode == "plan" and self._auto_continue_enabled() and same_next:
-                if self._brake_locked:
-                    if self._advance_to_next_indices():
-                        self._arm_next_piece_without_move()
-                    else:
-                        self._toast("Piano completato", "ok")
-                else:
-                    self._handle_start_trigger()
+        base = bar[self._piece_idx]
+        # avanza finché il prossimo è uguale
+        while True:
+            nxt = self._peek_next_piece()
+            if nxt and self._same_job(base, nxt):
+                if not self._advance_to_next_indices():
+                    break
             else:
-                self._unlock_brake()
-
-        self._update_counters_ui()
-
-    # ---------------- Auto-continue helpers ----------------
-    def _auto_continue_enabled(self) -> bool:
-        return True  # sempre attivo
+                break
 
     def _peek_next_piece(self) -> Optional[Dict[str, float]]:
         if not self._bars or self._bar_idx >= len(self._bars):
@@ -757,14 +678,120 @@ class AutomaticoPage(QWidget):
         self._lock_on_inpos = False
         self._update_counters_ui()
 
-    def _same_job(self, p1: Dict[str, float], p2: Dict[str, float]) -> bool:
+    # ---------------- Start fisico / avanzamento piano ----------------
+    def _read_input(self, key: str) -> bool:
         try:
-            dl = abs(float(p1["len"]) - float(p2["len"])) <= self._same_len_tol
-            dax = abs(float(p1["ax"]) - float(p2["ax"])) <= self._same_ang_tol
-            dad = abs(float(p1["ad"]) - float(p2["ad"])) <= self._same_ang_tol
-            return dl and dax and dad
+            if hasattr(self.machine, "read_input") and callable(getattr(self.machine, "read_input")):
+                return bool(self.machine.read_input(key))
+            if hasattr(self.machine, key):
+                return bool(getattr(self.machine, key))
         except Exception:
-            return False
+            pass
+        return False
+
+    def _read_blade_pulse(self) -> bool:
+        for k in ("blade_cut", "blade_pulse", "cut_pulse", "lama_pulse"):
+            if self._read_input(k): return True
+        return False
+
+    def _read_start_button(self) -> bool:
+        for k in ("start_mobile", "mobile_start_pressed", "start_pressed"):
+            if self._read_input(k): return True
+        return False
+
+    def _handle_start_trigger(self):
+        # in piano: arma un blocco di pezzi uguali consecutivi (target = blocco) e posiziona; se già armato, attende tagli
+        if self._mode != "plan" or not self._bars:
+            return
+        tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
+        done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
+        # Se un ciclo è già armato e freno bloccato, attendi pulse
+        if self._brake_locked and tgt > 0 and done < tgt:
+            return
+        # Scegli prossimo pezzo
+        if self._bar_idx < 0: self._bar_idx = 0
+        if self._bar_idx >= len(self._bars):
+            self._toast("Piano completato", "ok"); return
+        bar = self._bars[self._bar_idx]
+        self._piece_idx += 1
+        if self._piece_idx >= len(bar):
+            self._bar_idx += 1; self._piece_idx = 0
+            if self._bar_idx >= len(self._bars):
+                self._toast("Piano completato", "ok"); return
+            bar = self._bars[self._bar_idx]
+        p = bar[self._piece_idx]
+
+        # Conta quanti pezzi consecutivi uguali ci sono a partire da questo indice (stessa quota/angoli)
+        block_count = self._count_consecutive_same_from_indices(self._bar_idx, self._piece_idx)
+        if block_count <= 0:
+            block_count = 1
+
+        # Arma il contapezzi per l'intero blocco (così il pannello mostra i pezzi relativi in lavorazione)
+        try:
+            setattr(self.machine, "semi_auto_target_pieces", int(block_count))
+            setattr(self.machine, "semi_auto_count_done", 0)
+        except Exception: pass
+
+        # Posiziona e blocca quando in-pos
+        self._move_and_arm(p["len"], p["ax"], p["ad"], self._plan_profile, f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
+
+    # --------- Simulazioni taglio / pulse lama ---------
+    def simulate_cut_from_dialog(self):
+        self._simulate_cut_once()
+
+    def _simulate_cut_once(self):
+        tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
+        done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
+        remaining = max(tgt - done, 0)
+
+        # in dummy, forza lock per permettere la simulazione
+        self._ensure_test_lock(tgt, remaining)
+
+        if not (self._brake_locked and tgt > 0 and remaining > 0):
+            return
+
+        new_done = done + 1
+        try: setattr(self.machine, "semi_auto_count_done", new_done)
+        except Exception: pass
+
+        # Pezzo attuale
+        cur_piece = None
+        if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
+            cur_piece = self._bars[self._bar_idx][self._piece_idx]
+
+        # Decremento robusto sulla tabella principale
+        if cur_piece:
+            if not self._dec_row_qty_match(self._plan_profile, float(cur_piece["len"]), float(cur_piece["ax"]), float(cur_piece["ad"])):
+                try:
+                    self._dec_row_qty_match_str(self._plan_profile, f"{float(cur_piece['len']):.2f}",
+                                                f"{float(cur_piece['ax']):.1f}", f"{float(cur_piece['ad']):.1f}")
+                except Exception:
+                    pass
+
+        # Aggiorna dialog ottimizzazione (evidenzia pezzo tagliato + decrementa qty nella sua tabella)
+        if self._opt_dialog and cur_piece:
+            try:
+                self._opt_dialog.update_after_cut(length_mm=float(cur_piece["len"]), ang_sx=float(cur_piece["ax"]), ang_dx=float(cur_piece["ad"]))
+            except Exception:
+                pass
+
+        if new_done >= tgt:
+            # Fine blocco corrente: salta alla fine della run di pezzi uguali (rimane sull'ultimo del blocco) e sblocca
+            if self._mode == "plan":
+                self._advance_past_same_run()
+                # azzera contatori del ciclo appena concluso
+                try:
+                    setattr(self.machine, "semi_auto_target_pieces", 0)
+                    setattr(self.machine, "semi_auto_count_done", 0)
+                except Exception:
+                    pass
+                self._unlock_brake()
+            elif self._mode == "manual" and self._active_row is not None:
+                self.tbl_cut.setItem(self._active_row, 5, QTableWidgetItem("0"))
+                self._mark_row_finished(self._active_row)
+                self._mode = "idle"
+
+        self._update_counters_ui()
 
     # ---------------- UI helpers ----------------
     def _toast(self, msg: str, level: str = "info"):
