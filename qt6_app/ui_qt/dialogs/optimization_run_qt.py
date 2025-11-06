@@ -33,13 +33,6 @@ from ui_qt.logic.refiner import (
 
 
 class OptimizationSummaryDialog(QDialog):
-    """
-    Riepilogo ottimizzazione con breakdown aggiuntivo:
-      - Kerf angolare (dopo recupero)
-      - Ripasso totale
-      - Recupero totale
-      - Warn su barre quasi overflow
-    """
     COLS = ["Barra","Pezzi","Usato (mm)","Residuo (mm)","Efficienza (%)",
             "Kerf ang (mm)","Ripasso (mm)","Recupero (mm)","Dettaglio","Warn"]
 
@@ -183,17 +176,11 @@ class OptimizationSummaryDialog(QDialog):
         printer = QPrinter(QPrinter.HighResolution)
         printer.setOutputFormat(QPrinter.PdfFormat)
         printer.setOutputFileName(path)
-        doc.print(printer)
+        # PySide6: il metodo è print_ (non print)
+        doc.print_(printer)
 
 
 class OptimizationRunDialog(QDialog):
-    """
-    Dialog ottimizzazione (overlay opzionale):
-    - Visualizza piano barre
-    - Tabella elementi
-    - Riepilogo con breakdown (kerf angolare, ripasso, recupero)
-    - F7 simula taglio, F9 avanza al prossimo pezzo
-    """
     simulationRequested = Signal()
     startRequested = Signal()
 
@@ -201,7 +188,7 @@ class OptimizationRunDialog(QDialog):
     GRAPH_BAR_H = 16
     GRAPH_V_GAP = 6
 
-    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
+    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[Widget] = None):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
@@ -239,7 +226,6 @@ class OptimizationRunDialog(QDialog):
         self._apply_geometry()
         self._resize_graph_area()
 
-    # ---------- UI build ----------
     def _build(self):
         root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
 
@@ -277,13 +263,11 @@ class OptimizationRunDialog(QDialog):
             cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
         self._resize_graph_area()
 
-    # ---------- Summary ----------
     def _open_summary(self):
         dlg = OptimizationSummaryDialog(self, self.profile, self._bars, self._bars_residuals, self._stock)
         dlg.setAttribute(Qt.WA_DeleteOnClose, True)
         dlg.show()
 
-    # ---------- Plan computation ----------
     def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
         pieces: List[Dict[str, float]] = []
         for r in self._rows:
@@ -342,11 +326,9 @@ class OptimizationRunDialog(QDialog):
         else:
             bars, rem = self._pack_bfd(pieces)
 
-        # (Refine opzionale non applicato qui, è gestito nella pagina principale)
         self._bars = bars
         self._bars_residuals = rem
 
-    # ---------- Views refresh ----------
     def _refresh_views(self):
         self._graph.set_data(
             self._bars, stock_mm=self._stock,
@@ -368,7 +350,6 @@ class OptimizationRunDialog(QDialog):
             self._tbl.setItem(row, 2, QTableWidgetItem(f"{float(r.get('ang_dx',0.0)):.1f}"))
             self._tbl.setItem(row, 3, QTableWidgetItem(str(q)))
 
-    # ---------- Geometry and sizing ----------
     def _apply_geometry(self):
         if self._overlay_target is not None:
             try:
@@ -404,11 +385,8 @@ class OptimizationRunDialog(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event); self._resize_graph_area()
 
-    # ---------- Public API ----------
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        # Evidenzia nel grafico
         self._graph.mark_done(length_mm, ang_sx, ang_dx)
-        # Decrementa qty locale
         tol_L = 0.01; tol_A = 0.01
         for r in self._rows:
             try:
@@ -421,7 +399,6 @@ class OptimizationRunDialog(QDialog):
                 continue
         self._refresh_views()
 
-    # ---------- Keyboard ----------
     def keyPressEvent(self, ev: QKeyEvent):
         try:
             if ev.key() == Qt.Key_F7:
@@ -434,7 +411,6 @@ class OptimizationRunDialog(QDialog):
             pass
         super().keyPressEvent(ev)
 
-    # ---------- Lifecycle ----------
     def accept(self):
         if self._overlay_target is None:
             cfg = dict(read_settings())
