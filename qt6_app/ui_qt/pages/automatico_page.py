@@ -89,12 +89,12 @@ class AutomaticoPage(QWidget):
 
     Requisiti:
     - Sequenza di taglio barra-per-barra; l’ultima barra è quella con lo sfrido residuo maggiore.
-    - Auto-continue: prosegue automaticamente sul pezzo successivo identico, anche se si passa alla barra successiva.
-      • Stessa barra → arma 1 pezzo senza muovere (mantiene il freno).
-      • Barra successiva → avanza indici, arma e posiziona (move_and_arm).
-    - Contapezzi globale per elemento (profilo + quota + angoli): Target = totale su tutta la cutlist,
-      Done = Target - somma rimanenti in tabella, Remaining = dalla tabella; persiste cambiando misura.
-    - Premendo Home: chiude anche la finestra di ottimizzazione (legata ad Automatico).
+    - Auto-continue: prosegue automaticamente sul pezzo successivo identico, anche se si passa alla barra successiva:
+        * stessa barra → arma 1 pezzo senza muovere e mantiene il freno;
+        * barra successiva → arma 1 pezzo senza sbloccare/ribloccare il freno e, dato che la misura è la stessa, non muove.
+    - Contapezzi globale per elemento (profilo + quota + angoli) in ottimizzazione.
+    - In taglio diretto dalla cutlist (manuale): la colonna Q.tà decrementa ad ogni taglio.
+    - Premendo Home/uscendo da Automatico: chiude anche la finestra di ottimizzazione.
     """
 
     def __init__(self, appwin):
@@ -564,6 +564,8 @@ class AutomaticoPage(QWidget):
 
     # ---------------- Movimento / Encoder / Freno ----------------
     def _move_and_arm(self, length: float, ax: float, ad: float, profile: str, element: str):
+        # Nota: questa routine sblocca sempre il freno perché destinata a veri movimenti.
+        # Nei casi di auto-continue con misura identica (anche su barra successiva), evitiamo di chiamarla.
         self._unlock_brake(silent=True)
         if hasattr(self.machine, "set_active_mode"):
             try: self.machine.set_active_mode("semi")
@@ -723,7 +725,7 @@ class AutomaticoPage(QWidget):
         return False
 
     def _handle_start_trigger(self):
-        # In piano: esegue 1 pezzo per ciclo, in sequenza barra-per-barra (con auto-continue a fine ciclo).
+        # In piano: esegue 1 pezzo per ciclo, in sequenza barra-per-barra (auto-continue a fine ciclo).
         if self._mode != "plan" or not self._bars:
             return
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
@@ -756,7 +758,7 @@ class AutomaticoPage(QWidget):
             setattr(self.machine, "semi_auto_count_done", 0)
         except Exception: pass
 
-        # Posiziona
+        # Posiziona (solo primo avvio o quando necessario)
         self._move_and_arm(p["len"], p["ax"], p["ad"], self._plan_profile, f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
 
     # --------- Simulazioni taglio / pulse lama ---------
@@ -783,7 +785,7 @@ class AutomaticoPage(QWidget):
         if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
             cur_piece = self._bars[self._bar_idx][self._piece_idx]
 
-        # Decremento tabella principale (persistenza rimanenti)
+        # Decremento tabella principale (persistenza rimanenti) per plan
         if cur_piece:
             if not self._dec_row_qty_match(self._plan_profile, float(cur_piece["len"]), float(cur_piece["ax"]), float(cur_piece["ad"])):
                 try:
@@ -791,6 +793,18 @@ class AutomaticoPage(QWidget):
                                                 f"{float(cur_piece['ax']):.1f}", f"{float(cur_piece['ad']):.1f}")
                 except Exception:
                     pass
+
+        # Decremento tabella per taglio manuale (direttamente dalla cutlist)
+        if self._mode == "manual" and self._active_row is not None and 0 <= self._active_row < self.tbl_cut.rowCount():
+            try:
+                q = int(self.tbl_cut.item(self._active_row, 5).text())
+            except Exception:
+                q = None
+            if q is not None and q > 0:
+                new_q = max(q - 1, 0)
+                self.tbl_cut.setItem(self._active_row, 5, QTableWidgetItem(str(new_q)))
+                if new_q == 0:
+                    self._mark_row_finished(self._active_row)
 
         # Aggiorna dialog ottimizzazione (evidenzia pezzo + decrementa qty dialog)
         if self._opt_dialog and cur_piece:
@@ -808,38 +822,46 @@ class AutomaticoPage(QWidget):
             except Exception:
                 pass
 
-            # Auto-continue: anche su barra successiva se il prossimo è identico
-            next_piece = self._peek_next_piece_global()
-            same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
-            if self._mode == "plan" and self._auto_continue_enabled() and same_next:
-                # Calcola nuovi indici del prossimo pezzo
-                nxt = self._get_next_indices()
-                if nxt is not None:
-                    nb, np = nxt
-                    across_bar = (nb != self._bar_idx)
-                    # Avanza indici
-                    self._bar_idx, self._piece_idx = nb, np
-                    p2 = self._bars[self._bar_idx][self._piece_idx]
-                    # Aggiorna signature
-                    self._cur_sig = self._sig_key(self._plan_profile, p2["len"], p2["ax"], p2["ad"])
-                    # Arma 1 pezzo
-                    try:
-                        setattr(self.machine, "semi_auto_target_pieces", 1)
-                        setattr(self.machine, "semi_auto_count_done", 0)
-                    except Exception:
-                        pass
-                    if across_bar:
-                        # Passaggio a barra successiva → posiziona (sblocca/muove/relocca)
-                        self._move_and_arm(p2["len"], p2["ax"], p2["ad"],
-                                           self._plan_profile, f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
-                    else:
-                        # Stessa barra → resta bloccato, niente movimento
+            if self._mode == "plan":
+                # Auto-continue: anche su barra successiva se il prossimo è identico (senza sbloccare/ribloccare il freno)
+                next_piece = self._peek_next_piece_global()
+                same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
+                if self._auto_continue_enabled() and same_next:
+                    nxt = self._get_next_indices()
+                    if nxt is not None:
+                        nb, np = nxt
+                        across_bar = (nb != self._bar_idx)
+                        # Avanza indici
+                        self._bar_idx, self._piece_idx = nb, np
+                        p2 = self._bars[self._bar_idx][self._piece_idx]
+                        # Aggiorna signature
+                        self._cur_sig = self._sig_key(self._plan_profile, p2["len"], p2["ax"], p2["ad"])
+                        # Arma 1 pezzo senza toccare il freno
+                        try:
+                            setattr(self.machine, "semi_auto_target_pieces", 1)
+                            setattr(self.machine, "semi_auto_count_done", 0)
+                        except Exception:
+                            pass
+                        # Se è su barra successiva ma misura uguale, NON muovere e NON sbloccare/ribloccare
+                        # (manteniamo la posizione e lasciamo il freno bloccato)
                         self._lock_on_inpos = False
+                    else:
+                        # Nessun prossimo valido
+                        self._unlock_brake()
                 else:
-                    # Non c'è un prossimo valido
+                    # Pezzo diverso o piano finito → sblocca e attendi START
                     self._unlock_brake()
-            else:
-                # Pezzo diverso o piano finito → sblocca e attendi START
+
+            elif self._mode == "manual":
+                # A fine ciclo manuale: chiudi lavoro su riga
+                if self._active_row is not None:
+                    try:
+                        q_now = int(self.tbl_cut.item(self._active_row, 5).text())
+                    except Exception:
+                        q_now = 0
+                    if q_now <= 0:
+                        self._mark_row_finished(self._active_row)
+                self._mode = "idle"
                 self._unlock_brake()
 
         # Aggiorna contatori UI globali
