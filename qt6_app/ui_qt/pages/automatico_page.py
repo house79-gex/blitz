@@ -40,7 +40,11 @@ class AutomaticoPage(QWidget):
     - Numero pezzi: sola visualizzazione, pannello più grande.
     - Doppio click su intestazione profilo: avvia ottimizzazione per quel profilo e abilita Start fisico.
     - F7: simula un taglio (incrementa contatore come pulse lama).
+
+    Miglioria: Auto-continue
+    - Se il pezzo successivo ha stessa quota e angoli entro tolleranza, parte automaticamente senza premere START.
     """
+
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
@@ -62,6 +66,7 @@ class AutomaticoPage(QWidget):
         self.lbl_remaining: Optional[QLabel] = None
         self.cmb_profile: Optional[QComboBox] = None
         self.chk_start_phys: Optional[QCheckBox] = None
+        self.chk_auto_same: Optional[QCheckBox] = None  # NEW
 
         # Dati
         self._orders = OrdersStore()
@@ -91,6 +96,17 @@ class AutomaticoPage(QWidget):
         self._inpos_since: float = 0.0
         self._lock_on_inpos: bool = False
 
+        # Tolleranze auto-continue (da settings se presenti)
+        cfg = read_settings()
+        try:
+            self._same_len_tol = float(cfg.get("auto_same_len_tol_mm", 0.10))
+        except Exception:
+            self._same_len_tol = 0.10
+        try:
+            self._same_ang_tol = float(cfg.get("auto_same_ang_tol_deg", 0.10))
+        except Exception:
+            self._same_ang_tol = 0.10
+
         self._build()
 
     # ---------------- UI build ----------------
@@ -118,6 +134,12 @@ class AutomaticoPage(QWidget):
 
         self.chk_start_phys = QCheckBox("Start fisico"); self.chk_start_phys.setToolTip("Pulsante fisico per avanzare i pezzi")
         top.addWidget(self.chk_start_phys)
+
+        # NEW: checkbox Auto-continue
+        self.chk_auto_same = QCheckBox("Auto-continue stessa quota")
+        self.chk_auto_same.setToolTip("Esegue automaticamente il pezzo successivo se quota e angoli coincidono (entro tolleranza) senza premere START.")
+        self.chk_auto_same.setChecked(True)
+        top.addWidget(self.chk_auto_same)
 
         top.addStretch(1)
 
@@ -513,7 +535,9 @@ class AutomaticoPage(QWidget):
         self._simulate_cut_once()
 
     def _simulate_cut_once(self):
-        """Simula un singolo 'pulse lama': incrementa contatore, aggiorna UI, riepilogo e sblocca a fine conto."""
+        """Simula un singolo 'pulse lama': incrementa contatore, aggiorna UI, riepilogo e sblocca a fine conto.
+           A fine taglio: se auto-continue attivo e prossimo pezzo ha stessa quota/angoli entro tolleranza, parte automaticamente.
+        """
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
         remaining = max(tgt - done, 0)
@@ -552,7 +576,54 @@ class AutomaticoPage(QWidget):
             except Exception:
                 pass
 
+            # NEW: Auto-continue su stessa quota/angoli entro tolleranza
+            if self._mode == "plan" and cur_piece and self._auto_continue_enabled():
+                nxt = self._peek_next_piece()
+                if nxt and self._same_job(cur_piece, nxt):
+                    # Avvia direttamente il prossimo pezzo
+                    try:
+                        self._handle_start_trigger()
+                    except Exception:
+                        pass
+
         self._update_counters_ui()
+
+    # ---------------- Auto-continue helpers (NEW) ----------------
+    def _auto_continue_enabled(self) -> bool:
+        try:
+            return bool(self.chk_auto_same and self.chk_auto_same.isChecked())
+        except Exception:
+            return False
+
+    def _peek_next_piece(self) -> Optional[Dict[str, float]]:
+        """Ispeziona il prossimo pezzo del piano SENZA avanzare gli indici attuali."""
+        if not self._bars or self._bar_idx >= len(self._bars):
+            return None
+        # calcolo del prossimo indice
+        next_bar_idx = self._bar_idx if self._bar_idx >= 0 else 0
+        if not (0 <= next_bar_idx < len(self._bars)):
+            return None
+        bar = self._bars[next_bar_idx]
+        next_piece_idx = self._piece_idx + 1
+        if next_piece_idx >= len(bar):
+            next_bar_idx += 1
+            if next_bar_idx >= len(self._bars):
+                return None
+            bar = self._bars[next_bar_idx]
+            next_piece_idx = 0
+        if 0 <= next_piece_idx < len(bar):
+            return bar[next_piece_idx]
+        return None
+
+    def _same_job(self, p1: Dict[str, float], p2: Dict[str, float]) -> bool:
+        """Confronta lunghezza e angoli con tolleranze configurate."""
+        try:
+            dl = abs(float(p1["len"]) - float(p2["len"])) <= self._same_len_tol
+            dax = abs(float(p1["ax"]) - float(p2["ax"])) <= self._same_ang_tol
+            dad = abs(float(p1["ad"]) - float(p2["ad"])) <= self._same_ang_tol
+            return dl and dax and dad
+        except Exception:
+            return False
 
     # ---------------- UI helpers ----------------
     def _toast(self, msg: str, level: str = "info"):
