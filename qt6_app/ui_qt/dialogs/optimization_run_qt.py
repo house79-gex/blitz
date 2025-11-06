@@ -1,12 +1,11 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple
-from collections import defaultdict
 
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QRect, QPoint
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
+    QTableWidgetItem, QHeaderView, QCheckBox, QApplication, QWidget,
 )
 
 try:
@@ -28,24 +27,18 @@ class OptimizationRunDialog(QDialog):
 
     Estensioni:
     - startRequested (F9) e simulationRequested (F7)
-    - altezza grafica adattiva in base al numero di barre
-    - dialog massimizzato in altezza, larghezza ottimizzata tenendo libero lo spazio destro
-      riservato ai pannelli della pagina Automatico (reserved_right_px)
-    - chiusura automatica al termine (tutte qty==0)
-
-    API:
-    - update_after_cut(length_mm, ang_sx, ang_dx)
-    - proprietà 'profile'
+    - Modalità overlay: la finestra si sovrappone esattamente al frame della cutlist viewer (stessa W×H).
+      In overlay, per impostazione predefinita, la grafica occupa tutto lo spazio (riepilogo e tabella nascosti),
+      ma puoi riattivarli dai toggle (potrebbero ridurre l’area grafica).
     """
     simulationRequested = Signal()
     startRequested = Signal()
 
-    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], reserved_right_px: int = 0):
+    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
         self.profile = profile
-        # rows: [{length_mm, ang_sx, ang_dx, qty}]
         self._rows: List[Dict[str, Any]] = [dict(r) for r in rows]
 
         self._tbl: Optional[QTableWidget] = None
@@ -60,19 +53,29 @@ class OptimizationRunDialog(QDialog):
         cfg = read_settings()
         self._stock = float(cfg.get("opt_stock_mm", 6500.0))
         self._kerf = float(cfg.get("opt_kerf_mm", 3.0))
-        self._show_summary = bool(cfg.get("opt_show_summary", True))
-        self._show_graph = bool(cfg.get("opt_show_graph", True))
 
-        # Piano calcolato localmente (BFD) una sola volta
+        # Overlay target (frame della viewer della pagina Automatico)
+        self._overlay_target: Optional[QWidget] = overlay_target
+
+        # In overlay: default a grafica piena (summary off, table off). Fuori overlay: ricorda preferenze.
+        if self._overlay_target is not None:
+            self._show_summary = False
+            self._show_graph = True
+            self._show_table = False
+        else:
+            self._show_summary = bool(cfg.get("opt_show_summary", True))
+            self._show_graph = bool(cfg.get("opt_show_graph", True))
+            self._show_table = True
+
+        # Piano calcolato una sola volta
         self._bars: List[List[Dict[str, float]]] = []
         self._bars_residuals: List[float] = []
-
-        # Spazio da riservare a destra per i pannelli della pagina Automatico
-        self._reserved_right_px = max(0, int(reserved_right_px))
 
         self._build()
         self._compute_plan_once()
         self._refresh_views()
+
+        # Applica geometry (overlay se target presente)
         self._apply_geometry()
 
     # ---------- Build UI ----------
@@ -87,12 +90,15 @@ class OptimizationRunDialog(QDialog):
         self._chk_summary.toggled.connect(self._toggle_summary)
         self._chk_graph = QCheckBox("Mostra grafica piano"); self._chk_graph.setChecked(self._show_graph)
         self._chk_graph.toggled.connect(self._toggle_graph)
+
         btn_start = QPushButton("Simula Avanzamento (F9)")
         btn_start.setToolTip("Simula un evento START")
         btn_start.clicked.connect(lambda: self.startRequested.emit())
+
         btn_sim = QPushButton("Simula START (F7)")
         btn_sim.setToolTip("Simula un taglio come pulse lama")
         btn_sim.clicked.connect(lambda: self.simulationRequested.emit())
+
         opts.addWidget(self._chk_summary)
         opts.addWidget(self._chk_graph)
         opts.addStretch(1)
@@ -111,7 +117,7 @@ class OptimizationRunDialog(QDialog):
         # Grafica piano
         self._panel_graph = QFrame()
         self._panel_graph.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
-        gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(8,8,8,8); gl.setSpacing(6)
+        gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(6,6,6,6); gl.setSpacing(4)
         self._graph = PlanVisualizerWidget(self)
         gl.addWidget(self._graph, 1)
         root.addWidget(self._panel_graph, 1)
@@ -129,19 +135,25 @@ class OptimizationRunDialog(QDialog):
         self._apply_toggles()
 
     def _apply_toggles(self):
-        if self._panel_summary: self._panel_summary.setVisible(self._show_summary)
-        if self._panel_graph: self._panel_graph.setVisible(self._show_graph)
+        if self._panel_summary:
+            self._panel_summary.setVisible(self._show_summary)
+        if self._panel_graph:
+            self._panel_graph.setVisible(self._show_graph)
+        if self._tbl:
+            self._tbl.setVisible(self._show_table)
 
     def _toggle_summary(self, on: bool):
         self._show_summary = bool(on)
         self._apply_toggles()
-        cfg = dict(read_settings()); cfg["opt_show_summary"] = self._show_summary; write_settings(cfg)
+        if self._overlay_target is None:
+            cfg = dict(read_settings()); cfg["opt_show_summary"] = self._show_summary; write_settings(cfg)
         self._apply_geometry()
 
     def _toggle_graph(self, on: bool):
         self._show_graph = bool(on)
         self._apply_toggles()
-        cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
+        if self._overlay_target is None:
+            cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
         self._apply_geometry()
 
     # ---------- Plan computation ----------
@@ -179,7 +191,7 @@ class OptimizationRunDialog(QDialog):
     def _compute_plan_once(self):
         pieces = self._expand_rows_to_unit_pieces()
         bars, rem = self._pack_bars_bfd(pieces)
-        # Ordine barre: lascia per ultima quella con residuo massimo
+        # Ordina barre lasciando per ultima quella con residuo massimo
         if rem:
             max_idx = max(range(len(rem)), key=lambda i: rem[i])
             if 0 <= max_idx < len(bars) and max_idx != len(bars) - 1:
@@ -188,15 +200,6 @@ class OptimizationRunDialog(QDialog):
         self._bars, self._bars_residuals = bars, rem
 
     # ---------- Views refresh ----------
-    def _desired_graph_height(self, n_bars: int) -> int:
-        if n_bars <= 0:
-            return 160
-        bar_h = 20
-        vgap = 10
-        padding = 8 + 8 + 6 + 6  # margini pannello e layout
-        bars_h = n_bars * bar_h + (n_bars - 1) * vgap
-        return max(140, bars_h + padding)
-
     def _refresh_views(self):
         # Riepilogo barre
         nb = len(self._bars)
@@ -211,47 +214,50 @@ class OptimizationRunDialog(QDialog):
         # Grafica
         if self._graph:
             self._graph.set_data(self._bars, stock_mm=self._stock, kerf_mm=self._kerf)
-            # Altezza grafica adattiva (limita a ~2/3 dello schermo)
-            try:
-                screen = QApplication.primaryScreen()
-                avail = screen.availableGeometry().height() if screen else 1080
-                gh = self._desired_graph_height(nb)
-                gh = min(gh, int(avail * 0.66))
-                self._graph.setMinimumHeight(gh)
-                self._graph.setMaximumHeight(gh)
-            except Exception:
-                pass
 
         # Tabella
         self._reload_table()
 
-        # Se tutto finito → chiudi
+        # Chiudi se tutto finito
         if self._all_done():
             self._close_and_focus_parent()
 
-    # ---------- Dimensionamento dialog ----------
+    # ---------- Geometry ----------
     def _apply_geometry(self):
-        try:
-            screen = QApplication.primaryScreen()
-            if not screen:
-                return
-            avail = screen.availableGeometry()
-            # Altezza quasi massima
-            h = int(avail.height() - 32)
-            # Larghezza: lascia libero uno spazio a destra pari a reserved_right_px
-            margin = 24
-            w = max(720, avail.width() - self._reserved_right_px - margin)
-            self.resize(w, h)
-            # Posiziona verso sinistra
-            self.move(avail.x() + 12, avail.y() + 12)
-        except Exception:
-            pass
+        # Modalità overlay: sovrapponi esattamente al frame target
+        if self._overlay_target is not None:
+            try:
+                tl_global = self._overlay_target.mapToGlobal(self._overlay_target.rect().topLeft())
+                br_global = self._overlay_target.mapToGlobal(self._overlay_target.rect().bottomRight())
+                rect = QRect(tl_global, br_global)
+                # Applica geometria e blocca dimensioni
+                self.setGeometry(rect)
+                self.setMinimumSize(rect.size())
+                self.setMaximumSize(rect.size())
+            except Exception:
+                pass
+        else:
+            # Fuori overlay: massimizza verticalmente ma NON la larghezza
+            try:
+                screen = QApplication.primaryScreen()
+                if not screen:
+                    return
+                avail = screen.availableGeometry()
+                # Altezza quasi massima, larghezza attuale o minima
+                w = max(720, self.width() or 900)
+                h = int(avail.height() - 32)
+                self.resize(w, h)
+                self.move(avail.x() + 12, avail.y() + 12)
+            except Exception:
+                pass
 
     # ---------- Table ----------
     def _reload_table(self):
         if not self._tbl:
             return
         self._tbl.setRowCount(0)
+        if not self._show_table:
+            return
         for r in self._rows:
             q = int(r.get("qty", 0))
             if q < 0:
@@ -284,7 +290,7 @@ class OptimizationRunDialog(QDialog):
 
     # ---------- Public API ----------
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        """Evidenzia un pezzo come tagliato, decrementa la riga corrispondente e aggiorna viste (senza ricomporre il piano)."""
+        """Evidenzia un pezzo come tagliato, decrementa la riga e aggiorna viste (senza ricomporre il piano)."""
         # 1) Evidenziazione nel grafico
         if self._graph:
             try:
@@ -292,7 +298,7 @@ class OptimizationRunDialog(QDialog):
             except Exception:
                 pass
 
-        # 2) Decremento qty in tabella (matching numerico poi stringhe)
+        # 2) Decremento qty (match numerico, poi stringhe)
         tol_L = 0.01; tol_A = 0.01
         matched = False
         for r in self._rows:
@@ -317,10 +323,10 @@ class OptimizationRunDialog(QDialog):
                 except Exception:
                     continue
 
-        # 3) Aggiorna views e chiudi se tutto finito
+        # 3) Aggiorna viste e chiudi se necessario
         self._refresh_views()
 
-    # ---------- Keyboard handling ----------
+    # ---------- Keyboard ----------
     def keyPressEvent(self, ev: QKeyEvent):
         try:
             if ev.key() == Qt.Key_F7:
@@ -335,10 +341,11 @@ class OptimizationRunDialog(QDialog):
 
     # ---------- Lifecycle ----------
     def accept(self):
-        cfg = dict(read_settings())
-        cfg["opt_show_summary"] = bool(self._chk_summary and self._chk_summary.isChecked())
-        cfg["opt_show_graph"] = bool(self._chk_graph and self._chk_graph.isChecked())
-        write_settings(cfg)
+        if self._overlay_target is None:
+            cfg = dict(read_settings())
+            cfg["opt_show_summary"] = bool(self._chk_summary and self._chk_summary.isChecked())
+            cfg["opt_show_graph"] = bool(self._chk_graph and self._chk_graph.isChecked())
+            write_settings(cfg)
         super().accept()
 
     def reject(self):
