@@ -33,16 +33,14 @@ COUNTER_H = 180
 
 class AutomaticoPage(QWidget):
     """
-    Automatico:
-    - Viewer lista di taglio a tutta altezza.
-    - Start: move → in-pos → BLOCCA → conteggio lama → (auto-continue o sblocco).
-    - Doppio click su intestazione profilo: ottimizza quel profilo e abilita Start fisico.
-    - F7: simula un taglio (incrementa contatore come pulse lama).
+    Automatico (layout a due colonne come prima):
+    - Sinistra: Cutlist viewer in un frame, più alta, con pulsante Start verde centrato sotto.
+    - Destra: in alto due frame (Contapezzi e Status).
+    - Toolbar: Importa, Ottimizza (su intestazione selezionata o prima), Start fisico, Auto-continue.
 
-    Migliorie:
-    - Auto-continue: su pezzo successivo con stessa quota/angoli entro tolleranza, parte automaticamente.
-      Se freno già bloccato e non serve muovere, NON sblocca/riblocca: arma solo contatore e prosegue.
-    - Fix quantità tabella: decremento robusto (tolleranza + confronto stringa) e forzatura a 0 quando esaurita.
+    Logica:
+    - Auto-continue: se pezzo successivo uguale, prosegue senza sbloccare/ribloccare il freno né muovere.
+    - Fix decremento quantità: la colonna Q.tà della viewer principale arriva a 0 correttamente.
     """
 
     def __init__(self, appwin):
@@ -62,8 +60,9 @@ class AutomaticoPage(QWidget):
         self.lbl_done: Optional[QLabel] = None
         self.lbl_remaining: Optional[QLabel] = None
         self.chk_start_phys: Optional[QCheckBox] = None
-        self.chk_auto_same: Optional[QCheckBox] = None  # Auto-continue toggle
+        self.chk_auto_same: Optional[QCheckBox] = None
         self.status: Optional[StatusPanel] = None
+        self.btn_start_row: Optional[QPushButton] = None
 
         # Dati
         self._orders = OrdersStore()
@@ -115,7 +114,7 @@ class AutomaticoPage(QWidget):
         root.addWidget(Header(self.appwin, "AUTOMATICO", mode="default",
                               on_home=self._nav_home, on_reset=self._reset_and_home))
 
-        # Top toolbar (senza 'Profilo')
+        # Toolbar (come prima, senza combo profilo)
         top = QHBoxLayout()
         btn_import = QPushButton("Importa…")
         btn_import.setToolTip("Importa una cutlist salvata")
@@ -123,7 +122,7 @@ class AutomaticoPage(QWidget):
         top.addWidget(btn_import)
 
         btn_opt = QPushButton("Ottimizza")
-        btn_opt.setToolTip("Ottimizza il profilo della riga di intestazione selezionata; se non selezioni, usa la prima intestazione.")
+        btn_opt.setToolTip("Ottimizza il profilo dell’intestazione selezionata; se nulla selezionato, usa la prima intestazione.")
         btn_opt.clicked.connect(self._on_optimize_clicked)
         top.addWidget(btn_opt)
 
@@ -139,10 +138,25 @@ class AutomaticoPage(QWidget):
         top.addStretch(1)
         root.addLayout(top)
 
-        # Viewer principale a tutta altezza + Start sotto, centrato
-        viewer_area = QVBoxLayout()
-        viewer_area.setContentsMargins(0, 0, 0, 0)
-        viewer_area.setSpacing(8)
+        # Corpo a due colonne: sinistra viewer, destra contapezzi+status
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(8)
+        root.addLayout(body, 1)  # occupa tutto lo spazio
+
+        # Colonna sinistra
+        left = QFrame()
+        left.setSizePolicy(left.sizePolicy().Expanding, left.sizePolicy().Expanding)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(8)
+
+        # Frame viewer cutlist (alto sinistro) + più altezza
+        viewer_frame = QFrame()
+        viewer_frame.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
+        vf = QVBoxLayout(viewer_frame)
+        vf.setContentsMargins(6, 6, 6, 6)
+        vf.setSpacing(6)
 
         self.tbl_cut = QTableWidget(0, 7)
         self.tbl_cut.setHorizontalHeaderLabels(["Profilo", "Elemento", "Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà", "Note"])
@@ -160,8 +174,11 @@ class AutomaticoPage(QWidget):
         self.tbl_cut.setAlternatingRowColors(True)
         self.tbl_cut.setStyleSheet("QTableWidget::item:selected { background:#1976d2; color:#ffffff; font-weight:700; }")
         self.tbl_cut.cellDoubleClicked.connect(self._on_cell_double_clicked)
-        viewer_area.addWidget(self.tbl_cut, 1)
+        vf.addWidget(self.tbl_cut, 1)
 
+        ll.addWidget(viewer_frame, 1)  # la viewer prende altezza
+
+        # Start (centrato sotto la viewer)
         start_row = QHBoxLayout()
         start_row.addStretch(1)
         self.btn_start_row = QPushButton("Start")
@@ -176,14 +193,18 @@ class AutomaticoPage(QWidget):
         self.btn_start_row.clicked.connect(self._start_row)
         start_row.addWidget(self.btn_start_row, 0, Qt.AlignCenter)
         start_row.addStretch(1)
-        viewer_area.addLayout(start_row)
+        ll.addLayout(start_row)
 
-        root.addLayout(viewer_area, 1)  # occupa tutta l'altezza disponibile
+        body.addWidget(left, 1)
 
-        # Bottom panels: Conteggio pezzi (riquadro) sopra, Status sotto
-        bottom = QVBoxLayout()
-        bottom.setSpacing(6)
+        # Colonna destra (alto destro: contapezzi + status)
+        right = QFrame()
+        right.setFixedWidth(PANEL_W)
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(8)
 
+        # Frame contapezzi
         cnt_box = QFrame()
         cnt_box.setFrameShape(QFrame.StyledPanel)
         cnt_box.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
@@ -197,8 +218,9 @@ class AutomaticoPage(QWidget):
         row2 = QHBoxLayout(); row2.addWidget(QLabel("Tagliati:")); self.lbl_done = QLabel("0"); self.lbl_done.setStyleSheet(big + "color:#2ecc71;"); row2.addWidget(self.lbl_done); row2.addStretch(1)
         row3 = QHBoxLayout(); row3.addWidget(QLabel("Rimanenti:")); self.lbl_remaining = QLabel("-"); self.lbl_remaining.setStyleSheet(big + "color:#f39c12;"); row3.addWidget(self.lbl_remaining); row3.addStretch(1)
         cnl.addLayout(row1); cnl.addLayout(row2); cnl.addLayout(row3)
-        bottom.addWidget(cnt_box, 0)
+        rl.addWidget(cnt_box, 0)
 
+        # Frame status
         status_wrap = QFrame()
         status_wrap.setFrameShape(QFrame.StyledPanel)
         status_wrap.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
@@ -206,9 +228,11 @@ class AutomaticoPage(QWidget):
         swl.setContentsMargins(6, 6, 6, 6)
         self.status = StatusPanel(self.machine, "STATO", status_wrap)
         swl.addWidget(self.status)
-        bottom.addWidget(status_wrap, 0)
+        rl.addWidget(status_wrap, 0)
 
-        root.addLayout(bottom)
+        rl.addStretch(1)  # lascia i due frame "in alto" a destra
+
+        body.addWidget(right, 0)
 
         # Space = Start fisico (fallback)
         QShortcut(QKeySequence("Space"), self, activated=self._handle_start_trigger)
@@ -310,7 +334,7 @@ class AutomaticoPage(QWidget):
     # ---------------- Ottimizza ----------------
     def _on_optimize_clicked(self):
         prof = None
-        # usa riga di intestazione selezionata se c'è
+        # usa riga intestazione selezionata se presente
         r = self.tbl_cut.currentRow()
         if r is not None and r >= 0 and self._row_is_header(r):
             it = self.tbl_cut.item(r, 0)
@@ -336,7 +360,6 @@ class AutomaticoPage(QWidget):
         if not prof:
             return
         rows: List[Dict[str, Any]] = []
-        # raccogli righe del profilo
         for r in range(self.tbl_cut.rowCount()):
             if self._row_is_header(r): continue
             if self.tbl_cut.item(r, 0) and self.tbl_cut.item(r, 0).text().strip() == prof:
@@ -565,7 +588,6 @@ class AutomaticoPage(QWidget):
         # Decremento robusto sulla tabella principale
         if cur_piece:
             if not self._dec_row_qty_match(self._plan_profile, float(cur_piece["len"]), float(cur_piece["ax"]), float(cur_piece["ad"])):
-                # secondo passaggio: confronto su stringa formattata
                 try:
                     self._dec_row_qty_match_str(self._plan_profile, f"{float(cur_piece['len']):.2f}",
                                                 f"{float(cur_piece['ax']):.1f}", f"{float(cur_piece['ad']):.1f}")
@@ -592,7 +614,7 @@ class AutomaticoPage(QWidget):
                 pass
 
             if self._mode == "manual" and self._active_row is not None:
-                # per manuale: riflette remaining=0 sulla riga attiva
+                # riflette remaining=0 sulla riga attiva
                 self.tbl_cut.setItem(self._active_row, 5, QTableWidgetItem("0"))
                 self._mark_row_finished(self._active_row)
                 self._mode = "idle"
@@ -700,10 +722,6 @@ class AutomaticoPage(QWidget):
         self.tbl_cut.selectRow(row)
 
     def _dec_row_qty_match(self, profile: str, length: float, ax: float, ad: float) -> bool:
-        """
-        Decrementa la prima riga che corrisponde (prof, lunghezza≈, angoli≈).
-        Ritorna True se ha aggiornato, False se non ha trovato match.
-        """
         n = self.tbl_cut.rowCount()
         for r in range(n):
             if self._row_is_header(r): continue
@@ -724,9 +742,6 @@ class AutomaticoPage(QWidget):
         return False
 
     def _dec_row_qty_match_str(self, profile: str, Ls: str, Axs: str, Ads: str) -> bool:
-        """
-        Decremento di fallback: confronta le stringhe già formattate nelle celle.
-        """
         n = self.tbl_cut.rowCount()
         for r in range(n):
             if self._row_is_header(r): continue
