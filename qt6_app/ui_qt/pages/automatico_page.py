@@ -87,12 +87,14 @@ class AutomaticoPage(QWidget):
     - Destra: pannello Contapezzi + Status.
     - Toolbar: Importa, Ottimizza, Config. ottimizzazione.
 
-    Requisiti implementati:
+    Requisiti:
     - Sequenza di taglio barra-per-barra; l’ultima barra è quella con lo sfrido residuo maggiore.
-    - Auto-continue sui pezzi consecutivi identici, ma solo all’interno della stessa barra (1 pezzo per ciclo).
+    - Auto-continue: prosegue automaticamente sul pezzo successivo identico, anche se si passa alla barra successiva.
+      • Stessa barra → arma 1 pezzo senza muovere (mantiene il freno).
+      • Barra successiva → avanza indici, arma e posiziona (move_and_arm).
     - Contapezzi globale per elemento (profilo + quota + angoli): Target = totale su tutta la cutlist,
-      Done = Target - Somma(Q.tà rimanenti in tabella), Remaining = dalla tabella. I valori persistono quando si cambia elemento.
-    - La finestra “Ottimizzazione” (OptimizationRunDialog) può essere aperta in overlay sopra la viewer e inviare F9/F7.
+      Done = Target - somma rimanenti in tabella, Remaining = dalla tabella; persiste cambiando misura.
+    - Premendo Home: chiude anche la finestra di ottimizzazione (legata ad Automatico).
     """
 
     def __init__(self, appwin):
@@ -296,13 +298,25 @@ class AutomaticoPage(QWidget):
         return (str(profile or ""), round(float(length), 2), round(float(ax), 1), round(float(ad), 1))
 
     # ---------------- Navigazione/Reset ----------------
+    def _close_opt_dialog(self):
+        if self._opt_dialog:
+            try:
+                self._opt_dialog.close()
+            except Exception:
+                pass
+            self._opt_dialog = None
+
     def _nav_home(self) -> bool:
+        # Chiudi la dialog di ottimizzazione se aperta
+        self._close_opt_dialog()
         if hasattr(self.appwin, "show_page") and callable(getattr(self.appwin, "show_page")):
             try: self.appwin.show_page("home"); return True
             except Exception: pass
         return False
 
     def _reset_and_home(self):
+        # Reset + chiusura dialog ottimizzazione
+        self._close_opt_dialog()
         try: self.seq.stop()
         except Exception: pass
         self.plan = {"solver": "", "steps": []}
@@ -624,10 +638,7 @@ class AutomaticoPage(QWidget):
 
     # ---------------- Helpers Piano / Signature ----------------
     def _auto_continue_enabled(self) -> bool:
-        """
-        Feature 'auto-continue' esplicitata come metodo per retro-compatibilità;
-        nel tuo caso rimane sempre attiva.
-        """
+        """Feature 'auto-continue' esplicitata come metodo; attiva di default."""
         try:
             return bool(self._auto_continue_always)
         except Exception:
@@ -661,6 +672,35 @@ class AutomaticoPage(QWidget):
                 rem += max(0, q)
         return rem
 
+    def _peek_next_piece_global(self) -> Optional[Dict[str, float]]:
+        """Prossimo pezzo nella sequenza globale (può essere su barra successiva)."""
+        if not self._bars or self._bar_idx >= len(self._bars):
+            return None
+        bar = self._bars[self._bar_idx]
+        i = self._piece_idx + 1
+        if i < len(bar):
+            return bar[i]
+        nb = self._bar_idx + 1
+        if nb >= len(self._bars):
+            return None
+        next_bar = self._bars[nb]
+        if not next_bar:
+            return None
+        return next_bar[0]
+
+    def _get_next_indices(self) -> Optional[Tuple[int, int]]:
+        """Calcola gli indici (bar_idx, piece_idx) del prossimo pezzo nella sequenza globale."""
+        if not self._bars or self._bar_idx >= len(self._bars):
+            return None
+        bar = self._bars[self._bar_idx]
+        i = self._piece_idx + 1
+        if i < len(bar):
+            return (self._bar_idx, i)
+        nb = self._bar_idx + 1
+        if nb >= len(self._bars):
+            return None
+        return (nb, 0)
+
     # ---------------- Start / avanzamento piano ----------------
     def _read_input(self, key: str) -> bool:
         try:
@@ -683,7 +723,7 @@ class AutomaticoPage(QWidget):
         return False
 
     def _handle_start_trigger(self):
-        # In piano: esegue 1 pezzo per ciclo, in sequenza barra-per-barra.
+        # In piano: esegue 1 pezzo per ciclo, in sequenza barra-per-barra (con auto-continue a fine ciclo).
         if self._mode != "plan" or not self._bars:
             return
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
@@ -768,36 +808,42 @@ class AutomaticoPage(QWidget):
             except Exception:
                 pass
 
-            # Auto-continue SOLO se il prossimo pezzo è identico E sulla stessa barra
-            next_piece = self._peek_next_piece_same_bar()
+            # Auto-continue: anche su barra successiva se il prossimo è identico
+            next_piece = self._peek_next_piece_global()
             same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
             if self._mode == "plan" and self._auto_continue_enabled() and same_next:
-                # Avanza di 1 pezzo sulla stessa barra e arma senza muovere
-                self._piece_idx += 1
-                np = self._bars[self._bar_idx][self._piece_idx]
-                self._cur_sig = self._sig_key(self._plan_profile, np["len"], np["ax"], np["ad"])
-                try:
-                    setattr(self.machine, "semi_auto_target_pieces", 1)
-                    setattr(self.machine, "semi_auto_count_done", 0)
-                except Exception:
-                    pass
-                # Mantieni freno bloccato
+                # Calcola nuovi indici del prossimo pezzo
+                nxt = self._get_next_indices()
+                if nxt is not None:
+                    nb, np = nxt
+                    across_bar = (nb != self._bar_idx)
+                    # Avanza indici
+                    self._bar_idx, self._piece_idx = nb, np
+                    p2 = self._bars[self._bar_idx][self._piece_idx]
+                    # Aggiorna signature
+                    self._cur_sig = self._sig_key(self._plan_profile, p2["len"], p2["ax"], p2["ad"])
+                    # Arma 1 pezzo
+                    try:
+                        setattr(self.machine, "semi_auto_target_pieces", 1)
+                        setattr(self.machine, "semi_auto_count_done", 0)
+                    except Exception:
+                        pass
+                    if across_bar:
+                        # Passaggio a barra successiva → posiziona (sblocca/muove/relocca)
+                        self._move_and_arm(p2["len"], p2["ax"], p2["ad"],
+                                           self._plan_profile, f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
+                    else:
+                        # Stessa barra → resta bloccato, niente movimento
+                        self._lock_on_inpos = False
+                else:
+                    # Non c'è un prossimo valido
+                    self._unlock_brake()
             else:
-                # Pezzo diverso o fine barra: sblocca, attende nuovo START
+                # Pezzo diverso o piano finito → sblocca e attendi START
                 self._unlock_brake()
 
         # Aggiorna contatori UI globali
         self._update_counters_ui()
-
-    def _peek_next_piece_same_bar(self) -> Optional[Dict[str, float]]:
-        """Restituisce il prossimo pezzo solo se sulla stessa barra; None se si passerebbe a barra successiva."""
-        if not self._bars or self._bar_idx >= len(self._bars):
-            return None
-        bar = self._bars[self._bar_idx]
-        i = self._piece_idx + 1
-        if 0 <= i < len(bar):
-            return bar[i]
-        return None
 
     # ---------------- UI helpers / Decrementi ----------------
     def _toast(self, msg: str, level: str = "info"):
@@ -930,6 +976,8 @@ class AutomaticoPage(QWidget):
         self._update_counters_ui()
 
     def hideEvent(self, ev):
+        # Chiusura dialog ottimizzazione se si lascia la pagina
+        self._close_opt_dialog()
         if self._poll is not None:
             try: self._poll.stop()
             except Exception: pass
