@@ -6,6 +6,9 @@ from PySide6.QtCore import Qt, QRectF, QPointF, QSize
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF
 from PySide6.QtWidgets import QWidget
 
+# Gap visivo coerente col kerf angolare minimo del pezzo precedente
+from ui_qt.logic.refiner import _kerf_joint_min_for_piece
+
 
 class PlanVisualizerWidget(QWidget):
     """
@@ -14,7 +17,7 @@ class PlanVisualizerWidget(QWidget):
     - Ogni pezzo è disegnato dentro la barra:
         * rettangolo se angoli ~0°,
         * trapezio con lati inclinati secondo l'angolo reale (offset = tan(ang) * altezza).
-    - I pezzi sono separati dal kerf impostato (gap visivo).
+    - I pezzi sono separati da un gap proporzionale al kerf angolare del giunto precedente.
     - Etichetta della lunghezza (mm) dentro al pezzo, se c'è spazio.
     - Evidenziazione pezzi tagliati: non vengono rimossi, ma resi con stile "done".
       Selezione per signature (len, ax, ad), marcando le prime N occorrenze (left→right).
@@ -26,20 +29,20 @@ class PlanVisualizerWidget(QWidget):
         super().__init__(parent)
         self._bars: List[List[Dict[str, float]]] = []
         self._stock: float = 6500.0
-        self._kerf: float = 3.0
+        self._kerf: float = 3.0  # kerf base (il gap per giunto sarà _kerf_joint_min_for_piece in mm)
 
         # Stili
         self._bg = QColor("#ffffff")
-        self._bar_bg = QColor("#e9edf2")         # sfondo barra default (più contrastato del grigio chiaro)
+        self._bar_bg = QColor("#e9edf2")         # sfondo barra default
         self._bar_bg_active = QColor("#fff3cd")  # barra attiva (giallo tenue)
-        self._bar_bg_done = QColor("#f2f2f2")    # barra completata (grigio desaturato)
+        self._bar_bg_done = QColor("#f2f2f2")    # barra completata
         self._border = QColor("#3b4b5a")
         self._piece_fg = QColor("#1976d2")
         self._piece_fg_alt = QColor("#26a69a")
-        self._piece_done = QColor("#9ccc65")     # verde chiaro per "tagliato"
+        self._piece_done = QColor("#9ccc65")
         self._text = QColor("#2c3e50")
 
-        # Stato evidenziazione (quanti pezzi per signature sono "done")
+        # Stato evidenziazione
         # signature: (L:2dec, ax:1dec, ad:1dec) -> count_done
         self._done_counts: Dict[Tuple[float, float, float], int] = {}
 
@@ -97,7 +100,6 @@ class PlanVisualizerWidget(QWidget):
         Restituisce:
         - indice della prima barra che ha ancora pezzi non tagliati (active_idx) o -1 se tutte finite
         - lista booleana per ogni barra che indica se è completamente finita (done_flags)
-        La valutazione è coerente con la regola di marcatura pezzi (done_counts consumati in ordine).
         """
         encountered: Dict[Tuple[float, float, float], int] = {}
         active_idx = -1
@@ -153,7 +155,7 @@ class PlanVisualizerWidget(QWidget):
         # Scala orizzontale: stock -> (avail_w - 40) per margini/etichette
         scale_x = (avail_w - 40) / max(1.0, self._stock)
 
-        # Determina barra attiva e barre completate (pre-pass coerente con done_counts)
+        # Determina barra attiva e barre completate
         active_idx, bar_done_flags = self._precompute_active_bar()
 
         # Penne
@@ -165,7 +167,6 @@ class PlanVisualizerWidget(QWidget):
         font.setPointSizeF(9.0)
         p.setFont(font)
 
-        # Contatori occorrenze per signature (per confrontare con done_counts) per il disegno effettivo
         encountered: Dict[Tuple[float, float, float], int] = {}
 
         for bi, bar in enumerate(self._bars):
@@ -220,7 +221,7 @@ class PlanVisualizerWidget(QWidget):
                 ]
                 poly = QPolygonF(pts)
 
-                # Determina se questo pezzo è "done" (in base ai contatori signature)
+                # Determina se questo pezzo è "done"
                 sig = (round(L, 2), round(ax, 1), round(ad, 1))
                 idx = encountered.get(sig, 0) + 1
                 encountered[sig] = idx
@@ -243,8 +244,12 @@ class PlanVisualizerWidget(QWidget):
                     p.drawText(QRectF(x_left - 2, y_top - 12, max(46.0, w + 6), 12),
                                Qt.AlignLeft | Qt.AlignVCenter, label)
 
-                # Sposta di pezzo + kerf (gap visivo)
-                cursor_x += w + max(0.0, self._kerf * scale_x)
+                # Sposta di pezzo + kerf angolare minimo del giunto se non è l'ultimo pezzo
+                if pi < len(bar) - 1:
+                    kerf_gap_mm = _kerf_joint_min_for_piece(piece, self._kerf)
+                    cursor_x += w + max(0.0, kerf_gap_mm * scale_x)
+                else:
+                    cursor_x += w
 
             # Etichetta barra a sinistra
             p.setPen(pen_bar)
