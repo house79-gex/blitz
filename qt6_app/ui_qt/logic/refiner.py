@@ -1,12 +1,71 @@
 from __future__ import annotations
 from typing import List, Dict, Tuple
+import math
+
+# ---------------- Kerf angolare ----------------
+
+def _cosd(a: float) -> float:
+    try:
+        return math.cos(math.radians(float(a)))
+    except Exception:
+        return 1.0
+
+def _kerf_eff(kerf_base: float, ang_deg: float, max_deg: float = 60.0, max_factor: float = 2.0) -> float:
+    """
+    Kerf effettivo proiettato lungo l'asse barra per un taglio a 'ang_deg':
+    kerf_eff = kerf_base / cos(|ang|). Clampa l'angolo a max_deg e fattore a max_factor per robustezza.
+    Esempio: kerf=4mm, ang=45° -> 4 / cos(45°) ≈ 5.657 mm.
+    """
+    try:
+        a = abs(float(ang_deg))
+    except Exception:
+        a = 0.0
+    a = min(a, float(max_deg))
+    c = _cosd(a)
+    if c <= 1e-6:
+        return kerf_base * max_factor
+    val = kerf_base / c
+    if val > kerf_base * max_factor:
+        val = kerf_base * max_factor
+    return float(val)
+
+def _kerf_joint_min_for_piece(piece: Dict[str, float], kerf_base: float) -> float:
+    """
+    Kerf di giunto 'minimo' per un pezzo, scegliendo l'orientamento che minimizza l'angolo destro effettivo.
+    Giunto corrente = taglio del lato destro del pezzo in estrazione.
+    """
+    try:
+        ax = float(piece.get("ax", 0.0))
+        ad = float(piece.get("ad", 0.0))
+    except Exception:
+        ax = ad = 0.0
+    k1 = _kerf_eff(kerf_base, ad)
+    k2 = _kerf_eff(kerf_base, ax)  # se capovolto, il "destro" diventa l'AX originario
+    return min(k1, k2)
+
+def _sum_angle_kerf_min(bar: List[Dict[str, float]], kerf_base: float) -> float:
+    """
+    Somma dei kerf di giunto per una barra con N pezzi = somma sui primi N-1 pezzi del kerf minimo
+    (orientazione del pezzo scelta per minimizzare il kerf del suo taglio destro).
+    Nota: coerente con il modello precedente che conteggia (N-1) giunti.
+    """
+    n = len(bar)
+    if n <= 1:
+        return 0.0
+    s = 0.0
+    for i in range(n - 1):
+        s += _kerf_joint_min_for_piece(bar[i], kerf_base)
+    return s
+
+# ---------------- Lunghezze usate / residui ----------------
 
 def _bar_used_length(bar: List[Dict[str, float]], kerf: float) -> float:
     if not bar:
         return 0.0
     total_len = sum(float(p.get("len", 0.0)) for p in bar)
-    joints = max(len(bar) - 1, 0)
-    return total_len + joints * float(kerf)
+    # Kerf angolare sui giunti (N-1) scegliendo orientazione minima per ciascun pezzo che "taglia a destra"
+    total_kerf = _sum_angle_kerf_min(bar, float(kerf))
+    return total_len + total_kerf
 
 def _residuals(bars: List[List[Dict[str, float]]], stock: float, kerf: float) -> List[float]:
     return [max(float(stock) - _bar_used_length(b, kerf), 0.0) for b in bars]
@@ -23,6 +82,8 @@ def _order_with_max_residual_last(bars: List[List[Dict[str, float]]], stock: flo
     res = _residuals(bars, stock, kerf)
     return bars, res
 
+# ---------------- Refine tail MILP (invariata nella struttura) ----------------
+
 def refine_tail_ilp(bars: List[List[Dict[str, float]]],
                     stock: float,
                     kerf: float,
@@ -31,7 +92,7 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
     """
     Refine pass locale sulle ultime 'tail_bars' barre con una MILP:
     - Minimizza #barre usate, massimizza materiale usato nelle barre attive
-    - Rispetta il kerf: sum(L) + kerf*(n_pezzi - z_barra) <= stock
+    - Capacità lineare; i residui sono poi ricalcolati con kerf angolare.
     Requisiti: PuLP. Se non disponibile, ritorna barre/residui originali.
     """
     try:
@@ -73,6 +134,7 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
     for k in range(K):
         prob += y[k] == pulp.lpSum(x[j][k] for j in range(J)), f"y_def_{k}"
         prob += y[k] <= BIGM * z[k], f"use_link_{k}"
+        # Capacità lineare (kerf base): dopo il solve ricalcoliamo con kerf angolare
         prob += (
             pulp.lpSum(lengths[j] * x[j][k] for j in range(J)) + kerf * (y[k] - z[k]) <= stock
         ), f"cap_{k}"
@@ -112,6 +174,8 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
     out = head + refined_tail
     return _order_with_max_residual_last(out, stock, kerf)
 
+# ---------------- Knapsack ILP per barra (packing) ----------------
+
 def pack_bars_knapsack_ilp(pieces: List[Dict[str, float]],
                            stock: float,
                            kerf: float,
@@ -120,7 +184,8 @@ def pack_bars_knapsack_ilp(pieces: List[Dict[str, float]],
     Costruisce le barre iterativamente risolvendo un knapsack ILP per OGNI barra:
     - Variabili x_j in {0,1} per selezionare i pezzi di questa barra
     - y = somma x_j, z binaria: se y>=1 allora z=1
-    - Capacità: sum(L_j x_j) + kerf*(y - z) <= stock (kerf sui giunti: y-1 se y>=1)
+    - Capacità lineare con kerf base: sum(L_j x_j) + kerf*(y - z) <= stock
+      (dopo il packing i residui vengono ricalcolati con kerf angolare).
     - Obiettivo: massimizzare sum(L_j x_j)
     Se PuLP non è disponibile: ritorna ([], []) così il chiamante può fallback a BFD.
     """
@@ -156,22 +221,26 @@ def pack_bars_knapsack_ilp(pieces: List[Dict[str, float]],
         try:
             prob.solve(solver) if solver else prob.solve()
         except Exception:
-            # In caso di problemi, interrompi la costruzione e restituisci quanto fatto
             break
 
-        # Estrai i pezzi selezionati per questa barra
         chosen_idx = [j for j in range(J) if (x[j].value() or 0.0) > 0.5]
         if not chosen_idx:
-            # Nessun pezzo selezionato (può succedere per limiti solver) -> inserisci 1 pezzo max
             best_j = max(range(J), key=lambda j: lengths[j])
             chosen_idx = [best_j]
 
         bar = [remaining[j] for j in chosen_idx]
         bars.append(bar)
 
-        # Rimuovi i selezionati
         mask = set(chosen_idx)
         remaining = [remaining[j] for j in range(J) if j not in mask]
 
-    # Calcola residui e ordina l'ultima barra come quella con residuo massimo
     return _order_with_max_residual_last(bars, float(stock), float(kerf))
+
+# ---------------- Helper per BFD locale (append) ----------------
+
+def kerf_extra_for_append(last_piece: Dict[str, float], kerf_base: float) -> float:
+    """
+    Kerf 'extra' per aggiungere un nuovo pezzo in coda a una barra già avviata:
+    si usa il kerf angolare minimo del pezzo precedente (orientabile).
+    """
+    return _kerf_joint_min_for_piece(last_piece, kerf_base)
