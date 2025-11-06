@@ -2,10 +2,11 @@ from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QCheckBox
+    QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
 )
 
 try:
@@ -20,23 +21,29 @@ from ui_qt.widgets.plan_visualizer import PlanVisualizerWidget
 class OptimizationRunDialog(QDialog):
     """
     Dialog ottimizzazione con:
-    - Tabella riepilogo pezzi (come prima)
-    - Riepilogo barre (numero barre, residui)
-    - Visualizzazione grafica piano barre/pezzi (trapezi/rette)
+    - Tabella riepilogo pezzi
+    - Riepilogo barre (numero/residui)
+    - Visualizzazione grafica piano (trapezi/rettangoli)
     - Opzioni: mostra/nascondi riepilogo e grafica
 
     API retrocompatibile:
-    - update_after_cut(length_mm, ang_sx, ang_dx): decrementa qty e aggiorna viste
+    - update_after_cut(length_mm, ang_sx, ang_dx)
     - proprietà 'profile'
+
+    Estensioni:
+    - startRequested (F9) e simulationRequested (F7)
+    - altezza grafica adattiva in base al numero di barre
+    - dialog massimizzato in altezza (non in larghezza)
+    - chiusura automatica al termine (tutte qty==0) con ritorno focus ad Automatico
     """
     simulationRequested = Signal()
+    startRequested = Signal()
 
     def __init__(self, parent, profile: str, rows: List[Dict[str, Any]]):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
         self.profile = profile
-        # rows: [{length_mm, ang_sx, ang_dx, qty}]
         self._rows: List[Dict[str, Any]] = [dict(r) for r in rows]
 
         self._tbl: Optional[QTableWidget] = None
@@ -60,10 +67,7 @@ class OptimizationRunDialog(QDialog):
 
         self._build()
         self._recompute_plan_and_refresh()
-        try:
-            self.resize(980, 680)
-        except Exception:
-            pass
+        self._maximize_height_keep_width()
 
     # ---------- Build UI ----------
     def _build(self):
@@ -80,9 +84,13 @@ class OptimizationRunDialog(QDialog):
         btn_sim = QPushButton("Simula START (F7)")
         btn_sim.setToolTip("Simula un taglio come pulse lama")
         btn_sim.clicked.connect(lambda: self.simulationRequested.emit())
+        btn_start = QPushButton("Simula Avanzamento (F9)")
+        btn_start.setToolTip("Simula un evento START")
+        btn_start.clicked.connect(lambda: self.startRequested.emit())
         opts.addWidget(self._chk_summary)
         opts.addWidget(self._chk_graph)
         opts.addStretch(1)
+        opts.addWidget(btn_start)
         opts.addWidget(btn_sim)
         root.addLayout(opts)
 
@@ -122,11 +130,13 @@ class OptimizationRunDialog(QDialog):
         self._show_summary = bool(on)
         self._apply_toggles()
         cfg = dict(read_settings()); cfg["opt_show_summary"] = self._show_summary; write_settings(cfg)
+        self._maximize_height_keep_width()
 
     def _toggle_graph(self, on: bool):
         self._show_graph = bool(on)
         self._apply_toggles()
         cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
+        self._maximize_height_keep_width()
 
     # ---------- Plan computation ----------
     def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
@@ -147,16 +157,26 @@ class OptimizationRunDialog(QDialog):
     def _pack_bars_bfd(self, pieces: List[Dict[str, float]]) -> Tuple[List[List[Dict[str, float]]], List[float]]:
         bars: List[List[Dict[str, float]]] = []
         rem: List[float] = []
+        kerf = float(self._kerf)
+        stock = float(self._stock)
         for p in pieces:
             need = float(p["len"])
             placed = False
             for i in range(len(bars)):
-                extra = self._kerf if bars[i] else 0.0
+                extra = kerf if bars[i] else 0.0
                 if rem[i] >= (need + extra):
                     bars[i].append(p); rem[i] -= (need + extra); placed = True; break
             if not placed:
-                bars.append([p]); rem.append(max(self._stock - need, 0.0))
+                bars.append([p]); rem.append(max(stock - need, 0.0))
         return bars, rem
+
+    def _desired_graph_height(self, n_bars: int) -> int:
+        # barre da 20px, spazi 10px, padding pannello e widget
+        if n_bars <= 0:
+            return 160
+        bars_h = n_bars * 20 + (n_bars - 1) * 10
+        padding = 8 + 8 + 6 + 6  # margini pannello e layout
+        return max(140, bars_h + padding)
 
     def _recompute_plan_and_refresh(self):
         pieces = self._expand_rows_to_unit_pieces()
@@ -173,8 +193,41 @@ class OptimizationRunDialog(QDialog):
         # Graph
         if self._graph:
             self._graph.set_data(self._bars, stock_mm=self._stock, kerf_mm=self._kerf)
+            # Altezza grafica adattiva
+            try:
+                screen = QApplication.primaryScreen()
+                avail = screen.availableGeometry().height() if screen else 1080
+                gh = self._desired_graph_height(nb)
+                # non superare ~2/3 dello schermo
+                gh = min(gh, int(avail * 0.66))
+                self._graph.setMinimumHeight(gh)
+                self._graph.setMaximumHeight(gh)
+            except Exception:
+                pass
         # Table
         self._reload_table()
+        # Al termine (tutte qty a 0) → chiudi e torna ad Automatico
+        if self._all_done():
+            self._close_and_focus_parent()
+
+        # Adatta l'altezza del dialog
+        self._maximize_height_keep_width()
+
+    # ---------- Dimensionamento dialog ----------
+    def _maximize_height_keep_width(self):
+        try:
+            screen = QApplication.primaryScreen()
+            if not screen:
+                return
+            avail = screen.availableGeometry()
+            # Mantieni larghezza corrente, massimizza altezza (con margine)
+            w = max(720, self.width() or 900)
+            h = int(avail.height() - 32)
+            self.resize(w, h)
+            # Prova a posizionare in alto a sinistra (non obbligatorio)
+            self.move(avail.x() + 16, avail.y() + 16)
+        except Exception:
+            pass
 
     # ---------- Table ----------
     def _reload_table(self):
@@ -183,8 +236,8 @@ class OptimizationRunDialog(QDialog):
         self._tbl.setRowCount(0)
         for r in self._rows:
             q = int(r.get("qty", 0))
-            if q <= 0:
-                continue
+            if q < 0:
+                q = 0
             row = self._tbl.rowCount()
             self._tbl.insertRow(row)
             self._tbl.setItem(row, 0, QTableWidgetItem(f"{float(r.get('length_mm', 0.0)):.2f}"))
@@ -192,9 +245,28 @@ class OptimizationRunDialog(QDialog):
             self._tbl.setItem(row, 2, QTableWidgetItem(f"{float(r.get('ang_dx', 0.0)):.1f}"))
             self._tbl.setItem(row, 3, QTableWidgetItem(str(q)))
 
+    def _all_done(self) -> bool:
+        try:
+            return sum(int(max(0, r.get("qty", 0))) for r in self._rows) == 0
+        except Exception:
+            return False
+
+    def _close_and_focus_parent(self):
+        try:
+            parent = self.parent()
+            self.close()
+            if parent is not None:
+                try:
+                    parent.raise_()
+                    parent.activateWindow()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     # ---------- Public API ----------
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        """Decrementa qty della riga corrispondente e ricalcola piano/grafica."""
+        """Decrementa qty della riga corrispondente e ricalcola piano/grafica. Chiude se tutto finito."""
         tol_L = 0.01; tol_A = 0.01
         matched = False
         for r in self._rows:
@@ -218,7 +290,21 @@ class OptimizationRunDialog(QDialog):
                         break
                 except Exception:
                     continue
+
         self._recompute_plan_and_refresh()
+
+    # ---------- Keyboard handling ----------
+    def keyPressEvent(self, ev: QKeyEvent):
+        try:
+            if ev.key() == Qt.Key_F7:
+                self.simulationRequested.emit()
+                ev.accept(); return
+            if ev.key() == Qt.Key_F9:
+                self.startRequested.emit()
+                ev.accept(); return
+        except Exception:
+            pass
+        super().keyPressEvent(ev)
 
     # ---------- Lifecycle ----------
     def accept(self):
