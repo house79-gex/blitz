@@ -86,13 +86,12 @@ class AutomaticoPage(QWidget):
     - Sinistra: Cutlist viewer in un frame, più alta, con pulsante Start (verde) centrato sotto.
     - Destra: due frame "in alto" (Contapezzi e Status).
     - Toolbar: Importa, Ottimizza, Config. ottimizzazione.
-      Nota: "Start fisico" e "Auto-continue" non sono visibili: sono attivi automaticamente.
 
-    Logica "contapezzi" in ottimizzazione:
-    - Mostra il TOTALE pezzi dell'elemento (stessa quota+angoli) sull'intero piano (tutte le barre del profilo).
-    - Mostra Tagliati e Rimanenti globali per quell'elemento (non solo per la barra corrente).
-    - I valori persistono quando si cambia elemento; quando si torna a una stessa misura, il conteggio riprende da dove era rimasto.
-      Questo è implementato calcolando "Rimanenti" dalla tabella principale (che viene decrementata a ogni taglio).
+    Comportamento richiesto:
+    - Sequenza di taglio barra per barra (l’ultima barra è quella con lo sfrido maggiore).
+    - Auto-continue tra pezzi consecutivi IDENTICI sulla stessa barra: avanza di un pezzo alla volta.
+    - Contapezzi “totale per elemento”: mostra Target/Tagliati/Rimanenti globali per l’elemento (profilo+quota+angoli),
+      calcolati su tutta la cutlist, ma l’esecuzione procede sequenzialmente barra per barra.
     """
 
     def __init__(self, appwin):
@@ -113,7 +112,7 @@ class AutomaticoPage(QWidget):
         self.lbl_remaining: Optional[QLabel] = None
         self.status: Optional[StatusPanel] = None
         self.btn_start_row: Optional[QPushButton] = None
-        self.viewer_frame: Optional[QFrame] = None  # frame contenitore della cutlist (per overlay della dialog)
+        self.viewer_frame: Optional[QFrame] = None  # per overlay della dialog
 
         # Dati
         self._orders = OrdersStore()
@@ -157,9 +156,8 @@ class AutomaticoPage(QWidget):
         except Exception:
             self._same_ang_tol = 0.10
 
-        # Conteggi per elemento (signature): (profile, L2, ax1, ad1) -> total
+        # Contatori totali per elemento (signature) e signature corrente
         self._sig_total_counts: Dict[Tuple[str, float, float, float], int] = {}
-        # Signature corrente in lavorazione (None se non attivo)
         self._cur_sig: Optional[Tuple[str, float, float, float]] = None
 
         self._build()
@@ -473,7 +471,7 @@ class AutomaticoPage(QWidget):
 
         self._mode = "manual"; self._active_row = r
         self._manual_job = {"profile": prof, "element": elem, "length": L, "ax": ax, "ad": ad}
-        self._cur_sig = None  # contapezzi manuale usa ancora i contatori macchina
+        self._cur_sig = None  # contapezzi manuale: usa contatori macchina
         self._move_and_arm(L, ax, ad, prof, elem)
         self._update_counters_ui()
 
@@ -483,7 +481,7 @@ class AutomaticoPage(QWidget):
         if not prof:
             QMessageBox.information(self, "Ottimizza", "Seleziona un profilo."); return
 
-        # Aggrega per signature (L, ax, ad) i totali qty del profilo
+        # Aggrega per signature (L, ax, ad) i totali qty (TOTALE per elemento)
         items: Dict[Tuple[float, float, float], int] = defaultdict(int)
         for r in range(self.tbl_cut.rowCount()):
             if self._row_is_header(r): continue
@@ -500,7 +498,7 @@ class AutomaticoPage(QWidget):
         if not items:
             QMessageBox.information(self, "Ottimizza", f"Nessun pezzo per '{prof}'."); return
 
-        # Calcola "piano" GREEDY per le barre (solo per sequenza; la grafica/dialog gestisce a parte)
+        # GREEDY per barre (sequenza barra per barra)
         cfg = read_settings()
         stock = float(cfg.get("opt_stock_mm", 6500.0))
         kerf = float(cfg.get("opt_kerf_mm", 3.0))
@@ -518,7 +516,7 @@ class AutomaticoPage(QWidget):
             if not placed:
                 bars.append([p]); rem.append(max(stock - need, 0.0))
 
-        # Ordina barre lasciando per ultima quella con residuo massimo (richiesta precedente)
+        # Lascia per ultima la barra con residuo maggiore
         if rem:
             max_idx = max(range(len(rem)), key=lambda i: rem[i])
             if 0 <= max_idx < len(bars) and max_idx != len(bars) - 1:
@@ -527,9 +525,9 @@ class AutomaticoPage(QWidget):
 
         self._plan_profile = prof; self._bars = bars; self._bar_idx = 0; self._piece_idx = -1
         self._mode = "plan"
-        self._cur_sig = None  # la signature corrente verrà impostata al primo start
+        self._cur_sig = None  # verrà impostata al primo pezzo avviato
 
-        # Costruisci mappa totale pezzi PER ELEMENTO (profilo+L+ang)
+        # Mappa totale pezzi per elemento (Target globali per contapezzi)
         self._sig_total_counts.clear()
         for (L, ax, ad), qty in items.items():
             sig = self._sig_key(prof, L, ax, ad)
@@ -673,7 +671,7 @@ class AutomaticoPage(QWidget):
         return False
 
     def _handle_start_trigger(self):
-        # in piano: avanza al prossimo pezzo, arma target macchina = 1 (ciclo), ma i contatori UI mostrano totale per signature
+        # in piano: avanza di 1 pezzo alla volta in sequenza barra per barra (target macchina = 1)
         if self._mode != "plan" or not self._bars:
             return
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
@@ -682,29 +680,35 @@ class AutomaticoPage(QWidget):
         if self._brake_locked and tgt > 0 and done < tgt:
             return
 
-        if self._bar_idx < 0: self._bar_idx = 0
+        # Seleziona prossimo pezzo in sequenza
+        if self._bar_idx < 0:
+            self._bar_idx = 0
         if self._bar_idx >= len(self._bars):
             self._toast("Piano completato", "ok"); return
-        bar = self._bars[self._bar_idx]
 
+        bar = self._bars[self._bar_idx]
         self._piece_idx += 1
         if self._piece_idx >= len(bar):
-            self._bar_idx += 1; self._piece_idx = 0
+            # passa alla barra successiva
+            self._bar_idx += 1
+            self._piece_idx = 0
             if self._bar_idx >= len(self._bars):
                 self._toast("Piano completato", "ok"); return
             bar = self._bars[self._bar_idx]
 
         p = bar[self._piece_idx]
+
         # Imposta signature corrente per i contatori UI globali
         self._cur_sig = self._sig_key(self._plan_profile, p["len"], p["ax"], p["ad"])
-        self._update_counters_ui()  # aggiorna target/done/remaining globali
+        self._update_counters_ui()
 
-        # Arma la macchina per UN pezzo (ciclo di taglio singolo)
+        # Arma la macchina per UN pezzo
         try:
             setattr(self.machine, "semi_auto_target_pieces", 1)
             setattr(self.machine, "semi_auto_count_done", 0)
         except Exception: pass
 
+        # Posizionamento
         self._move_and_arm(p["len"], p["ax"], p["ad"], self._plan_profile, f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
 
     # --------- Simulazioni taglio / pulse lama ---------
@@ -726,7 +730,7 @@ class AutomaticoPage(QWidget):
         try: setattr(self.machine, "semi_auto_count_done", new_done)
         except Exception: pass
 
-        # Pezzo attuale (per decremento e contatori)
+        # Pezzo attuale
         cur_piece = None
         if self._mode == "plan" and self._bars and 0 <= self._bar_idx < len(self._bars) and 0 <= self._piece_idx < len(self._bars[self._bar_idx]):
             cur_piece = self._bars[self._bar_idx][self._piece_idx]
@@ -740,14 +744,14 @@ class AutomaticoPage(QWidget):
                 except Exception:
                     pass
 
-        # Aggiorna dialog ottimizzazione (evidenzia tagliato + decrementa qty nella sua tabella)
+        # Aggiorna dialog ottimizzazione (evidenzia, decrementa)
         if self._opt_dialog and cur_piece:
             try:
                 self._opt_dialog.update_after_cut(length_mm=float(cur_piece["len"]), ang_sx=float(cur_piece["ax"]), ang_dx=float(cur_piece["ad"]))
             except Exception:
                 pass
 
-        # Se ciclo pezzo concluso, sblocca e attendi START (o auto-continue se stesso job attivato)
+        # Fine ciclo pezzo (target macchina = 1)
         if new_done >= tgt:
             # Azzera contatori ciclo
             try:
@@ -756,43 +760,42 @@ class AutomaticoPage(QWidget):
             except Exception:
                 pass
 
-            # Auto-continue se il prossimo pezzo è identico (senza muovere)
-            next_piece = self._peek_next_piece() if self._mode == "plan" else None
+            # Auto-continue al pezzo successivo SE identico e presente sulla stessa barra
+            next_piece = self._peek_next_piece()
             same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
             if self._mode == "plan" and self._auto_continue_enabled() and same_next:
-                # Mantieni freno e re-arma 1 pezzo senza muovere (solo contatore)
-                try:
-                    setattr(self.machine, "semi_auto_target_pieces", 1)
-                    setattr(self.machine, "semi_auto_count_done", 0)
-                except Exception:
-                    pass
-                # La signature corrente resta la stessa; non avanzare indici qui
+                # Avanza indici al prossimo pezzo e arma senza muovere
+                self._piece_idx += 1
+                # Se fine barra, NON auto-continue (si passa a start esplicito)
+                if 0 <= self._bar_idx < len(self._bars) and self._piece_idx < len(self._bars[self._bar_idx]):
+                    np = self._bars[self._bar_idx][self._piece_idx]
+                    # aggiorna signature e contatori
+                    self._cur_sig = self._sig_key(self._plan_profile, np["len"], np["ax"], np["ad"])
+                    try:
+                        setattr(self.machine, "semi_auto_target_pieces", 1)
+                        setattr(self.machine, "semi_auto_count_done", 0)
+                    except Exception:
+                        pass
+                    # resta bloccato (no unlock) per rapidità
+                else:
+                    # fine barra: sblocca, si continuerà con START
+                    self._unlock_brake()
             else:
+                # Pezzo diverso o fine barra: sblocca e attendi START (sequenza barra per barra)
                 self._unlock_brake()
 
         # Aggiorna contatori UI globali per la signature corrente
         self._update_counters_ui()
 
-    # ---------------- Auto-continue helpers ----------------
-    def _auto_continue_enabled(self) -> bool:
-        return True  # sempre attivo
-
     def _peek_next_piece(self) -> Optional[Dict[str, float]]:
+        """Restituisce il prossimo pezzo sulla sequenza globale (stessa barra o barra successiva)."""
         if not self._bars or self._bar_idx >= len(self._bars):
             return None
-        next_bar_idx = self._bar_idx if self._bar_idx >= 0 else 0
-        if not (0 <= next_bar_idx < len(self._bars)):
-            return None
-        bar = self._bars[next_bar_idx]
-        next_piece_idx = self._piece_idx + 1
-        if next_piece_idx >= len(bar):
-            next_bar_idx += 1
-            if next_bar_idx >= len(self._bars):
-                return None
-            bar = self._bars[next_bar_idx]
-            next_piece_idx = 0
-        if 0 <= next_piece_idx < len(bar):
-            return bar[next_piece_idx]
+        bar = self._bars[self._bar_idx]
+        i = self._piece_idx + 1
+        if i < len(bar):
+            return bar[i]
+        # prossimo pezzo sarebbe sulla barra successiva → per auto-continue non si usa
         return None
 
     # ---------------- UI helpers / Decrementi ----------------
@@ -862,8 +865,8 @@ class AutomaticoPage(QWidget):
     def _update_counters_ui(self):
         """
         Aggiorna il pannello "NUMERO PEZZI".
-        - In plan con signature corrente: usa target/done/remaining GLOBALI per l'elemento (signature) su TUTTE LE BARRE.
-        - In manuale o senza signature: fallback ai contatori macchina (target/done) se presenti.
+        - In plan con signature corrente: Target/Done/Remaining GLOBALI per l'elemento (su tutta la cutlist).
+        - In manuale o senza signature: fallback ai contatori macchina (target/done).
         """
         if self._mode == "plan" and self._cur_sig:
             total = int(self._sig_total_counts.get(self._cur_sig, 0))
