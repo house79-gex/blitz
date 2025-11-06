@@ -2,11 +2,12 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
 import time
+import math
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QCheckBox, QMessageBox, QAbstractItemView, QSizePolicy,
+    QMessageBox, QAbstractItemView, QSizePolicy,
     QDialog, QFormLayout, QLineEdit, QComboBox, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, QTimer
@@ -26,7 +27,7 @@ except Exception:
     def read_settings() -> Dict[str, Any]: return {}
     def write_settings(d: Dict[str, Any]) -> None: pass
 
-# Compat QSizePolicy
+# Compatibilità QSizePolicy Expanding (varia tra versioni PySide6)
 try:
     POL_EXP = QSizePolicy.Policy.Expanding
 except AttributeError:
@@ -36,7 +37,7 @@ PANEL_W = 420
 
 
 class OptimizationConfigDialog(QDialog):
-    """Dialog semplice per impostare stock/kerf/solver/time limit e salvarli nei settings."""
+    """Dialog per configurare stock/kerf/solver/time limit (persistenza in settings)."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configurazione ottimizzazione")
@@ -74,7 +75,7 @@ class OptimizationConfigDialog(QDialog):
         try: cfg["opt_kerf_mm"] = float((self.ed_kerf.text() or "0").replace(",", "."))
         except Exception: pass
         cfg["opt_solver"] = self.cmb_solver.currentText().upper()
-        try: cfg["opt_time_limit_s"] = int((self.ed_time.text() or "0").replace(",", "."))
+        try: cfg["opt_time_limit_s"] = int(float((self.ed_time.text() or "0").replace(",", ".")))
         except Exception: pass
         write_settings(cfg)
         self.accept()
@@ -82,16 +83,16 @@ class OptimizationConfigDialog(QDialog):
 
 class AutomaticoPage(QWidget):
     """
-    Automatico (layout a due colonne, come l'originale):
-    - Sinistra: Cutlist viewer in un frame, più alta, con pulsante Start verde centrato sotto.
-    - Destra: in alto due frame (Contapezzi e Status).
+    Automatico (layout a due colonne come l'originale):
+    - Sinistra: Cutlist viewer in un frame, più alta, con pulsante Start (verde) centrato sotto.
+    - Destra: due frame "in alto" (Contapezzi e Status).
     - Toolbar: Importa, Ottimizza, Config. ottimizzazione.
-    - NIENTE flag "Start fisico" e "Auto-continue": sono abilitati automaticamente.
+      Nota: "Start fisico" e "Auto-continue" non sono visibili: sono attivi automaticamente.
 
     Logica:
     - Auto-continue: se il pezzo successivo ha stessa quota/angoli entro tolleranza, prosegue senza
       sbloccare/ribloccare il freno e senza muovere (arma solo contatore).
-    - Fix decremento quantità: la colonna Q.tà nella viewer principale arriva a 0 correttamente.
+    - Decremento quantità: la colonna Q.tà nella viewer principale arriva a 0 correttamente.
     """
 
     def __init__(self, appwin):
@@ -167,7 +168,7 @@ class AutomaticoPage(QWidget):
         root.addWidget(Header(self.appwin, "AUTOMATICO", mode="default",
                               on_home=self._nav_home, on_reset=self._reset_and_home))
 
-        # Toolbar (senza flag)
+        # Toolbar
         top = QHBoxLayout()
         btn_import = QPushButton("Importa…")
         btn_import.setToolTip("Importa una cutlist salvata")
@@ -187,13 +188,13 @@ class AutomaticoPage(QWidget):
         top.addStretch(1)
         root.addLayout(top)
 
-        # Corpo a due colonne: sinistra viewer, destra contapezzi+status
+        # Corpo a due colonne
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(8)
         root.addLayout(body, 1)
 
-        # Colonna sinistra (viewer + start)
+        # Colonna sinistra: viewer + start
         left = QFrame(); left.setSizePolicy(POL_EXP, POL_EXP)
         ll = QVBoxLayout(left); ll.setContentsMargins(0, 0, 0, 0); ll.setSpacing(8)
 
@@ -238,7 +239,7 @@ class AutomaticoPage(QWidget):
 
         body.addWidget(left, 1)
 
-        # Colonna destra (contapezzi + status)
+        # Colonna destra: contapezzi + status
         right = QFrame(); right.setFixedWidth(PANEL_W)
         rl = QVBoxLayout(right); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
 
@@ -266,7 +267,7 @@ class AutomaticoPage(QWidget):
 
         body.addWidget(right, 0)
 
-        # Space = Start fisico (fallback, sempre abilitato in plan)
+        # Scorciatoia: Space = Start (in plan)
         QShortcut(QKeySequence("Space"), self, activated=self._handle_start_trigger)
 
     # ---------------- Helpers intestazione ----------------
@@ -388,7 +389,6 @@ class AutomaticoPage(QWidget):
     def _open_opt_config(self):
         dlg = OptimizationConfigDialog(self)
         dlg.exec()
-        # Nessuna azione immediata: i nuovi parametri verranno usati alla prossima ottimizzazione
         self._toast("Config ottimizzazione aggiornata.", "ok")
 
     def _open_opt_dialog(self, profile: str):
@@ -417,7 +417,7 @@ class AutomaticoPage(QWidget):
                 pass
             return
         self._opt_dialog = OptimizationRunDialog(self, prof, rows)
-        # collega F7 simulazione dalla dialog
+        # collega F7 simulazione dalla dialog (se emette)
         try:
             self._opt_dialog.simulationRequested.connect(self.simulate_cut_from_dialog)
         except Exception:
@@ -494,7 +494,6 @@ class AutomaticoPage(QWidget):
 
         self._plan_profile = prof; self._bars = bars; self._bar_idx = 0; self._piece_idx = -1
         self._mode = "plan"
-        self._start_phys_enabled = True  # sempre on
 
         # Piano informativo (ILP/BFD opzionale)
         try:
@@ -527,8 +526,29 @@ class AutomaticoPage(QWidget):
             QMessageBox.critical(self, "Posizionamento", str(e)); return
         self._move_target_mm = float(length); self._inpos_since = 0.0; self._lock_on_inpos = True
 
+    def _is_dummy(self) -> bool:
+        """Heuristics: ambiente test/senza IO reali."""
+        try:
+            n = type(self.machine).__name__.lower()
+            if "dummy" in n or "mock" in n:
+                return True
+        except Exception:
+            pass
+        return (not hasattr(self.machine, "encoder_position")) and (not hasattr(self.machine, "positioning_active"))
+
+    def _ensure_test_lock(self, tgt: int, remaining: int):
+        """In dummy, forza lock freno per permettere simulazioni (F7/Space)."""
+        if self._is_dummy() and (tgt > 0) and (remaining > 0) and not self._brake_locked:
+            self._lock_brake()
+            self._lock_on_inpos = False
+
     def _try_lock_on_inpos(self):
         if not self._lock_on_inpos: return
+        if self._is_dummy():
+            self._lock_brake()
+            self._lock_on_inpos = False
+            return
+
         tol = float(read_settings().get("inpos_tol_mm", 0.20))
         pos = getattr(self.machine, "encoder_position", None)
         if pos is None: pos = getattr(self.machine, "position_current", None)
@@ -586,7 +606,6 @@ class AutomaticoPage(QWidget):
         # in piano: arma un pezzo (target=1) e posiziona; se già armato, attende taglio
         if self._mode != "plan" or not self._bars:
             return
-        # Se un ciclo è già armato e freno bloccato, attendi pulse
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
         if self._brake_locked and tgt > 0 and done < tgt:
@@ -616,6 +635,10 @@ class AutomaticoPage(QWidget):
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
         remaining = max(tgt - done, 0)
+
+        # in dummy, forza lock per permettere la simulazione
+        self._ensure_test_lock(tgt, remaining)
+
         if not (self._brake_locked and tgt > 0 and remaining > 0):
             return
 
@@ -645,6 +668,7 @@ class AutomaticoPage(QWidget):
                 pass
 
         if new_done >= tgt:
+            # Fine pezzo: decide prossimo
             next_piece = self._peek_next_piece() if self._mode == "plan" else None
             same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
 
@@ -675,7 +699,7 @@ class AutomaticoPage(QWidget):
 
     # ---------------- Auto-continue helpers ----------------
     def _auto_continue_enabled(self) -> bool:
-        return True  # sempre attivo come richiesto
+        return True  # sempre attivo
 
     def _peek_next_piece(self) -> Optional[Dict[str, float]]:
         if not self._bars or self._bar_idx >= len(self._bars):
@@ -737,6 +761,10 @@ class AutomaticoPage(QWidget):
         self.tbl_cut.selectRow(row)
 
     def _dec_row_qty_match(self, profile: str, length: float, ax: float, ad: float) -> bool:
+        """
+        Decrementa la prima riga che corrisponde (prof, lunghezza≈, angoli≈).
+        Ritorna True se ha aggiornato, False se non ha trovato match.
+        """
         n = self.tbl_cut.rowCount()
         for r in range(n):
             if self._row_is_header(r): continue
@@ -757,6 +785,9 @@ class AutomaticoPage(QWidget):
         return False
 
     def _dec_row_qty_match_str(self, profile: str, Ls: str, Axs: str, Ads: str) -> bool:
+        """
+        Decremento di fallback: confronta le stringhe già formattate nelle celle.
+        """
         n = self.tbl_cut.rowCount()
         for r in range(n):
             if self._row_is_header(r): continue
