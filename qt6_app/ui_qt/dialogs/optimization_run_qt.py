@@ -5,7 +5,7 @@ from collections import defaultdict
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QCheckBox, QSizePolicy
+    QTableWidgetItem, QHeaderView, QCheckBox
 )
 
 try:
@@ -29,7 +29,6 @@ class OptimizationRunDialog(QDialog):
     - update_after_cut(length_mm, ang_sx, ang_dx): decrementa qty e aggiorna viste
     - proprietà 'profile'
     """
-    # Conserva la compatibilità con eventuali segnali già usati
     simulationRequested = Signal()
 
     def __init__(self, parent, profile: str, rows: List[Dict[str, Any]]):
@@ -55,15 +54,14 @@ class OptimizationRunDialog(QDialog):
         self._show_summary = bool(cfg.get("opt_show_summary", True))
         self._show_graph = bool(cfg.get("opt_show_graph", True))
 
-        # Piano calcolato localmente
+        # Piano calcolato localmente (BFD)
         self._bars: List[List[Dict[str, float]]] = []
         self._bars_residuals: List[float] = []
 
         self._build()
         self._recompute_plan_and_refresh()
-
         try:
-            self.resize(920, 620)
+            self.resize(980, 680)
         except Exception:
             pass
 
@@ -92,9 +90,8 @@ class OptimizationRunDialog(QDialog):
         self._panel_summary = QFrame()
         self._panel_summary.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         sl = QVBoxLayout(self._panel_summary); sl.setContentsMargins(8,8,8,8); sl.setSpacing(6)
-        self._lbl_bars = QLabel("—")
         sl.addWidget(QLabel("Riepilogo barre"))
-        sl.addWidget(self._lbl_bars)
+        self._lbl_bars = QLabel("—"); sl.addWidget(self._lbl_bars)
         root.addWidget(self._panel_summary, 0)
 
         # Grafica piano
@@ -105,7 +102,7 @@ class OptimizationRunDialog(QDialog):
         gl.addWidget(self._graph, 1)
         root.addWidget(self._panel_graph, 1)
 
-        # Tabella pezzi (sotto)
+        # Tabella pezzi
         self._tbl = QTableWidget(0, 4)
         self._tbl.setHorizontalHeaderLabels(["Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà"])
         hdr = self._tbl.horizontalHeader()
@@ -144,7 +141,6 @@ class OptimizationRunDialog(QDialog):
                 continue
             for _ in range(max(0, q)):
                 pieces.append({"len": L, "ax": ax, "ad": ad})
-        # ordinamento decrescente lunghezze
         pieces.sort(key=lambda x: x["len"], reverse=True)
         return pieces
 
@@ -198,44 +194,34 @@ class OptimizationRunDialog(QDialog):
 
     # ---------- Public API ----------
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        """
-        Decrementa qty della riga corrispondente (≈ con piccola tolleranza) e ricalcola piano/grafica.
-        """
-        tol_L = 0.01
-        tol_A = 0.01
-        # 1) match numerico
+        """Decrementa qty della riga corrispondente e ricalcola piano/grafica."""
+        tol_L = 0.01; tol_A = 0.01
+        matched = False
         for r in self._rows:
             try:
                 if abs(float(r.get("length_mm", 0.0)) - float(length_mm)) <= tol_L \
                    and abs(float(r.get("ang_sx", 0.0)) - float(ang_sx)) <= tol_A \
                    and abs(float(r.get("ang_dx", 0.0)) - float(ang_dx)) <= tol_A:
-                    q = max(0, int(r.get("qty", 0)) - 1)
-                    r["qty"] = q
+                    r["qty"] = max(0, int(r.get("qty", 0)) - 1)
+                    matched = True
                     break
             except Exception:
                 continue
-        else:
-            # 2) match su stringhe formattate
-            Ls = f"{float(length_mm):.2f}"
-            Axs = f"{float(ang_sx):.1f}"
-            Ads = f"{float(ang_dx):.1f}"
+        if not matched:
+            Ls = f"{float(length_mm):.2f}"; Axs = f"{float(ang_sx):.1f}"; Ads = f"{float(ang_dx):.1f}"
             for r in self._rows:
                 try:
                     if f"{float(r.get('length_mm', 0.0)):.2f}" == Ls \
                        and f"{float(r.get('ang_sx', 0.0)):.1f}" == Axs \
                        and f"{float(r.get('ang_dx', 0.0)):.1f}" == Ads:
-                        q = max(0, int(r.get("qty", 0)) - 1)
-                        r["qty"] = q
+                        r["qty"] = max(0, int(r.get("qty", 0)) - 1)
                         break
                 except Exception:
                     continue
-
-        # Ricalcola piano e aggiorna viste
         self._recompute_plan_and_refresh()
 
     # ---------- Lifecycle ----------
     def accept(self):
-        # salva preferenze di visibilità
         cfg = dict(read_settings())
         cfg["opt_show_summary"] = bool(self._chk_summary and self._chk_summary.isChecked())
         cfg["opt_show_graph"] = bool(self._chk_graph and self._chk_graph.isChecked())
@@ -243,5 +229,4 @@ class OptimizationRunDialog(QDialog):
         super().accept()
 
     def reject(self):
-        # idem in chiusura via ESC/X
         self.accept()
