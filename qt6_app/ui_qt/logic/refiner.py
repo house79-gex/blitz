@@ -2,7 +2,9 @@ from __future__ import annotations
 from typing import List, Dict, Tuple
 import math
 
-# ---------------- Kerf angolare ----------------
+# ============================================================
+# Kerf angolare + ripasso + recupero reversibile (automatico)
+# ============================================================
 
 def _cosd(a: float) -> float:
     try:
@@ -10,98 +12,152 @@ def _cosd(a: float) -> float:
     except Exception:
         return 1.0
 
-def _kerf_eff(kerf_base: float, ang_deg: float, max_deg: float = 60.0, max_factor: float = 2.0) -> float:
+def kerf_projected(kerf_base: float,
+                   ang_deg: float,
+                   max_angle: float,
+                   max_factor: float) -> float:
     """
-    Kerf effettivo proiettato lungo l'asse barra per un taglio a 'ang_deg':
-    kerf_eff = kerf_base / cos(|ang|). Clampa l'angolo a max_deg e fattore a max_factor per robustezza.
-    Esempio: kerf=4mm, ang=45° -> 4 / cos(45°) ≈ 5.657 mm.
+    Kerf proiettato lungo l'asse barra per un taglio inclinato.
+    kerf_eff = kerf_base / cos(|ang|) con clamp di angolo e fattore.
     """
     try:
         a = abs(float(ang_deg))
     except Exception:
         a = 0.0
-    a = min(a, float(max_deg))
+    a = min(a, max_angle)
     c = _cosd(a)
     if c <= 1e-6:
         return kerf_base * max_factor
     val = kerf_base / c
-    if val > kerf_base * max_factor:
-        val = kerf_base * max_factor
-    return float(val)
+    return min(val, kerf_base * max_factor)
 
-def _kerf_joint_min_for_piece(piece: Dict[str, float], kerf_base: float) -> float:
+def auto_recovery(thickness_mm: float,
+                  ax: float,
+                  ad: float,
+                  angle_tol: float) -> float:
     """
-    Kerf di giunto 'minimo' per un pezzo, scegliendo l'orientamento che minimizza l'angolo destro effettivo.
-    Giunto corrente = taglio del lato destro del pezzo in estrazione.
+    Recupero automatico per profilo reversibile:
+    Se almeno uno dei due angoli (ax o ad) è a 45° (entro tolleranza) → recupero = thickness_mm.
+    Altrimenti 0.
     """
-    try:
-        ax = float(piece.get("ax", 0.0))
-        ad = float(piece.get("ad", 0.0))
-    except Exception:
-        ax = ad = 0.0
-    k1 = _kerf_eff(kerf_base, ad)
-    k2 = _kerf_eff(kerf_base, ax)  # se capovolto, il "destro" diventa l'AX originario
-    return min(k1, k2)
-
-def _sum_angle_kerf_min(bar: List[Dict[str, float]], kerf_base: float) -> float:
-    """
-    Somma dei kerf di giunto per una barra con N pezzi = somma sui primi N-1 pezzi del kerf minimo
-    (orientazione del pezzo scelta per minimizzare il kerf del suo taglio destro).
-    Nota: coerente con il modello precedente che conteggia (N-1) giunti.
-    """
-    n = len(bar)
-    if n <= 1:
+    if thickness_mm <= 0:
         return 0.0
-    s = 0.0
-    for i in range(n - 1):
-        s += _kerf_joint_min_for_piece(bar[i], kerf_base)
-    return s
+    try:
+        ax_v = abs(float(ax)); ad_v = abs(float(ad))
+    except Exception:
+        ax_v = ad_v = 0.0
+    if (abs(ax_v - 45.0) <= angle_tol) or (abs(ad_v - 45.0) <= angle_tol):
+        return thickness_mm
+    return 0.0
 
-# ---------------- Lunghezze usate / residui ----------------
+def joint_consumption(piece_left: Dict[str, float],
+                      kerf_base: float,
+                      ripasso_mm: float,
+                      reversible: bool,
+                      thickness_mm: float,
+                      angle_tol: float,
+                      max_angle: float,
+                      max_factor: float) -> float:
+    """
+    Consumo materiale per un GIUNTO:
+      - kerf proiettato (scegli orientazione con kerf destro minore)
+      - ripasso (aggiunto sempre)
+      - recupero automatico se reversibile e 45° (tolto dalla componente kerf, non dal ripasso)
+    """
+    ax = float(piece_left.get("ax", 0.0))
+    ad = float(piece_left.get("ad", 0.0))
+    k_norm = kerf_projected(kerf_base, ad, max_angle, max_factor)
+    k_flip = kerf_projected(kerf_base, ax, max_angle, max_factor)
+    k = min(k_norm, k_flip)
+    if reversible:
+        rec = auto_recovery(thickness_mm, ax, ad, angle_tol)
+        k = max(0.0, k - rec)  # recupero sottrae solo la componente kerf
+    return k + max(0.0, ripasso_mm)
 
-def _bar_used_length(bar: List[Dict[str, float]], kerf: float) -> float:
+def bar_used_length(bar: List[Dict[str, float]],
+                    kerf_base: float,
+                    ripasso_mm: float,
+                    reversible: bool,
+                    thickness_mm: float,
+                    angle_tol: float,
+                    max_angle: float,
+                    max_factor: float) -> float:
     if not bar:
         return 0.0
-    total_len = sum(float(p.get("len", 0.0)) for p in bar)
-    # Kerf angolare sui giunti (N-1) scegliendo orientazione minima per ciascun pezzo che "taglia a destra"
-    total_kerf = _sum_angle_kerf_min(bar, float(kerf))
-    return total_len + total_kerf
+    total = sum(float(p.get("len", 0.0)) for p in bar)
+    if len(bar) <= 1:
+        return total
+    joints = 0.0
+    for i in range(len(bar) - 1):
+        joints += joint_consumption(bar[i], kerf_base, ripasso_mm,
+                                    reversible, thickness_mm,
+                                    angle_tol, max_angle, max_factor)
+    return total + joints
 
-def _residuals(bars: List[List[Dict[str, float]]], stock: float, kerf: float) -> List[float]:
-    return [max(float(stock) - _bar_used_length(b, kerf), 0.0) for b in bars]
+def residuals(bars: List[List[Dict[str, float]]],
+              stock: float,
+              kerf_base: float,
+              ripasso_mm: float,
+              reversible: bool,
+              thickness_mm: float,
+              angle_tol: float,
+              max_angle: float,
+              max_factor: float) -> List[float]:
+    return [max(stock - bar_used_length(b, kerf_base, ripasso_mm, reversible,
+                                        thickness_mm, angle_tol, max_angle, max_factor), 0.0)
+            for b in bars]
 
-def _order_with_max_residual_last(bars: List[List[Dict[str, float]]], stock: float, kerf: float) -> Tuple[List[List[Dict[str, float]]], List[float]]:
+def order_with_max_residual_last(bars: List[List[Dict[str, float]]],
+                                 stock: float,
+                                 kerf_base: float,
+                                 ripasso_mm: float,
+                                 reversible: bool,
+                                 thickness_mm: float,
+                                 angle_tol: float,
+                                 max_angle: float,
+                                 max_factor: float) -> Tuple[List[List[Dict[str, float]]], List[float]]:
     if not bars:
         return bars, []
-    res = _residuals(bars, stock, kerf)
+    res = residuals(bars, stock, kerf_base, ripasso_mm, reversible, thickness_mm,
+                    angle_tol, max_angle, max_factor)
     if not res:
         return bars, []
     max_idx = max(range(len(res)), key=lambda i: res[i])
     if max_idx != len(bars) - 1:
-        last_bar = bars.pop(max_idx); bars.append(last_bar)
-    res = _residuals(bars, stock, kerf)
+        last = bars.pop(max_idx); bars.append(last)
+    res = residuals(bars, stock, kerf_base, ripasso_mm, reversible, thickness_mm,
+                    angle_tol, max_angle, max_factor)
     return bars, res
 
-# ---------------- Refine tail MILP (invariata nella struttura) ----------------
+# ============================================================
+# Refine MILP (capacità conservativa lineare)
+# ============================================================
 
 def refine_tail_ilp(bars: List[List[Dict[str, float]]],
                     stock: float,
-                    kerf: float,
-                    tail_bars: int = 6,
-                    time_limit_s: int = 25) -> Tuple[List[List[Dict[str, float]]], List[float]]:
+                    kerf_base: float,
+                    ripasso_mm: float,
+                    reversible: bool,
+                    thickness_mm: float,
+                    angle_tol: float,
+                    tail_bars: int,
+                    time_limit_s: int,
+                    max_angle: float,
+                    max_factor: float) -> Tuple[List[List[Dict[str, float]]], List[float]]:
     """
-    Refine pass locale sulle ultime 'tail_bars' barre con una MILP:
-    - Minimizza #barre usate, massimizza materiale usato nelle barre attive
-    - Capacità lineare; i residui sono poi ricalcolati con kerf angolare.
-    Requisiti: PuLP. Se non disponibile, ritorna barre/residui originali.
+    Refine locale: minimizza #barre usate, massimizza lunghezza totale.
+    Capacità conservativa: sum(L) + (kerf_base + ripasso_mm)*(n-1) ≤ stock.
+    Il recupero automatico NON è applicato nel vincolo (è un bonus post).
     """
     try:
         import pulp  # type: ignore
     except Exception:
-        return _order_with_max_residual_last(list(bars), stock, kerf)
+        return order_with_max_residual_last(list(bars), stock, kerf_base, ripasso_mm,
+                                            reversible, thickness_mm, angle_tol, max_angle, max_factor)
 
     if not bars or tail_bars <= 0:
-        return _order_with_max_residual_last(list(bars), stock, kerf)
+        return order_with_max_residual_last(list(bars), stock, kerf_base, ripasso_mm,
+                                            reversible, thickness_mm, angle_tol, max_angle, max_factor)
 
     n = len(bars)
     start = max(0, n - int(tail_bars))
@@ -113,35 +169,32 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
         for p in b:
             items.append(dict(p))
     if not items:
-        return _order_with_max_residual_last(list(bars), stock, kerf)
+        return order_with_max_residual_last(list(bars), stock, kerf_base, ripasso_mm,
+                                            reversible, thickness_mm, angle_tol, max_angle, max_factor)
 
     K = len(tail)
     J = len(items)
     lengths = [float(p.get("len", 0.0)) for p in items]
-    kerf = float(kerf)
-    stock = float(stock)
+    joint_cons = kerf_base + max(0.0, ripasso_mm)
 
     prob = pulp.LpProblem("tail_refine", pulp.LpMinimize)
 
-    x = pulp.LpVariable.dicts("x", (range(J), range(K)), lowBound=0, upBound=1, cat=pulp.LpBinary)
+    x = pulp.LpVariable.dicts("x", (range(J), range(K)), 0, 1, cat=pulp.LpBinary)
     y = pulp.LpVariable.dicts("y", range(K), lowBound=0, cat=pulp.LpInteger)
-    z = pulp.LpVariable.dicts("z", range(K), lowBound=0, upBound=1, cat=pulp.LpBinary)
+    z = pulp.LpVariable.dicts("z", range(K), 0, 1, cat=pulp.LpBinary)
 
     for j in range(J):
-        prob += pulp.lpSum(x[j][k] for k in range(K)) == 1, f"assign_{j}"
+        prob += pulp.lpSum(x[j][k] for k in range(K)) == 1
 
     BIGM = J
     for k in range(K):
-        prob += y[k] == pulp.lpSum(x[j][k] for j in range(J)), f"y_def_{k}"
-        prob += y[k] <= BIGM * z[k], f"use_link_{k}"
-        # Capacità lineare (kerf base): dopo il solve ricalcoliamo con kerf angolare
-        prob += (
-            pulp.lpSum(lengths[j] * x[j][k] for j in range(J)) + kerf * (y[k] - z[k]) <= stock
-        ), f"cap_{k}"
+        prob += y[k] == pulp.lpSum(x[j][k] for j in range(J))
+        prob += y[k] <= BIGM * z[k]
+        prob += (pulp.lpSum(lengths[j] * x[j][k] for j in range(J))
+                 + joint_cons * (y[k] - z[k]) <= stock)
 
     W = 1_000_000
-    objective = W * pulp.lpSum(z[k] for k in range(K)) - pulp.lpSum(lengths[j] * x[j][k] for j in range(J) for k in range(K))
-    prob += objective
+    prob += W * pulp.lpSum(z[k] for k in range(K)) - pulp.lpSum(lengths[j] * x[j][k] for j in range(J) for k in range(K))
 
     try:
         solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=int(time_limit_s))
@@ -151,7 +204,8 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
     try:
         prob.solve(solver) if solver else prob.solve()
     except Exception:
-        return _order_with_max_residual_last(list(bars), stock, kerf)
+        return order_with_max_residual_last(list(bars), stock, kerf_base, ripasso_mm,
+                                            reversible, thickness_mm, angle_tol, max_angle, max_factor)
 
     new_tail: List[List[Dict[str, float]]] = [[] for _ in range(K)]
     for j in range(J):
@@ -167,32 +221,45 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
 
     refined_tail = []
     for k in range(K):
-        zk = z[k].value() or 0.0
-        if zk > 0.5 and new_tail[k]:
+        if (z[k].value() or 0.0) > 0.5 and new_tail[k]:
             refined_tail.append(new_tail[k])
 
     out = head + refined_tail
-    return _order_with_max_residual_last(out, stock, kerf)
+    return order_with_max_residual_last(out, stock, kerf_base, ripasso_mm,
+                                        reversible, thickness_mm, angle_tol, max_angle, max_factor)
 
-# ---------------- Knapsack ILP per barra (packing) ----------------
+# ============================================================
+# Knapsack ILP per barra
+# ============================================================
 
 def pack_bars_knapsack_ilp(pieces: List[Dict[str, float]],
                            stock: float,
-                           kerf: float,
-                           per_bar_time_s: int = 3) -> Tuple[List[List[Dict[str, float]]], List[float]]:
+                           kerf_base: float,
+                           ripasso_mm: float,
+                           conservative_angle_deg: float,
+                           max_angle: float,
+                           max_factor: float,
+                           reversible: bool,
+                           thickness_mm: float,
+                           angle_tol: float,
+                           per_bar_time_s: int) -> Tuple[List[List[Dict[str, float]]], List[float]]:
     """
-    Costruisce le barre iterativamente risolvendo un knapsack ILP per OGNI barra:
-    - Variabili x_j in {0,1} per selezionare i pezzi di questa barra
-    - y = somma x_j, z binaria: se y>=1 allora z=1
-    - Capacità lineare con kerf base: sum(L_j x_j) + kerf*(y - z) <= stock
-      (dopo il packing i residui vengono ricalcolati con kerf angolare).
-    - Obiettivo: massimizzare sum(L_j x_j)
-    Se PuLP non è disponibile: ritorna ([], []) così il chiamante può fallback a BFD.
+    Packing iterativo:
+      Capacità conservativa: sum(L) + (kerf_base/cos(cons_angle) + ripasso_mm)*(n-1) ≤ stock
+      Il recupero automatico NON è incluso nel vincolo (viene applicato dopo).
+      Post-fix: se la barra supera lo stock con il calcolo esatto (angoli + ripasso + recupero) rimuove ultimi pezzi.
     """
     try:
         import pulp  # type: ignore
     except Exception:
         return [], []
+
+    cons_angle = max(0.0, min(89.9, conservative_angle_deg))
+    try:
+        cons_factor = 1.0 / math.cos(math.radians(cons_angle)) if cons_angle > 0 else 1.0
+    except Exception:
+        cons_factor = 1.0
+    joint_cons = (kerf_base * cons_factor) + max(0.0, ripasso_mm)
 
     remaining = [dict(p) for p in pieces]
     bars: List[List[Dict[str, float]]] = []
@@ -200,47 +267,46 @@ def pack_bars_knapsack_ilp(pieces: List[Dict[str, float]],
     while remaining:
         J = len(remaining)
         lengths = [float(p.get("len", 0.0)) for p in remaining]
+        import pulp  # already imported
         prob = pulp.LpProblem("bar_knapsack", pulp.LpMaximize)
 
-        x = pulp.LpVariable.dicts("x", range(J), lowBound=0, upBound=1, cat=pulp.LpBinary)
+        x = pulp.LpVariable.dicts("x", range(J), 0, 1, cat=pulp.LpBinary)
         y = pulp.LpVariable("y", lowBound=0, cat=pulp.LpInteger)
-        z = pulp.LpVariable("z", lowBound=0, upBound=1, cat=pulp.LpBinary)
+        z = pulp.LpVariable("z", 0, 1, cat=pulp.LpBinary)
 
-        prob += y == pulp.lpSum(x[j] for j in range(J)), "y_def"
-        prob += y <= J * z, "use_link_le"
-        prob += y >= z, "use_link_ge"
-        prob += pulp.lpSum(lengths[j] * x[j] for j in range(J)) + float(kerf) * (y - z) <= float(stock), "capacity"
-
-        prob += pulp.lpSum(lengths[j] * x[j] for j in range(J)), "objective"
+        prob += y == pulp.lpSum(x[j] for j in range(J))
+        prob += y <= J * z
+        prob += y >= z
+        prob += pulp.lpSum(lengths[j] * x[j] for j in range(J)) + joint_cons * (y - z) <= stock
+        prob += pulp.lpSum(lengths[j] * x[j] for j in range(J))
 
         try:
             solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=int(per_bar_time_s))
         except Exception:
             solver = None
-
         try:
             prob.solve(solver) if solver else prob.solve()
         except Exception:
             break
 
-        chosen_idx = [j for j in range(J) if (x[j].value() or 0.0) > 0.5]
-        if not chosen_idx:
-            best_j = max(range(J), key=lambda j: lengths[j])
-            chosen_idx = [best_j]
+        chosen = [j for j in range(J) if (x[j].value() or 0.0) > 0.5]
+        if not chosen:
+            # fallback: pezzo più lungo
+            best_j = max(range(J), key=lambda jj: lengths[jj])
+            chosen = [best_j]
 
-        bar = [remaining[j] for j in chosen_idx]
+        bar = [remaining[j] for j in chosen]
+
+        # Post-fix overflow con formula esatta
+        while bar and bar_used_length(bar, kerf_base, ripasso_mm, reversible,
+                                      thickness_mm, angle_tol, max_angle, max_factor) > stock + 1e-6:
+            bar.pop()
+
         bars.append(bar)
-
-        mask = set(chosen_idx)
+        mask = set(chosen)
         remaining = [remaining[j] for j in range(J) if j not in mask]
 
-    return _order_with_max_residual_last(bars, float(stock), float(kerf))
-
-# ---------------- Helper per BFD locale (append) ----------------
-
-def kerf_extra_for_append(last_piece: Dict[str, float], kerf_base: float) -> float:
-    """
-    Kerf 'extra' per aggiungere un nuovo pezzo in coda a una barra già avviata:
-    si usa il kerf angolare minimo del pezzo precedente (orientabile).
-    """
-    return _kerf_joint_min_for_piece(last_piece, kerf_base)
+    rem = residuals(bars, stock, kerf_base, ripasso_mm, reversible,
+                    thickness_mm, angle_tol, max_angle, max_factor)
+    return order_with_max_residual_last(bars, stock, kerf_base, ripasso_mm,
+                                        reversible, thickness_mm, angle_tol, max_angle, max_factor)
