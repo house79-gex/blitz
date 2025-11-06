@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
 import time
-import math
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
@@ -417,14 +416,18 @@ class AutomaticoPage(QWidget):
                 pass
             return
         self._opt_dialog = OptimizationRunDialog(self, prof, rows)
-        # collega F7 simulazione dalla dialog (se emette)
+        # collega F7/F9 dalla dialog se disponibili
         try:
-            self._opt_dialog.simulationRequested.connect(self.simulate_cut_from_dialog)
+            self._opt_dialog.simulationRequested.connect(self.simulate_cut_from_dialog)   # F7
+        except Exception:
+            pass
+        try:
+            self._opt_dialog.startRequested.connect(self._handle_start_trigger)          # F9
         except Exception:
             pass
         self._opt_dialog.finished.connect(lambda _p: setattr(self, "_opt_dialog", None))
         self._opt_dialog.show()
-        self._toast("Ottimizzazione avviata: usa 'Simula START' nella finestra di riepilogo.", "info")
+        self._toast("Ottimizzazione avviata: F9 = Avanza, F7 = Taglio", "info")
 
     # ---------------- Start riga ----------------
     def _start_row(self):
