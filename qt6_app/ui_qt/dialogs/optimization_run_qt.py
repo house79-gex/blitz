@@ -1,11 +1,11 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple
 
-from PySide6.QtCore import Qt, Signal, QRect, QPoint
+from PySide6.QtCore import Qt, Signal, QRect, QEvent
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QCheckBox, QApplication, QWidget,
+    QTableWidgetItem, QHeaderView, QCheckBox, QApplication, QWidget
 )
 
 try:
@@ -20,34 +20,44 @@ from ui_qt.widgets.plan_visualizer import PlanVisualizerWidget
 class OptimizationRunDialog(QDialog):
     """
     Dialog ottimizzazione:
-    - Tabella riepilogo pezzi
-    - Riepilogo barre (numero/residui)
-    - Visualizzazione grafica piano (trapezi/rette) con evidenziazione pezzi tagliati
-    - Opzioni: mostra/nascondi riepilogo e grafica
+    - Riepilogo barre (numero/residui) [mostrabile/nascondibile]
+    - Visualizzazione grafica piano (trapezi/rette) con evidenziazione pezzi tagliati [mostrabile/nascondibile]
+    - Tabella elementi: SEMPRE visibile sotto alla grafica
+    - F7 = simula taglio, F9 = simula avanzamento
 
-    Estensioni:
-    - startRequested (F9) e simulationRequested (F7)
-    - Modalità overlay: la finestra si sovrappone esattamente al frame della cutlist viewer (stessa W×H).
-      In overlay, per impostazione predefinita, la grafica occupa tutto lo spazio (riepilogo e tabella nascosti),
-      ma puoi riattivarli dai toggle (potrebbero ridurre l’area grafica).
+    Modalità overlay:
+    - Se viene passato overlay_target (frame della cutlist viewer), la finestra viene sovrapposta esattamente
+      a quel frame (stesse dimensioni e posizione).
+    - In overlay, per impostazione predefinita, il riepilogo è nascosto, la grafica è visibile e la tabella è SEMPRE visibile.
+
+    La grafica si adatta:
+    - in larghezza: sempre alla larghezza effettiva del dialog/widget.
+    - in altezza: al numero di barre, ma senza “mangiare” lo spazio necessario alla tabella (che resta visibile sotto).
     """
     simulationRequested = Signal()
     startRequested = Signal()
+
+    TABLE_MIN_H = 180  # spazio minimo riservato alla tabella
+    GRAPH_BAR_H = 16   # altezza barra in px (coerente con PlanVisualizerWidget)
+    GRAPH_V_GAP = 6    # spazio tra barre
 
     def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
         self.profile = profile
+        # rows: [{length_mm, ang_sx, ang_dx, qty}]
         self._rows: List[Dict[str, Any]] = [dict(r) for r in rows]
 
-        self._tbl: Optional[QTableWidget] = None
-        self._lbl_bars: Optional[QLabel] = None
+        # UI refs
+        self._opts_bar: Optional[QFrame] = None
         self._panel_summary: Optional[QFrame] = None
+        self._lbl_bars: Optional[QLabel] = None
         self._panel_graph: Optional[QFrame] = None
+        self._graph: Optional[PlanVisualizerWidget] = None
+        self._tbl: Optional[QTableWidget] = None
         self._chk_summary: Optional[QCheckBox] = None
         self._chk_graph: Optional[QCheckBox] = None
-        self._graph: Optional[PlanVisualizerWidget] = None
 
         # Settings
         cfg = read_settings()
@@ -57,15 +67,13 @@ class OptimizationRunDialog(QDialog):
         # Overlay target (frame della viewer della pagina Automatico)
         self._overlay_target: Optional[QWidget] = overlay_target
 
-        # In overlay: default a grafica piena (summary off, table off). Fuori overlay: ricorda preferenze.
+        # Visibilità
         if self._overlay_target is not None:
             self._show_summary = False
             self._show_graph = True
-            self._show_table = False
         else:
             self._show_summary = bool(cfg.get("opt_show_summary", True))
             self._show_graph = bool(cfg.get("opt_show_graph", True))
-            self._show_table = True
 
         # Piano calcolato una sola volta
         self._bars: List[List[Dict[str, float]]] = []
@@ -77,6 +85,8 @@ class OptimizationRunDialog(QDialog):
 
         # Applica geometry (overlay se target presente)
         self._apply_geometry()
+        # Aggiorna altezza grafica in base alle dimensioni effettive
+        self._resize_graph_area()
 
     # ---------- Build UI ----------
     def _build(self):
@@ -84,8 +94,12 @@ class OptimizationRunDialog(QDialog):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
-        # Top options
-        opts = QHBoxLayout()
+        # Top options (contenitore referenziabile per la misura)
+        self._opts_bar = QFrame(self)
+        opts_lay = QHBoxLayout(self._opts_bar)
+        opts_lay.setContentsMargins(0, 0, 0, 0)
+        opts_lay.setSpacing(6)
+
         self._chk_summary = QCheckBox("Mostra riepilogo barre"); self._chk_summary.setChecked(self._show_summary)
         self._chk_summary.toggled.connect(self._toggle_summary)
         self._chk_graph = QCheckBox("Mostra grafica piano"); self._chk_graph.setChecked(self._show_graph)
@@ -99,17 +113,18 @@ class OptimizationRunDialog(QDialog):
         btn_sim.setToolTip("Simula un taglio come pulse lama")
         btn_sim.clicked.connect(lambda: self.simulationRequested.emit())
 
-        opts.addWidget(self._chk_summary)
-        opts.addWidget(self._chk_graph)
-        opts.addStretch(1)
-        opts.addWidget(btn_start)
-        opts.addWidget(btn_sim)
-        root.addLayout(opts)
+        opts_lay.addWidget(self._chk_summary)
+        opts_lay.addWidget(self._chk_graph)
+        opts_lay.addStretch(1)
+        opts_lay.addWidget(btn_start)
+        opts_lay.addWidget(btn_sim)
+
+        root.addWidget(self._opts_bar, 0)
 
         # Riepilogo barre
         self._panel_summary = QFrame()
         self._panel_summary.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
-        sl = QVBoxLayout(self._panel_summary); sl.setContentsMargins(8,8,8,8); sl.setSpacing(6)
+        sl = QVBoxLayout(self._panel_summary); sl.setContentsMargins(8, 8, 8, 8); sl.setSpacing(6)
         sl.addWidget(QLabel("Riepilogo barre"))
         self._lbl_bars = QLabel("—"); sl.addWidget(self._lbl_bars)
         root.addWidget(self._panel_summary, 0)
@@ -117,12 +132,12 @@ class OptimizationRunDialog(QDialog):
         # Grafica piano
         self._panel_graph = QFrame()
         self._panel_graph.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
-        gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(6,6,6,6); gl.setSpacing(4)
+        gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(6, 6, 6, 6); gl.setSpacing(4)
         self._graph = PlanVisualizerWidget(self)
         gl.addWidget(self._graph, 1)
-        root.addWidget(self._panel_graph, 1)
+        root.addWidget(self._panel_graph, 0)  # lo gestiamo in altezza manualmente
 
-        # Tabella pezzi
+        # Tabella pezzi (SEMPRE visibile)
         self._tbl = QTableWidget(0, 4)
         self._tbl.setHorizontalHeaderLabels(["Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà"])
         hdr = self._tbl.horizontalHeader()
@@ -130,7 +145,8 @@ class OptimizationRunDialog(QDialog):
         hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        root.addWidget(self._tbl, 0)
+        root.addWidget(self._tbl, 1)
+        self._tbl.setMinimumHeight(self.TABLE_MIN_H)
 
         self._apply_toggles()
 
@@ -139,22 +155,20 @@ class OptimizationRunDialog(QDialog):
             self._panel_summary.setVisible(self._show_summary)
         if self._panel_graph:
             self._panel_graph.setVisible(self._show_graph)
-        if self._tbl:
-            self._tbl.setVisible(self._show_table)
 
     def _toggle_summary(self, on: bool):
         self._show_summary = bool(on)
         self._apply_toggles()
         if self._overlay_target is None:
             cfg = dict(read_settings()); cfg["opt_show_summary"] = self._show_summary; write_settings(cfg)
-        self._apply_geometry()
+        self._resize_graph_area()
 
     def _toggle_graph(self, on: bool):
         self._show_graph = bool(on)
         self._apply_toggles()
         if self._overlay_target is None:
             cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
-        self._apply_geometry()
+        self._resize_graph_area()
 
     # ---------- Plan computation ----------
     def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
@@ -218,11 +232,21 @@ class OptimizationRunDialog(QDialog):
         # Tabella
         self._reload_table()
 
+        # Ridimensiona l'area grafica in base alle dimensioni effettive della finestra
+        self._resize_graph_area()
+
         # Chiudi se tutto finito
         if self._all_done():
             self._close_and_focus_parent()
 
-    # ---------- Geometry ----------
+    # ---------- Geometry and sizing ----------
+    def _desired_graph_height(self, n_bars: int) -> int:
+        if n_bars <= 0:
+            return 120
+        bars_h = n_bars * self.GRAPH_BAR_H + max(0, (n_bars - 1)) * self.GRAPH_V_GAP
+        padding = 6 + 6 + 4  # margini pannello grafico
+        return max(100, bars_h + padding)
+
     def _apply_geometry(self):
         # Modalità overlay: sovrapponi esattamente al frame target
         if self._overlay_target is not None:
@@ -230,10 +254,8 @@ class OptimizationRunDialog(QDialog):
                 tl_global = self._overlay_target.mapToGlobal(self._overlay_target.rect().topLeft())
                 br_global = self._overlay_target.mapToGlobal(self._overlay_target.rect().bottomRight())
                 rect = QRect(tl_global, br_global)
-                # Applica geometria e blocca dimensioni
                 self.setGeometry(rect)
-                self.setMinimumSize(rect.size())
-                self.setMaximumSize(rect.size())
+                # Non blocchiamo min/max qui per permettere layout interno, ma la geometria coincide col frame
             except Exception:
                 pass
         else:
@@ -243,7 +265,6 @@ class OptimizationRunDialog(QDialog):
                 if not screen:
                     return
                 avail = screen.availableGeometry()
-                # Altezza quasi massima, larghezza attuale o minima
                 w = max(720, self.width() or 900)
                 h = int(avail.height() - 32)
                 self.resize(w, h)
@@ -251,13 +272,47 @@ class OptimizationRunDialog(QDialog):
             except Exception:
                 pass
 
+    def _resize_graph_area(self):
+        """
+        Calcola un'altezza per la grafica che:
+        - non ecceda quella "desiderata" in base al numero di barre
+        - lasci sempre TABLE_MIN_H (minimo) per la tabella
+        - consideri le altezze di options + summary (se visibili) + margini
+        """
+        try:
+            if not (self._panel_graph and self._graph and self._tbl):
+                return
+            total_h = max(0, self.height())
+            # Altezze "overhead" in alto
+            opts_h = self._opts_bar.sizeHint().height() if self._opts_bar else 0
+            sum_h = self._panel_summary.sizeHint().height() if (self._panel_summary and self._panel_summary.isVisible()) else 0
+            margins = 8 + 8 + 6  # margini del dialog e spacing root
+            # Spazio minimo per la tabella
+            table_min = self.TABLE_MIN_H
+            # Spazio disponibile per la grafica
+            avail_for_graph = total_h - (opts_h + sum_h + margins + table_min)
+            avail_for_graph = max(100, avail_for_graph)
+            desired = self._desired_graph_height(len(self._bars))
+            gh = min(desired, avail_for_graph)
+            # Imposta altezza fissa per il widget grafico
+            self._graph.setMinimumHeight(int(gh))
+            self._graph.setMaximumHeight(int(gh))
+            # Forza un relayout
+            self._panel_graph.updateGeometry()
+            self._graph.updateGeometry()
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Adatta la grafica quando la finestra cambia dimensione
+        self._resize_graph_area()
+
     # ---------- Table ----------
     def _reload_table(self):
         if not self._tbl:
             return
         self._tbl.setRowCount(0)
-        if not self._show_table:
-            return
         for r in self._rows:
             q = int(r.get("qty", 0))
             if q < 0:
