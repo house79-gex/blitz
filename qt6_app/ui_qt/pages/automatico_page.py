@@ -19,6 +19,7 @@ from ui_qt.logic.sequencer import Sequencer
 from ui_qt.services.orders_store import OrdersStore
 from ui_qt.dialogs.orders_manager_qt import OrdersManagerDialog
 from ui_qt.dialogs.optimization_run_qt import OptimizationRunDialog
+from ui_qt.logic.refiner import refine_tail_ilp  # Refine pass MILP locale (se disponibile)
 
 try:
     from ui_qt.utils.settings import read_settings, write_settings
@@ -87,14 +88,15 @@ class AutomaticoPage(QWidget):
     - Destra: pannello Contapezzi + Status.
     - Toolbar: Importa, Ottimizza, Config. ottimizzazione.
 
-    Requisiti:
+    Requisiti implementati:
     - Sequenza di taglio barra-per-barra; l’ultima barra è quella con lo sfrido residuo maggiore.
     - Auto-continue: prosegue automaticamente sul pezzo successivo identico, anche se si passa alla barra successiva:
         * stessa barra → arma 1 pezzo senza muovere e mantiene il freno;
-        * barra successiva → arma 1 pezzo senza sbloccare/ribloccare il freno e, dato che la misura è la stessa, non muove.
-    - Contapezzi globale per elemento (profilo + quota + angoli) in ottimizzazione.
+        * barra successiva con misura identica → evita sblocco/riblocco freno e non muove (misura invariata).
+    - Contapezzi globale per elemento (profilo + quota + angoli) in ottimizzazione (Target/Done/Remaining globali).
     - In taglio diretto dalla cutlist (manuale): la colonna Q.tà decrementa ad ogni taglio.
     - Premendo Home/uscendo da Automatico: chiude anche la finestra di ottimizzazione.
+    - Refine pass di ottimizzazione: MILP locale sulle ultime barre per ridurre #barre/sfrido (se PuLP disponibile).
     """
 
     def __init__(self, appwin):
@@ -514,10 +516,11 @@ class AutomaticoPage(QWidget):
         if not items:
             QMessageBox.information(self, "Ottimizza", f"Nessun pezzo per '{prof}'."); return
 
-        # Esplodi pezzi e compone barre GREEDY (best-fit decreasing), con kerf
         cfg = read_settings()
         stock = float(cfg.get("opt_stock_mm", 6500.0))
         kerf = float(cfg.get("opt_kerf_mm", 3.0))
+
+        # Esplodi pezzi e compone barre GREEDY (best-fit decreasing), con kerf
         pieces: List[Dict[str, float]] = []
         for (L, ax, ad), q in items.items():
             for _ in range(q): pieces.append({"len": float(L), "ax": float(ax), "ad": float(ad)})
@@ -539,6 +542,18 @@ class AutomaticoPage(QWidget):
             if 0 <= max_idx < len(bars) and max_idx != len(bars) - 1:
                 bars.append(bars.pop(max_idx))
                 rem.append(rem.pop(max_idx))
+
+        # Refine pass locale (MILP) sulle ultime N barre per ridurre #barre/sfrido
+        try:
+            tail_n = int(read_settings().get("opt_refine_tail_bars", 6))
+            tl = int(read_settings().get("opt_refine_time_s", 25))
+        except Exception:
+            tail_n = 6; tl = 25
+        try:
+            bars, rem = refine_tail_ilp(bars, stock=float(stock), kerf=float(kerf),
+                                        tail_bars=tail_n, time_limit_s=tl)
+        except Exception:
+            pass
 
         self._plan_profile = prof; self._bars = bars; self._bar_idx = 0; self._piece_idx = -1
         self._mode = "plan"
@@ -843,7 +858,6 @@ class AutomaticoPage(QWidget):
                         except Exception:
                             pass
                         # Se è su barra successiva ma misura uguale, NON muovere e NON sbloccare/ribloccare
-                        # (manteniamo la posizione e lasciamo il freno bloccato)
                         self._lock_on_inpos = False
                     else:
                         # Nessun prossimo valido
@@ -853,7 +867,7 @@ class AutomaticoPage(QWidget):
                     self._unlock_brake()
 
             elif self._mode == "manual":
-                # A fine ciclo manuale: chiudi lavoro su riga
+                # A fine ciclo manuale: chiudi lavoro su riga (se esaurita)
                 if self._active_row is not None:
                     try:
                         q_now = int(self.tbl_cut.item(self._active_row, 5).text())
