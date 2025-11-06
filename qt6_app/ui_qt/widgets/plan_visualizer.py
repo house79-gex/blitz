@@ -3,14 +3,14 @@ from typing import List, Dict, Tuple
 import math
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QSize
-from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF, QFont
+from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 
 class PlanVisualizerWidget(QWidget):
     """
     Visualizzazione grafica del piano barre/pezzi.
-    - Ogni barra è una riga alta 20 px (rettangolo di sfondo).
+    - Ogni barra è una riga alta 16 px (rettangolo di sfondo).
     - Ogni pezzo è disegnato dentro la barra:
         * rettangolo se angoli ~0°,
         * trapezio con lati inclinati secondo l'angolo reale (offset = tan(ang) * altezza).
@@ -40,10 +40,10 @@ class PlanVisualizerWidget(QWidget):
         # signature: (L:2dec, ax:1dec, ad:1dec) -> count_done
         self._done_counts: Dict[Tuple[float, float, float], int] = {}
 
-        self.setMinimumSize(500, 220)
+        self.setMinimumSize(480, 200)
 
     def sizeHint(self) -> QSize:
-        return QSize(900, 420)
+        return QSize(720, 360)
 
     # ---------------- API ----------------
     def set_data(self, bars: List[List[Dict[str, float]]], stock_mm: float, kerf_mm: float = 3.0):
@@ -98,7 +98,7 @@ class PlanVisualizerWidget(QWidget):
         if not self._bars:
             return
 
-        margin = 10
+        margin = 8
         x0 = margin
         y0 = margin
         avail_w = max(1, self.width() - margin * 2)
@@ -108,16 +108,16 @@ class PlanVisualizerWidget(QWidget):
         if n_bars <= 0:
             return
 
-        # Ogni barra: altezza fissa 20 px, spaziata verticalmente
-        bar_h = 20.0
-        vspace = 10.0
+        # Ogni barra: altezza fissa 16 px, spaziata verticalmente
+        bar_h = 16.0
+        vspace = 6.0
         total_h = n_bars * bar_h + (n_bars - 1) * vspace
         if total_h > avail_h:
             vspace = max(2.0, (avail_h - n_bars * bar_h) / max(1, n_bars - 1))
             total_h = n_bars * bar_h + (n_bars - 1) * vspace
 
-        # Scala orizzontale: stock -> (avail_w - 80) per margini/etichette
-        scale_x = (avail_w - 80) / max(1.0, self._stock)
+        # Scala orizzontale: stock -> (avail_w - 40) per margini/etichette
+        scale_x = (avail_w - 40) / max(1.0, self._stock)
 
         # Penne
         pen_bar = QPen(self._border); pen_bar.setWidth(1)
@@ -134,7 +134,7 @@ class PlanVisualizerWidget(QWidget):
         for bi, bar in enumerate(self._bars):
             top = y0 + bi * (bar_h + vspace)
             # Rettangolo barra
-            bar_rect = QRectF(x0, top, avail_w - 40, bar_h)
+            bar_rect = QRectF(x0, top, avail_w - 20, bar_h)
             p.setPen(pen_bar)
             p.fillRect(bar_rect, QBrush(self._bar_bg))
             p.drawRect(bar_rect)
@@ -177,14 +177,14 @@ class PlanVisualizerWidget(QWidget):
                 ]
                 poly = QPolygonF(pts)
 
-                # Determina se questo pezzo è "done" (in base ai contatori signature)
+                # Determina se questo pezzo è "done"
                 sig = (round(L, 2), round(ax, 1), round(ad, 1))
                 idx = encountered.get(sig, 0) + 1
                 encountered[sig] = idx
                 done_quota = self._done_counts.get(sig, 0)
                 is_done = idx <= done_quota
 
-                # Riempimento: alternato per leggibilità; se done, usa colore dedicato
+                # Riempimento: alternato; se done, colore dedicato
                 if is_done:
                     fill = self._piece_done
                 else:
