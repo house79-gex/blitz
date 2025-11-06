@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QMessageBox, QAbstractItemView, QSizePolicy,
-    QDialog, QFormLayout, QLineEdit, QComboBox, QDialogButtonBox
+    QDialog, QFormLayout, QLineEdit, QComboBox, QDialogButtonBox, QCheckBox
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut, QColor, QBrush, QFont, QKeyEvent
@@ -21,12 +21,10 @@ from ui_qt.services.orders_store import OrdersStore
 from ui_qt.dialogs.orders_manager_qt import OrdersManagerDialog
 from ui_qt.dialogs.optimization_run_qt import OptimizationRunDialog
 
-# Kerf / ottimizzazione avanzata (angoli + refine + knapsack ILP)
+# Ottimizzazione (packing base + refine opzionale)
 from ui_qt.logic.refiner import (
     pack_bars_knapsack_ilp,
     refine_tail_ilp,
-    kerf_extra_for_append,
-    _residuals,          # per ricalcolo residui con kerf angolare
 )
 
 try:
@@ -47,22 +45,28 @@ PANEL_W = 420
 class OptimizationConfigDialog(QDialog):
     """
     Config:
-      - opt_stock_mm
-      - opt_kerf_mm (kerf base)
-      - opt_solver: ILP_KNAP | ILP | BFD
-      - opt_time_limit_s (per knapsack per-bar / ILP planner informativo)
-      - opt_refine_tail_bars (numero ultime barre per refine MILP)
-      - opt_refine_time_s (time limit refine)
-      - opt_kerf_max_angle_deg (clamp angolo per kerf eff)
-      - opt_kerf_max_factor (clamp fattore massimo kerf eff)
-      - opt_knap_conservative_angle_deg (angolo usato per fattore conservativo in capacità knapsack)
+      - opt_stock_mm                (stock nominale)
+      - opt_stock_usable_mm        (stock max utilizzabile, opzionale; se 0/blank usa stock_nominale)
+      - opt_kerf_mm                (kerf base)
+      - opt_ripasso_mm             (mm extra per “ripasso” ad ogni taglio/giunto)
+      - opt_solver                 (ILP_KNAP | ILP | BFD)
+      - opt_time_limit_s           (tempo knapsack per barra / ILP)
+      - opt_refine_tail_bars       (ultime barre da rifinire con MILP)
+      - opt_refine_time_s          (tempo refine)
+      - opt_kerf_max_angle_deg     (clamp angolo per kerf eff)
+      - opt_kerf_max_factor        (clamp fattore massimo kerf eff)
+      - opt_knap_conservative_angle_deg (angolo per fattore conservativo capacità knapsack)
+      - opt_current_profile_reversible (spunta temporanea “profilo corrente reversibile”)
+      - opt_reversible_recovery_mm (recupero mm per giunto se reversibile)
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configurazione ottimizzazione")
         cfg = read_settings()
         stock = str(cfg.get("opt_stock_mm", 6500.0))
+        stock_usable = str(cfg.get("opt_stock_usable_mm", 0.0))
         kerf = str(cfg.get("opt_kerf_mm", 3.0))
+        ripasso = str(cfg.get("opt_ripasso_mm", 0.0))
         solver = str(cfg.get("opt_solver", "ILP_KNAP")).upper()
         time_limit = str(cfg.get("opt_time_limit_s", 15))
         refine_tail = str(cfg.get("opt_refine_tail_bars", 6))
@@ -70,10 +74,14 @@ class OptimizationConfigDialog(QDialog):
         max_ang = str(cfg.get("opt_kerf_max_angle_deg", 60.0))
         max_factor = str(cfg.get("opt_kerf_max_factor", 2.0))
         cons_ang = str(cfg.get("opt_knap_conservative_angle_deg", 45.0))
+        reversible_now = bool(cfg.get("opt_current_profile_reversible", False))
+        reversible_rec = str(cfg.get("opt_reversible_recovery_mm", 0.0))
 
         form = QFormLayout(self)
         self.ed_stock = QLineEdit(stock); self.ed_stock.setPlaceholderText("6500.0")
+        self.ed_stock_use = QLineEdit(stock_usable); self.ed_stock_use.setPlaceholderText("0.0 (disabilitato)")
         self.ed_kerf = QLineEdit(kerf); self.ed_kerf.setPlaceholderText("3.0")
+        self.ed_ripasso = QLineEdit(ripasso); self.ed_ripasso.setPlaceholderText("0.0")
         self.cmb_solver = QComboBox(); self.cmb_solver.addItems(["ILP_KNAP", "ILP", "BFD"])
         self.cmb_solver.setCurrentText("ILP_KNAP" if solver not in ("ILP", "BFD") else solver)
         self.ed_time = QLineEdit(time_limit); self.ed_time.setPlaceholderText("15")
@@ -82,9 +90,14 @@ class OptimizationConfigDialog(QDialog):
         self.ed_max_ang = QLineEdit(max_ang); self.ed_max_ang.setPlaceholderText("60.0")
         self.ed_max_factor = QLineEdit(max_factor); self.ed_max_factor.setPlaceholderText("2.0")
         self.ed_cons_ang = QLineEdit(cons_ang); self.ed_cons_ang.setPlaceholderText("45.0")
+        self.chk_reversible = QCheckBox("Profilo corrente reversibile")
+        self.chk_reversible.setChecked(reversible_now)
+        self.ed_rev_rec = QLineEdit(reversible_rec); self.ed_rev_rec.setPlaceholderText("0.0")
 
-        form.addRow("Lunghezza barra (mm):", self.ed_stock)
+        form.addRow("Stock nominale (mm):", self.ed_stock)
+        form.addRow("Stock max utilizzabile (mm):", self.ed_stock_use)
         form.addRow("Kerf base (mm):", self.ed_kerf)
+        form.addRow("Ripasso per taglio (mm):", self.ed_ripasso)
         form.addRow("Solver:", self.cmb_solver)
         form.addRow("Time limit solver (s):", self.ed_time)
         form.addRow("Refine ultime barre (N):", self.ed_ref_tail)
@@ -92,13 +105,15 @@ class OptimizationConfigDialog(QDialog):
         form.addRow("Kerf max angolo (°):", self.ed_max_ang)
         form.addRow("Kerf max fattore:", self.ed_max_factor)
         form.addRow("Angolo conservativo knapsack (°):", self.ed_cons_ang)
+        form.addRow(self.chk_reversible)
+        form.addRow("Recupero taglio se reversibile (mm):", self.ed_rev_rec)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
         btns.accepted.connect(self._save_and_close)
         btns.rejected.connect(self.reject)
         form.addRow(btns)
         try:
-            self.resize(460, 360)
+            self.resize(520, 500)
         except Exception:
             pass
 
@@ -112,7 +127,9 @@ class OptimizationConfigDialog(QDialog):
             except Exception: return dflt
 
         cfg["opt_stock_mm"] = to_float(self.ed_stock.text(), 6500.0)
+        cfg["opt_stock_usable_mm"] = to_float(self.ed_stock_use.text(), 0.0)
         cfg["opt_kerf_mm"] = to_float(self.ed_kerf.text(), 3.0)
+        cfg["opt_ripasso_mm"] = to_float(self.ed_ripasso.text(), 0.0)
         cfg["opt_solver"] = self.cmb_solver.currentText().upper()
         cfg["opt_time_limit_s"] = to_int(self.ed_time.text(), 15)
         cfg["opt_refine_tail_bars"] = to_int(self.ed_ref_tail.text(), 6)
@@ -120,6 +137,8 @@ class OptimizationConfigDialog(QDialog):
         cfg["opt_kerf_max_angle_deg"] = to_float(self.ed_max_ang.text(), 60.0)
         cfg["opt_kerf_max_factor"] = to_float(self.ed_max_factor.text(), 2.0)
         cfg["opt_knap_conservative_angle_deg"] = to_float(self.ed_cons_ang.text(), 45.0)
+        cfg["opt_current_profile_reversible"] = bool(self.chk_reversible.isChecked())
+        cfg["opt_reversible_recovery_mm"] = to_float(self.ed_rev_rec.text(), 0.0)
         write_settings(cfg)
         self.accept()
 
@@ -127,9 +146,10 @@ class OptimizationConfigDialog(QDialog):
 class AutomaticoPage(QWidget):
     """
     Pagina Automatico:
-    - Ottimizzazione con knapsack ILP per singola barra (+ kerf angolare).
-    - Refine MILP sulle ultime barre (facoltativa).
-    - Kerf effettivo dipende dagli angoli (kerf_base / cos(|ang|)).
+    - Ottimizzazione knapsack ILP per barra (+ clamp stock utilizzabile).
+    - Ripasso per taglio (mm extra) configurabile.
+    - Kerf effettivo dipendente dall’angolo: kerf_eff = kerf_base/cos(|ang|), clamp su angolo/fattore.
+    - Profilo “reversibile”: recupero mm per giunto (capovolgimento) configurabile.
     - Auto-continue anche tra barre se misura identica (evita stress freno).
     - Contapezzi globale per elemento (signature).
     """
@@ -139,7 +159,7 @@ class AutomaticoPage(QWidget):
         self.appwin = appwin
         self.machine = appwin.machine
 
-        # Piano informativo (non usato direttamente per barre se ILP_KNAP attivo)
+        # Piano informativo
         self.plan: Dict[str, Any] = {"solver": "", "steps": []}
         self.seq = Sequencer(appwin)
         self.seq.step_started.connect(self._on_step_started)
@@ -181,7 +201,7 @@ class AutomaticoPage(QWidget):
         self._lock_on_inpos: bool = False
         self._poll: Optional[QTimer] = None
 
-        # Auto continue
+        # Auto-continue
         self._start_phys_enabled: bool = True
         self._auto_continue_always: bool = True
 
@@ -189,10 +209,11 @@ class AutomaticoPage(QWidget):
         self._same_len_tol = self._cfg_float(cfg, "auto_same_len_tol_mm", 0.10)
         self._same_ang_tol = self._cfg_float(cfg, "auto_same_ang_tol_deg", 0.10)
 
-        # Kerf angolare parametri
+        # Parametri ottimizzazione/kerf
         self._kerf_max_angle_deg = self._cfg_float(cfg, "opt_kerf_max_angle_deg", 60.0)
         self._kerf_max_factor = self._cfg_float(cfg, "opt_kerf_max_factor", 2.0)
         self._knap_cons_angle_deg = self._cfg_float(cfg, "opt_knap_conservative_angle_deg", 45.0)
+        self._ripasso_mm = self._cfg_float(cfg, "opt_ripasso_mm", 0.0)
 
         # Signature counters
         self._sig_total_counts: Dict[Tuple[str, float, float, float], int] = {}
@@ -207,6 +228,53 @@ class AutomaticoPage(QWidget):
             return float(cfg.get(key, dflt))
         except Exception:
             return dflt
+
+    # ------------- Kerf angolare + ripasso/reversibile -------------
+    def _cosd(self, a: float) -> float:
+        try:
+            return math.cos(math.radians(float(a)))
+        except Exception:
+            return 1.0
+
+    def _kerf_eff(self, kerf_base: float, ang_deg: float) -> float:
+        # kerf angolare clamped + ripasso
+        a = abs(float(ang_deg))
+        a = min(a, self._kerf_max_angle_deg)
+        c = self._cosd(a)
+        if c <= 1e-6:
+            k = kerf_base * self._kerf_max_factor
+        else:
+            k = kerf_base / max(c, 1e-6)
+            k = min(k, kerf_base * self._kerf_max_factor)
+        k += max(0.0, self._ripasso_mm)
+        return float(max(0.0, k))
+
+    def _joint_kerf_for_piece(self, piece: Dict[str, float], kerf_base: float, reversible: bool, rev_recovery_mm: float) -> float:
+        """
+        Kerf di giunto per il pezzo che sta alla SINISTRA del giunto.
+        Si sceglie l’orientamento (destro) che minimizza il kerf effettivo.
+        Se 'reversibile' è attivo, si applica un recupero (clamp a >=0).
+        """
+        ax = float(piece.get("ax", 0.0))
+        ad = float(piece.get("ad", 0.0))
+        k1 = self._kerf_eff(kerf_base, ad)  # orientazione normale
+        k2 = self._kerf_eff(kerf_base, ax)  # se capovolto, “destro” diventa AX
+        k = min(k1, k2)
+        if reversible and (abs(ax) > 0.1 or abs(ad) > 0.1):
+            k = max(0.0, k - max(0.0, rev_recovery_mm))
+        return k
+
+    def _bar_used_length(self, bar: List[Dict[str, float]], kerf_base: float, reversible: bool, rev_recovery_mm: float) -> float:
+        if not bar:
+            return 0.0
+        total_len = sum(float(p.get("len", 0.0)) for p in bar)
+        if len(bar) <= 1:
+            return total_len
+        # somma giunti su primi N-1 pezzi (ognuno "taglia a destra")
+        total_kerf = 0.0
+        for i in range(len(bar) - 1):
+            total_kerf += self._joint_kerf_for_piece(bar[i], kerf_base, reversible, rev_recovery_mm)
+        return total_len + total_kerf
 
     # ------------- UI build -------------
     def _build(self):
@@ -426,11 +494,12 @@ class AutomaticoPage(QWidget):
         dlg = OptimizationConfigDialog(self)
         dlg.exec()
         self._toast("Config ottimizzazione aggiornata.", "ok")
-        # Aggiorna parametri kerf angolari in runtime
+        # rilegge parametri runtime
         cfg = read_settings()
         self._kerf_max_angle_deg = self._cfg_float(cfg, "opt_kerf_max_angle_deg", 60.0)
         self._kerf_max_factor = self._cfg_float(cfg, "opt_kerf_max_factor", 2.0)
         self._knap_cons_angle_deg = self._cfg_float(cfg, "opt_knap_conservative_angle_deg", 45.0)
+        self._ripasso_mm = self._cfg_float(cfg, "opt_ripasso_mm", 0.0)
 
     def _open_opt_dialog(self, profile: str):
         prof = (profile or "").strip()
@@ -515,12 +584,16 @@ class AutomaticoPage(QWidget):
             QMessageBox.information(self, "Ottimizza", f"Nessun pezzo per '{prof}'."); return
 
         cfg = read_settings()
-        stock = self._cfg_float(cfg, "opt_stock_mm", 6500.0)
+        stock_nom = self._cfg_float(cfg, "opt_stock_mm", 6500.0)
+        stock_usable = self._cfg_float(cfg, "opt_stock_usable_mm", 0.0)
+        stock = stock_usable if stock_usable > 0 else stock_nom
         kerf_base = self._cfg_float(cfg, "opt_kerf_mm", 3.0)
         solver = str(cfg.get("opt_solver", "ILP_KNAP")).upper()
         per_bar_time = self._cfg_float(cfg, "opt_time_limit_s", 15.0)
         tail_n = int(self._cfg_float(cfg, "opt_refine_tail_bars", 6.0))
         tail_t = int(self._cfg_float(cfg, "opt_refine_time_s", 25.0))
+        reversible_now = bool(cfg.get("opt_current_profile_reversible", False))
+        rev_recovery_mm = self._cfg_float(cfg, "opt_reversible_recovery_mm", 0.0)
 
         # Esplodi pezzi
         pieces: List[Dict[str, float]] = []
@@ -528,40 +601,67 @@ class AutomaticoPage(QWidget):
             for _ in range(q):
                 pieces.append({"len": float(L), "ax": float(ax), "ad": float(ad)})
 
-        # Sorting iniziale (lunghezze desc)
+        # Sorting iniziale
         pieces.sort(key=lambda x: x["len"], reverse=True)
 
-        # Kerf conservativo per capacità knapsack (kerf_base / cos(conservative_angle))
+        # Kerf conservativo per capacità knapsack
         conservative_angle = max(0.0, min(89.9, self._knap_cons_angle_deg))
-        cons_factor = 1.0
         try:
             cons_factor = 1.0 / math.cos(math.radians(conservative_angle)) if conservative_angle > 0 else 1.0
         except Exception:
             cons_factor = 1.0
-        kerf_cons_cap = kerf_base * cons_factor
+        kerf_cons_cap = (kerf_base + max(0.0, self._ripasso_mm)) * cons_factor
 
-        # Costruzione barre
-        bars: List[List[Dict[str, float]]]; rem: List[float]
-
-        if solver == "ILP_KNAP":
+        # Costruzione barre (packing base)
+        if solver in ("ILP_KNAP", "ILP"):
             bars, rem = pack_bars_knapsack_ilp(pieces, stock=stock, kerf=kerf_cons_cap, per_bar_time_s=int(per_bar_time))
             if not bars:  # fallback se PuLP non disponibile
-                bars, rem = self._pack_bfd(pieces, stock, kerf_base)
-        elif solver == "ILP":
-            bars, rem = pack_bars_knapsack_ilp(pieces, stock=stock, kerf=kerf_cons_cap, per_bar_time_s=int(per_bar_time))
-            if not bars:
-                bars, rem = self._pack_bfd(pieces, stock, kerf_base)
+                bars, rem = self._pack_bfd(pieces, stock, kerf_base, reversible_now, rev_recovery_mm)
         else:  # BFD
-            bars, rem = self._pack_bfd(pieces, stock, kerf_base)
+            bars, rem = self._pack_bfd(pieces, stock, kerf_base, reversible_now, rev_recovery_mm)
 
-        # Refine MILP sulle ultime barre
+        # Refine MILP sulle ultime barre (usa capacità con kerf base; poi aggiustiamo)
         try:
             bars, rem = refine_tail_ilp(bars, stock=stock, kerf=kerf_base, tail_bars=tail_n, time_limit_s=tail_t)
         except Exception:
             pass
 
-        # Ricalcolo residui con kerf angolare preciso
-        rem = _residuals(bars, stock, kerf_base)
+        # POST-FIX: forza cap massimo utilizzabile per barra, togliendo eventuali eccedenze col calcolo esatto (kerf angolare + ripasso + reversibile)
+        overflow: List[Dict[str, float]] = []
+        fixed_bars: List[List[Dict[str, float]]] = []
+        for bar in bars:
+            b = list(bar)
+            while b and (self._bar_used_length(b, kerf_base, reversible_now, rev_recovery_mm) > stock + 1e-6):
+                # rimuovi l’ultimo pezzo e mettilo in overflow
+                overflow.append(b.pop())
+            fixed_bars.append(b)
+
+        # Reimpacchetta overflow in nuove barre (greedy BFD locale con extra kerf preciso)
+        if overflow:
+            # semplice greedy per overflow
+            overflow.sort(key=lambda x: x["len"], reverse=True)
+            for piece in overflow:
+                placed = False
+                for i in range(len(fixed_bars)):
+                    b = fixed_bars[i]
+                    extra = self._joint_kerf_for_piece(b[-1], kerf_base, reversible_now, rev_recovery_mm) if b else 0.0
+                    used = self._bar_used_length(b, kerf_base, reversible_now, rev_recovery_mm)
+                    if used + (piece["len"] + (extra if b else 0.0)) <= stock + 1e-6:
+                        b.append(piece); placed = True; break
+                if not placed:
+                    fixed_bars.append([piece])
+
+        # Ricalcola residui con calcolo esatto
+        rem = [max(0.0, stock - self._bar_used_length(b, kerf_base, reversible_now, rev_recovery_mm)) for b in fixed_bars]
+
+        # Barra con residuo max per ultima
+        if rem:
+            max_idx = max(range(len(rem)), key=lambda k: rem[k])
+            if 0 <= max_idx < len(fixed_bars) and max_idx != len(fixed_bars) - 1:
+                fixed_bars.append(fixed_bars.pop(max_idx))
+                rem.append(rem.pop(max_idx))
+
+        bars = fixed_bars
 
         self._plan_profile = prof; self._bars = bars; self._bar_idx = 0; self._piece_idx = -1
         self._mode = "plan"; self._cur_sig = None
@@ -581,33 +681,31 @@ class AutomaticoPage(QWidget):
             self.plan = {"solver": solver, "steps": []}
 
         self._update_counters_ui()
-        self._toast(f"Piano ottimizzato per {prof}. Barre: {len(bars)}.", "info")
+        self._toast(f"Piano ottimizzato per {prof}. Barre: {len(bars)} (cap {stock:.0f} mm).", "info")
 
-    def _pack_bfd(self, pieces: List[Dict[str, float]], stock: float, kerf_base: float) -> Tuple[List[List[Dict[str, float]]], List[float]]:
+    def _pack_bfd(self, pieces: List[Dict[str, float]], stock: float, kerf_base: float, reversible: bool, rev_recovery_mm: float) -> Tuple[List[List[Dict[str, float]]], List[float]]:
         """
-        Best-Fit Decreasing con kerf angolare minimo per i giunti.
+        Best-Fit Decreasing con kerf di giunto calcolato (angolare + ripasso + reversibile).
         """
         bars: List[List[Dict[str, float]]] = []
         rem: List[float] = []
         for p in pieces:
             need = p["len"]; placed = False
             for i in range(len(bars)):
-                # Se la barra ha già pezzi, il giunto richiede kerf angolare minimo del pezzo precedente
-                extra = kerf_extra_for_append(bars[i][-1], kerf_base) if bars[i] else 0.0
-                if rem[i] >= (need + extra):
-                    bars[i].append(p)
-                    rem[i] -= (need + extra)
+                b = bars[i]
+                extra = self._joint_kerf_for_piece(b[-1], kerf_base, reversible, rev_recovery_mm) if b else 0.0
+                used = self._bar_used_length(b, kerf_base, reversible, rev_recovery_mm)
+                if used + need + (extra if b else 0.0) <= stock + 1e-6:
+                    b.append(p)
                     placed = True
                     break
             if not placed:
                 bars.append([p])
-                rem.append(max(stock - need, 0.0))
-        # Metti ultima la barra con residuo maggiore
+        rem = [max(0.0, stock - self._bar_used_length(b, kerf_base, reversible, rev_recovery_mm)) for b in bars]
         if rem:
             max_idx = max(range(len(rem)), key=lambda k: rem[k])
             if 0 <= max_idx < len(bars) and max_idx != len(bars) - 1:
-                bars.append(bars.pop(max_idx))
-                rem.append(rem.pop(max_idx))
+                bars.append(bars.pop(max_idx)); rem.append(rem.pop(max_idx))
         return bars, rem
 
     # ------------- Movimento / posizionamento -------------
@@ -969,7 +1067,7 @@ class AutomaticoPage(QWidget):
         self._unlock_brake(silent=True)
         super().hideEvent(ev)
 
-    # Sequencer callbacks (non usati qui)
+    # Sequencer callbacks (noop)
     def _on_step_started(self, idx: int, step: dict): pass
     def _on_step_finished(self, idx: int, step: dict): pass
     def _on_seq_done(self): self._toast("Automatico: completato", "ok")
