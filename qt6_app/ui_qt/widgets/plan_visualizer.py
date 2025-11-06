@@ -1,9 +1,9 @@
 from __future__ import annotations
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import math
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QSize
-from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF
+from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF, QFont
 from PySide6.QtWidgets import QWidget
 
 
@@ -16,6 +16,9 @@ class PlanVisualizerWidget(QWidget):
         * trapezio con lati inclinati secondo l'angolo reale (offset = tan(ang) * altezza).
     - I pezzi sono separati dal kerf impostato (gap visivo).
     - Etichetta della lunghezza (mm) dentro al pezzo, se c'è spazio.
+    - Evidenziazione pezzi tagliati: non vengono rimossi, ma resi con stile "done".
+      La selezione dei pezzi tagliati avviene per signature (len, ax, ad), marcando
+      le prime N occorrenze (da sinistra a destra) per ciascuna signature.
     """
 
     def __init__(self, parent=None):
@@ -23,17 +26,26 @@ class PlanVisualizerWidget(QWidget):
         self._bars: List[List[Dict[str, float]]] = []
         self._stock: float = 6500.0
         self._kerf: float = 3.0
+
+        # Stili
         self._bg = QColor("#ffffff")
         self._bar_bg = QColor("#ecf0f1")
+        self._border = QColor("#3b4b5a")
         self._piece_fg = QColor("#1976d2")
         self._piece_fg_alt = QColor("#26a69a")
+        self._piece_done = QColor("#9ccc65")  # verde chiaro per "tagliato"
         self._text = QColor("#2c3e50")
-        self._border = QColor("#3b4b5a")
+
+        # Stato evidenziazione (quanti pezzi per signature sono "done")
+        # signature: (L:2dec, ax:1dec, ad:1dec) -> count_done
+        self._done_counts: Dict[Tuple[float, float, float], int] = {}
+
         self.setMinimumSize(500, 220)
 
     def sizeHint(self) -> QSize:
         return QSize(900, 420)
 
+    # ---------------- API ----------------
     def set_data(self, bars: List[List[Dict[str, float]]], stock_mm: float, kerf_mm: float = 3.0):
         self._bars = bars or []
         try:
@@ -46,6 +58,16 @@ class PlanVisualizerWidget(QWidget):
             self._kerf = 3.0
         self.update()
 
+    def reset_done(self):
+        self._done_counts.clear()
+        self.update()
+
+    def mark_done(self, length_mm: float, ang_sx: float, ang_dx: float):
+        sig = (round(float(length_mm), 2), round(float(ang_sx), 1), round(float(ang_dx), 1))
+        self._done_counts[sig] = self._done_counts.get(sig, 0) + 1
+        self.update()
+
+    # ---------------- Helpers disegno ----------------
     @staticmethod
     def _is_square_angle(a: float) -> bool:
         try:
@@ -67,6 +89,7 @@ class PlanVisualizerWidget(QWidget):
             return 0.0
         return math.tan(math.radians(a)) * px_height
 
+    # ---------------- Paint ----------------
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
@@ -89,7 +112,6 @@ class PlanVisualizerWidget(QWidget):
         bar_h = 20.0
         vspace = 10.0
         total_h = n_bars * bar_h + (n_bars - 1) * vspace
-        # Se lo spazio verticale è poco, riduci lo spazio tra barre ma non l'altezza barra
         if total_h > avail_h:
             vspace = max(2.0, (avail_h - n_bars * bar_h) / max(1, n_bars - 1))
             total_h = n_bars * bar_h + (n_bars - 1) * vspace
@@ -106,6 +128,9 @@ class PlanVisualizerWidget(QWidget):
         font.setPointSizeF(9.0)
         p.setFont(font)
 
+        # Contatori occorrenze per signature (per confrontare con done_counts)
+        encountered: Dict[Tuple[float, float, float], int] = {}
+
         for bi, bar in enumerate(self._bars):
             top = y0 + bi * (bar_h + vspace)
             # Rettangolo barra
@@ -115,7 +140,7 @@ class PlanVisualizerWidget(QWidget):
             p.drawRect(bar_rect)
 
             # Pezzi dentro la barra
-            inner_pad = 3.0
+            inner_pad = 2.0
             piece_h = max(1.0, bar_h - inner_pad * 2)
             piece_y = top + inner_pad
 
@@ -152,8 +177,19 @@ class PlanVisualizerWidget(QWidget):
                 ]
                 poly = QPolygonF(pts)
 
-                # Colori alternati per leggibilità
-                fill = self._piece_fg if (pi % 2 == 0) else self._piece_fg_alt
+                # Determina se questo pezzo è "done" (in base ai contatori signature)
+                sig = (round(L, 2), round(ax, 1), round(ad, 1))
+                idx = encountered.get(sig, 0) + 1
+                encountered[sig] = idx
+                done_quota = self._done_counts.get(sig, 0)
+                is_done = idx <= done_quota
+
+                # Riempimento: alternato per leggibilità; se done, usa colore dedicato
+                if is_done:
+                    fill = self._piece_done
+                else:
+                    fill = self._piece_fg if (pi % 2 == 0) else self._piece_fg_alt
+
                 p.setPen(pen_piece_border)
                 p.setBrush(QBrush(fill))
                 p.drawPolygon(poly)
