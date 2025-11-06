@@ -17,8 +17,9 @@ class PlanVisualizerWidget(QWidget):
     - I pezzi sono separati dal kerf impostato (gap visivo).
     - Etichetta della lunghezza (mm) dentro al pezzo, se c'è spazio.
     - Evidenziazione pezzi tagliati: non vengono rimossi, ma resi con stile "done".
-      La selezione dei pezzi tagliati avviene per signature (len, ax, ad), marcando
-      le prime N occorrenze (da sinistra a destra) per ciascuna signature.
+      Selezione per signature (len, ax, ad), marcando le prime N occorrenze (left→right).
+    - Barra attiva/pending più contrastata: la prima barra che contiene ancora pezzi non tagliati
+      viene evidenziata con uno sfondo diverso; le barre già completate sono desaturate.
     """
 
     def __init__(self, parent=None):
@@ -29,11 +30,13 @@ class PlanVisualizerWidget(QWidget):
 
         # Stili
         self._bg = QColor("#ffffff")
-        self._bar_bg = QColor("#ecf0f1")
+        self._bar_bg = QColor("#e9edf2")         # sfondo barra default (più contrastato del grigio chiaro)
+        self._bar_bg_active = QColor("#fff3cd")  # barra attiva (giallo tenue)
+        self._bar_bg_done = QColor("#f2f2f2")    # barra completata (grigio desaturato)
         self._border = QColor("#3b4b5a")
         self._piece_fg = QColor("#1976d2")
         self._piece_fg_alt = QColor("#26a69a")
-        self._piece_done = QColor("#9ccc65")  # verde chiaro per "tagliato"
+        self._piece_done = QColor("#9ccc65")     # verde chiaro per "tagliato"
         self._text = QColor("#2c3e50")
 
         # Stato evidenziazione (quanti pezzi per signature sono "done")
@@ -89,6 +92,37 @@ class PlanVisualizerWidget(QWidget):
             return 0.0
         return math.tan(math.radians(a)) * px_height
 
+    def _precompute_active_bar(self) -> Tuple[int, List[bool]]:
+        """
+        Restituisce:
+        - indice della prima barra che ha ancora pezzi non tagliati (active_idx) o -1 se tutte finite
+        - lista booleana per ogni barra che indica se è completamente finita (done_flags)
+        La valutazione è coerente con la regola di marcatura pezzi (done_counts consumati in ordine).
+        """
+        encountered: Dict[Tuple[float, float, float], int] = {}
+        active_idx = -1
+        done_flags: List[bool] = []
+        for bi, bar in enumerate(self._bars):
+            bar_all_done = True
+            for piece in bar:
+                try:
+                    L = float(piece.get("len", 0.0))
+                    ax = float(piece.get("ax", 0.0))
+                    ad = float(piece.get("ad", 0.0))
+                except Exception:
+                    continue
+                sig = (round(L, 2), round(ax, 1), round(ad, 1))
+                idx = encountered.get(sig, 0) + 1
+                encountered[sig] = idx
+                done_quota = self._done_counts.get(sig, 0)
+                is_done = idx <= done_quota
+                if not is_done:
+                    bar_all_done = False
+            done_flags.append(bar_all_done)
+            if (not bar_all_done) and active_idx == -1:
+                active_idx = bi
+        return active_idx, done_flags
+
     # ---------------- Paint ----------------
     def paintEvent(self, ev):
         p = QPainter(self)
@@ -119,6 +153,9 @@ class PlanVisualizerWidget(QWidget):
         # Scala orizzontale: stock -> (avail_w - 40) per margini/etichette
         scale_x = (avail_w - 40) / max(1.0, self._stock)
 
+        # Determina barra attiva e barre completate (pre-pass coerente con done_counts)
+        active_idx, bar_done_flags = self._precompute_active_bar()
+
         # Penne
         pen_bar = QPen(self._border); pen_bar.setWidth(1)
         pen_piece_border = QPen(QColor("#2c3e50")); pen_piece_border.setWidth(1)
@@ -128,15 +165,21 @@ class PlanVisualizerWidget(QWidget):
         font.setPointSizeF(9.0)
         p.setFont(font)
 
-        # Contatori occorrenze per signature (per confrontare con done_counts)
+        # Contatori occorrenze per signature (per confrontare con done_counts) per il disegno effettivo
         encountered: Dict[Tuple[float, float, float], int] = {}
 
         for bi, bar in enumerate(self._bars):
             top = y0 + bi * (bar_h + vspace)
-            # Rettangolo barra
+            # Rettangolo barra + colore in base allo stato
             bar_rect = QRectF(x0, top, avail_w - 20, bar_h)
             p.setPen(pen_bar)
-            p.fillRect(bar_rect, QBrush(self._bar_bg))
+            if bar_done_flags[bi]:
+                bg = self._bar_bg_done
+            elif bi == active_idx:
+                bg = self._bar_bg_active
+            else:
+                bg = self._bar_bg
+            p.fillRect(bar_rect, QBrush(bg))
             p.drawRect(bar_rect)
 
             # Pezzi dentro la barra
@@ -177,7 +220,7 @@ class PlanVisualizerWidget(QWidget):
                 ]
                 poly = QPolygonF(pts)
 
-                # Determina se questo pezzo è "done"
+                # Determina se questo pezzo è "done" (in base ai contatori signature)
                 sig = (round(L, 2), round(ax, 1), round(ad, 1))
                 idx = encountered.get(sig, 0) + 1
                 encountered[sig] = idx
@@ -185,10 +228,7 @@ class PlanVisualizerWidget(QWidget):
                 is_done = idx <= done_quota
 
                 # Riempimento: alternato; se done, colore dedicato
-                if is_done:
-                    fill = self._piece_done
-                else:
-                    fill = self._piece_fg if (pi % 2 == 0) else self._piece_fg_alt
+                fill = self._piece_done if is_done else (self._piece_fg if (pi % 2 == 0) else self._piece_fg_alt)
 
                 p.setPen(pen_piece_border)
                 p.setBrush(QBrush(fill))
