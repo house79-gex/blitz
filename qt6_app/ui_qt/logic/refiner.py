@@ -3,7 +3,7 @@ from typing import List, Dict, Tuple
 import math
 
 # ============================================================
-# Kerf angolare + ripasso + recupero reversibile (automatico)
+# Calcoli kerf angolare + ripasso + recupero reversibile (automatico)
 # ============================================================
 
 def _cosd(a: float) -> float:
@@ -57,22 +57,26 @@ def joint_consumption(piece_left: Dict[str, float],
                       thickness_mm: float,
                       angle_tol: float,
                       max_angle: float,
-                      max_factor: float) -> float:
+                      max_factor: float) -> Tuple[float, float, float, float]:
     """
-    Consumo materiale per un GIUNTO:
+    Consumo materiale per un GIUNTO (fra piece_left e il successivo).
+    Ritorna tuple: (consumo_totale, kerf_proiettato_effettivo_dopo_recupero, ripasso_usato, recupero_usato)
       - kerf proiettato (scegli orientazione con kerf destro minore)
       - ripasso (aggiunto sempre)
-      - recupero automatico se reversibile e 45° (tolto dalla componente kerf, non dal ripasso)
+      - recupero automatico (solo si sottrae dalla componente kerf, non dal ripasso)
     """
     ax = float(piece_left.get("ax", 0.0))
     ad = float(piece_left.get("ad", 0.0))
     k_norm = kerf_projected(kerf_base, ad, max_angle, max_factor)
     k_flip = kerf_projected(kerf_base, ax, max_angle, max_factor)
-    k = min(k_norm, k_flip)
+    k_raw = min(k_norm, k_flip)
+    recovery = 0.0
     if reversible:
-        rec = auto_recovery(thickness_mm, ax, ad, angle_tol)
-        k = max(0.0, k - rec)  # recupero sottrae solo la componente kerf
-    return k + max(0.0, ripasso_mm)
+        recovery = auto_recovery(thickness_mm, ax, ad, angle_tol)
+    k_after = max(0.0, k_raw - recovery)
+    rip = max(0.0, ripasso_mm)
+    total = k_after + rip
+    return total, k_after, rip, recovery
 
 def bar_used_length(bar: List[Dict[str, float]],
                     kerf_base: float,
@@ -87,12 +91,41 @@ def bar_used_length(bar: List[Dict[str, float]],
     total = sum(float(p.get("len", 0.0)) for p in bar)
     if len(bar) <= 1:
         return total
-    joints = 0.0
     for i in range(len(bar) - 1):
-        joints += joint_consumption(bar[i], kerf_base, ripasso_mm,
-                                    reversible, thickness_mm,
-                                    angle_tol, max_angle, max_factor)
-    return total + joints
+        total += joint_consumption(bar[i], kerf_base, ripasso_mm,
+                                   reversible, thickness_mm,
+                                   angle_tol, max_angle, max_factor)[0]
+    return total
+
+def compute_bar_breakdown(bar: List[Dict[str, float]],
+                          kerf_base: float,
+                          ripasso_mm: float,
+                          reversible: bool,
+                          thickness_mm: float,
+                          angle_tol: float,
+                          max_angle: float,
+                          max_factor: float) -> Dict[str, float]:
+    length_sum = sum(float(p.get("len", 0.0)) for p in bar)
+    kerf_proj_sum = 0.0
+    ripasso_sum = 0.0
+    recovery_sum = 0.0
+    if len(bar) > 1:
+        for i in range(len(bar) - 1):
+            tot, kerf_after, rip, rec = joint_consumption(
+                bar[i], kerf_base, ripasso_mm, reversible,
+                thickness_mm, angle_tol, max_angle, max_factor
+            )
+            kerf_proj_sum += kerf_after
+            ripasso_sum += rip
+            recovery_sum += rec
+    used_total = length_sum + kerf_proj_sum + ripasso_sum
+    return {
+        "length_sum": length_sum,
+        "kerf_proj_sum": kerf_proj_sum,
+        "ripasso_sum": ripasso_sum,
+        "recovery_sum": recovery_sum,
+        "used_total": used_total
+    }
 
 def residuals(bars: List[List[Dict[str, float]]],
               stock: float,
@@ -130,7 +163,7 @@ def order_with_max_residual_last(bars: List[List[Dict[str, float]]],
     return bars, res
 
 # ============================================================
-# Refine MILP (capacità conservativa lineare)
+# Refine MILP
 # ============================================================
 
 def refine_tail_ilp(bars: List[List[Dict[str, float]]],
@@ -144,11 +177,6 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
                     time_limit_s: int,
                     max_angle: float,
                     max_factor: float) -> Tuple[List[List[Dict[str, float]]], List[float]]:
-    """
-    Refine locale: minimizza #barre usate, massimizza lunghezza totale.
-    Capacità conservativa: sum(L) + (kerf_base + ripasso_mm)*(n-1) ≤ stock.
-    Il recupero automatico NON è applicato nel vincolo (è un bonus post).
-    """
     try:
         import pulp  # type: ignore
     except Exception:
@@ -243,12 +271,6 @@ def pack_bars_knapsack_ilp(pieces: List[Dict[str, float]],
                            thickness_mm: float,
                            angle_tol: float,
                            per_bar_time_s: int) -> Tuple[List[List[Dict[str, float]]], List[float]]:
-    """
-    Packing iterativo:
-      Capacità conservativa: sum(L) + (kerf_base/cos(cons_angle) + ripasso_mm)*(n-1) ≤ stock
-      Il recupero automatico NON è incluso nel vincolo (viene applicato dopo).
-      Post-fix: se la barra supera lo stock con il calcolo esatto (angoli + ripasso + recupero) rimuove ultimi pezzi.
-    """
     try:
         import pulp  # type: ignore
     except Exception:
@@ -267,7 +289,7 @@ def pack_bars_knapsack_ilp(pieces: List[Dict[str, float]],
     while remaining:
         J = len(remaining)
         lengths = [float(p.get("len", 0.0)) for p in remaining]
-        import pulp  # already imported
+        import pulp
         prob = pulp.LpProblem("bar_knapsack", pulp.LpMaximize)
 
         x = pulp.LpVariable.dicts("x", range(J), 0, 1, cat=pulp.LpBinary)
@@ -291,13 +313,12 @@ def pack_bars_knapsack_ilp(pieces: List[Dict[str, float]],
 
         chosen = [j for j in range(J) if (x[j].value() or 0.0) > 0.5]
         if not chosen:
-            # fallback: pezzo più lungo
             best_j = max(range(J), key=lambda jj: lengths[jj])
             chosen = [best_j]
 
         bar = [remaining[j] for j in chosen]
 
-        # Post-fix overflow con formula esatta
+        # Post-fix overflow (formula esatta)
         while bar and bar_used_length(bar, kerf_base, ripasso_mm, reversible,
                                       thickness_mm, angle_tol, max_angle, max_factor) > stock + 1e-6:
             bar.pop()
