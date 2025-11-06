@@ -1,12 +1,19 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple
+import csv
+from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal, QRect, QEvent
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import Qt, Signal, QRect
+from PySide6.QtGui import QKeyEvent, QTextDocument
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QCheckBox, QApplication, QWidget
+    QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
+    QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
+    QWidget, QFileDialog
 )
+try:
+    from PySide6.QtPrintSupport import QPrinter
+except Exception:
+    QPrinter = None  # su ambienti senza QtPrintSupport
 
 try:
     from ui_qt.utils.settings import read_settings, write_settings
@@ -17,29 +24,181 @@ except Exception:
 from ui_qt.widgets.plan_visualizer import PlanVisualizerWidget
 
 
+class OptimizationSummaryDialog(QDialog):
+    """
+    Finestra di riepilogo ottimizzazione con tabella per-barra e export CSV/PDF.
+    Mostra: n° barra, #pezzi, lunghezza usata, residuo, efficienza, dettaglio pezzi.
+    """
+    def __init__(self, parent: QWidget, profile: str,
+                 bars: List[List[Dict[str, float]]],
+                 residuals: List[float],
+                 stock_mm: float,
+                 kerf_mm: float):
+        super().__init__(parent)
+        self.setWindowTitle(f"Riepilogo ottimizzazione — {profile}")
+        self.setModal(False)
+        self._profile = profile
+        self._bars = bars or []
+        self._residuals = residuals or []
+        self._stock = float(stock_mm or 6500.0)
+        self._kerf = float(kerf_mm or 3.0)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
+        hdr = QLabel(f"Profilo: {profile} — Stock: {self._stock:.0f} mm — Kerf: {self._kerf:.2f} mm")
+        hdr.setStyleSheet("font-weight:700;")
+        root.addWidget(hdr)
+
+        self.tbl = QTableWidget(0, 6, self)
+        self.tbl.setHorizontalHeaderLabels(["Barra", "Pezzi", "Usato (mm)", "Residuo (mm)", "Efficienza (%)", "Dettaglio"])
+        hh = self.tbl.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(5, QHeaderView.Stretch)
+        root.addWidget(self.tbl, 1)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        self.btn_csv = QPushButton("Esporta CSV")
+        self.btn_pdf = QPushButton("Esporta PDF")
+        self.btn_close = QPushButton("Chiudi")
+        btns.addWidget(self.btn_csv)
+        btns.addWidget(self.btn_pdf)
+        btns.addWidget(self.btn_close)
+        root.addLayout(btns)
+
+        self.btn_close.clicked.connect(self.close)
+        self.btn_csv.clicked.connect(self._export_csv)
+        self.btn_pdf.clicked.connect(self._export_pdf)
+
+        self._fill_table()
+
+        try:
+            self.resize(900, 500)
+        except Exception:
+            pass
+
+    def _fill_table(self):
+        self.tbl.setRowCount(0)
+        for i, bar in enumerate(self._bars):
+            pezzi = len(bar)
+            used = 0.0
+            details: List[str] = []
+            for idx, piece in enumerate(bar):
+                try:
+                    L = float(piece.get("len", 0.0))
+                    ax = float(piece.get("ax", 0.0))
+                    ad = float(piece.get("ad", 0.0))
+                except Exception:
+                    L, ax, ad = 0.0, 0.0, 0.0
+                used += L
+                details.append(f"{L:.0f}({ax:.0f}/{ad:.0f})")
+                if idx < len(bar) - 1:
+                    used += self._kerf
+            residuo = float(self._residuals[i]) if i < len(self._residuals) else max(self._stock - used, 0.0)
+            eff = (used / self._stock * 100.0) if self._stock > 0 else 0.0
+
+            r = self.tbl.rowCount()
+            self.tbl.insertRow(r)
+            self.tbl.setItem(r, 0, QTableWidgetItem(f"B{i+1}"))
+            self.tbl.setItem(r, 1, QTableWidgetItem(str(pezzi)))
+            self.tbl.setItem(r, 2, QTableWidgetItem(f"{used:.1f}"))
+            self.tbl.setItem(r, 3, QTableWidgetItem(f"{residuo:.1f}"))
+            self.tbl.setItem(r, 4, QTableWidgetItem(f"{eff:.1f}"))
+            self.tbl.setItem(r, 5, QTableWidgetItem(" + ".join(details)))
+
+    def _export_csv(self):
+        try:
+            path, _ = QFileDialog.getSaveFileName(self, "Esporta CSV", f"riepilogo_{self._profile}_{datetime.now():%Y%m%d_%H%M%S}.csv", "CSV (*.csv)")
+            if not path:
+                return
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f, delimiter=";")
+                w.writerow([f"Profilo: {self._profile}", f"Stock: {self._stock:.0f} mm", f"Kerf: {self._kerf:.2f} mm"])
+                w.writerow(["Barra", "Pezzi", "Usato (mm)", "Residuo (mm)", "Efficienza (%)", "Dettaglio"])
+                for r in range(self.tbl.rowCount()):
+                    row = [self.tbl.item(r, c).text() if self.tbl.item(r, c) else "" for c in range(self.tbl.columnCount())]
+                    w.writerow(row)
+        except Exception:
+            pass
+
+    def _export_pdf(self):
+        if QPrinter is None:
+            # QtPrintSupport non disponibile
+            return
+        try:
+            path, _ = QFileDialog.getSaveFileName(self, "Esporta PDF", f"riepilogo_{self._profile}_{datetime.now():%Y%m%d_%H%M%S}.pdf", "PDF (*.pdf)")
+            if not path:
+                return
+
+            # Costruisci HTML semplice
+            html_rows = []
+            for r in range(self.tbl.rowCount()):
+                cols = [self.tbl.item(r, c).text() if self.tbl.item(r, c) else "" for c in range(self.tbl.columnCount())]
+                tds = "".join(f"<td style='border:1px solid #999;padding:4px 6px'>{c}</td>" for c in cols)
+                html_rows.append(f"<tr>{tds}</tr>")
+            html = f"""
+            <html>
+            <head><meta charset='utf-8'><style>
+            body {{ font-family: Arial, sans-serif; }}
+            table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
+            th {{ background:#f0f0f0; border:1px solid #999; padding:6px; text-align:left; }}
+            td {{ border:1px solid #999; padding:4px 6px; }}
+            h2 {{ margin-bottom: 4px; }}
+            </style></head>
+            <body>
+            <h2>Riepilogo ottimizzazione — {self._profile}</h2>
+            <div>Stock: {self._stock:.0f} mm — Kerf: {self._kerf:.2f} mm — Generato: {datetime.now():%Y-%m-%d %H:%M:%S}</div>
+            <br />
+            <table>
+                <thead>
+                    <tr>
+                        <th>Barra</th><th>Pezzi</th><th>Usato (mm)</th><th>Residuo (mm)</th><th>Efficienza (%)</th><th>Dettaglio</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join(html_rows)}
+                </tbody>
+            </table>
+            </body>
+            </html>
+            """
+
+            doc = QTextDocument()
+            doc.setHtml(html)
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(path)
+            doc.print(printer)
+        except Exception:
+            pass
+
+
 class OptimizationRunDialog(QDialog):
     """
     Dialog ottimizzazione:
-    - Riepilogo barre (numero/residui) [mostrabile/nascondibile]
-    - Visualizzazione grafica piano (trapezi/rette) con evidenziazione pezzi tagliati [mostrabile/nascondibile]
-    - Tabella elementi: SEMPRE visibile sotto alla grafica
+    - Visualizzazione grafica piano (evidenziazione pezzi tagliati)
+    - Tabella elementi: sempre visibile sotto la grafica
+    - Pulsante "Riepilogo…" che apre una finestra separata esportabile (CSV/PDF)
     - F7 = simula taglio, F9 = simula avanzamento
+    - Layout overlay: se overlay_target è fornito, il dialog si sovrappone al frame viewer (stesse dimensioni)
 
-    Modalità overlay:
-    - Se viene passato overlay_target (frame della cutlist viewer), la finestra viene sovrapposta esattamente
-      a quel frame (stesse dimensioni e posizione).
-    - In overlay, per impostazione predefinita, il riepilogo è nascosto, la grafica è visibile e la tabella è SEMPRE visibile.
-
-    La grafica si adatta:
-    - in larghezza: sempre alla larghezza effettiva del dialog/widget.
-    - in altezza: al numero di barre, ma senza “mangiare” lo spazio necessario alla tabella (che resta visibile sotto).
+    Estensioni già implementate:
+    - altezza grafica adattiva in base al numero di barre, lasciando spazio alla tabella
+    - ordine barre: per ultima quella con residuo massimo
+    - marking "done" senza rimuovere pezzi
     """
     simulationRequested = Signal()
     startRequested = Signal()
 
-    TABLE_MIN_H = 180  # spazio minimo riservato alla tabella
-    GRAPH_BAR_H = 16   # altezza barra in px (coerente con PlanVisualizerWidget)
-    GRAPH_V_GAP = 6    # spazio tra barre
+    TABLE_MIN_H = 180  # minimo per la tabella
+    GRAPH_BAR_H = 16   # altezza barra
+    GRAPH_V_GAP = 6    # gap tra barre
 
     def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
         super().__init__(parent)
@@ -51,12 +210,9 @@ class OptimizationRunDialog(QDialog):
 
         # UI refs
         self._opts_bar: Optional[QFrame] = None
-        self._panel_summary: Optional[QFrame] = None
-        self._lbl_bars: Optional[QLabel] = None
         self._panel_graph: Optional[QFrame] = None
         self._graph: Optional[PlanVisualizerWidget] = None
         self._tbl: Optional[QTableWidget] = None
-        self._chk_summary: Optional[QCheckBox] = None
         self._chk_graph: Optional[QCheckBox] = None
 
         # Settings
@@ -69,10 +225,8 @@ class OptimizationRunDialog(QDialog):
 
         # Visibilità
         if self._overlay_target is not None:
-            self._show_summary = False
             self._show_graph = True
         else:
-            self._show_summary = bool(cfg.get("opt_show_summary", True))
             self._show_graph = bool(cfg.get("opt_show_graph", True))
 
         # Piano calcolato una sola volta
@@ -83,9 +237,8 @@ class OptimizationRunDialog(QDialog):
         self._compute_plan_once()
         self._refresh_views()
 
-        # Applica geometry (overlay se target presente)
+        # Geometry overlay se presente target
         self._apply_geometry()
-        # Aggiorna altezza grafica in base alle dimensioni effettive
         self._resize_graph_area()
 
     # ---------- Build UI ----------
@@ -94,16 +247,18 @@ class OptimizationRunDialog(QDialog):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
-        # Top options (contenitore referenziabile per la misura)
+        # Top options (toggle grafica + pulsanti azione)
         self._opts_bar = QFrame(self)
         opts_lay = QHBoxLayout(self._opts_bar)
         opts_lay.setContentsMargins(0, 0, 0, 0)
         opts_lay.setSpacing(6)
 
-        self._chk_summary = QCheckBox("Mostra riepilogo barre"); self._chk_summary.setChecked(self._show_summary)
-        self._chk_summary.toggled.connect(self._toggle_summary)
         self._chk_graph = QCheckBox("Mostra grafica piano"); self._chk_graph.setChecked(self._show_graph)
         self._chk_graph.toggled.connect(self._toggle_graph)
+
+        btn_summary = QPushButton("Riepilogo…")
+        btn_summary.setToolTip("Apri una finestra con la tabella riassuntiva ed esporta in CSV/PDF")
+        btn_summary.clicked.connect(self._open_summary)
 
         btn_start = QPushButton("Simula Avanzamento (F9)")
         btn_start.setToolTip("Simula un evento START")
@@ -113,21 +268,13 @@ class OptimizationRunDialog(QDialog):
         btn_sim.setToolTip("Simula un taglio come pulse lama")
         btn_sim.clicked.connect(lambda: self.simulationRequested.emit())
 
-        opts_lay.addWidget(self._chk_summary)
         opts_lay.addWidget(self._chk_graph)
         opts_lay.addStretch(1)
+        opts_lay.addWidget(btn_summary)
         opts_lay.addWidget(btn_start)
         opts_lay.addWidget(btn_sim)
 
         root.addWidget(self._opts_bar, 0)
-
-        # Riepilogo barre
-        self._panel_summary = QFrame()
-        self._panel_summary.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
-        sl = QVBoxLayout(self._panel_summary); sl.setContentsMargins(8, 8, 8, 8); sl.setSpacing(6)
-        sl.addWidget(QLabel("Riepilogo barre"))
-        self._lbl_bars = QLabel("—"); sl.addWidget(self._lbl_bars)
-        root.addWidget(self._panel_summary, 0)
 
         # Grafica piano
         self._panel_graph = QFrame()
@@ -135,7 +282,7 @@ class OptimizationRunDialog(QDialog):
         gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(6, 6, 6, 6); gl.setSpacing(4)
         self._graph = PlanVisualizerWidget(self)
         gl.addWidget(self._graph, 1)
-        root.addWidget(self._panel_graph, 0)  # lo gestiamo in altezza manualmente
+        root.addWidget(self._panel_graph, 0)  # altezza gestita manualmente
 
         # Tabella pezzi (SEMPRE visibile)
         self._tbl = QTableWidget(0, 4)
@@ -151,17 +298,8 @@ class OptimizationRunDialog(QDialog):
         self._apply_toggles()
 
     def _apply_toggles(self):
-        if self._panel_summary:
-            self._panel_summary.setVisible(self._show_summary)
         if self._panel_graph:
             self._panel_graph.setVisible(self._show_graph)
-
-    def _toggle_summary(self, on: bool):
-        self._show_summary = bool(on)
-        self._apply_toggles()
-        if self._overlay_target is None:
-            cfg = dict(read_settings()); cfg["opt_show_summary"] = self._show_summary; write_settings(cfg)
-        self._resize_graph_area()
 
     def _toggle_graph(self, on: bool):
         self._show_graph = bool(on)
@@ -169,6 +307,15 @@ class OptimizationRunDialog(QDialog):
         if self._overlay_target is None:
             cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
         self._resize_graph_area()
+
+    # ---------- Summary ----------
+    def _open_summary(self):
+        try:
+            dlg = OptimizationSummaryDialog(self, self.profile, self._bars, self._bars_residuals, self._stock, self._kerf)
+            dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+            dlg.show()
+        except Exception:
+            pass
 
     # ---------- Plan computation ----------
     def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
@@ -215,16 +362,6 @@ class OptimizationRunDialog(QDialog):
 
     # ---------- Views refresh ----------
     def _refresh_views(self):
-        # Riepilogo barre
-        nb = len(self._bars)
-        if nb == 0:
-            txt = "Nessuna barra necessaria."
-        else:
-            residui = " | ".join([f"B{i+1} residuo: {r:.1f} mm" for i, r in enumerate(self._bars_residuals)])
-            txt = f"Barre necessarie: {nb} — {residui}"
-        if self._lbl_bars:
-            self._lbl_bars.setText(txt)
-
         # Grafica
         if self._graph:
             self._graph.set_data(self._bars, stock_mm=self._stock, kerf_mm=self._kerf)
@@ -255,7 +392,6 @@ class OptimizationRunDialog(QDialog):
                 br_global = self._overlay_target.mapToGlobal(self._overlay_target.rect().bottomRight())
                 rect = QRect(tl_global, br_global)
                 self.setGeometry(rect)
-                # Non blocchiamo min/max qui per permettere layout interno, ma la geometria coincide col frame
             except Exception:
                 pass
         else:
@@ -275,29 +411,23 @@ class OptimizationRunDialog(QDialog):
     def _resize_graph_area(self):
         """
         Calcola un'altezza per la grafica che:
-        - non ecceda quella "desiderata" in base al numero di barre
-        - lasci sempre TABLE_MIN_H (minimo) per la tabella
-        - consideri le altezze di options + summary (se visibili) + margini
+        - non ecceda quella desiderata in base al numero di barre
+        - lasci sempre TABLE_MIN_H per la tabella
+        - consideri l'altezza della toolbar opzionale
         """
         try:
             if not (self._panel_graph and self._graph and self._tbl):
                 return
             total_h = max(0, self.height())
-            # Altezze "overhead" in alto
             opts_h = self._opts_bar.sizeHint().height() if self._opts_bar else 0
-            sum_h = self._panel_summary.sizeHint().height() if (self._panel_summary and self._panel_summary.isVisible()) else 0
             margins = 8 + 8 + 6  # margini del dialog e spacing root
-            # Spazio minimo per la tabella
             table_min = self.TABLE_MIN_H
-            # Spazio disponibile per la grafica
-            avail_for_graph = total_h - (opts_h + sum_h + margins + table_min)
+            avail_for_graph = total_h - (opts_h + margins + table_min)
             avail_for_graph = max(100, avail_for_graph)
             desired = self._desired_graph_height(len(self._bars))
             gh = min(desired, avail_for_graph)
-            # Imposta altezza fissa per il widget grafico
             self._graph.setMinimumHeight(int(gh))
             self._graph.setMaximumHeight(int(gh))
-            # Forza un relayout
             self._panel_graph.updateGeometry()
             self._graph.updateGeometry()
         except Exception:
@@ -305,7 +435,6 @@ class OptimizationRunDialog(QDialog):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Adatta la grafica quando la finestra cambia dimensione
         self._resize_graph_area()
 
     # ---------- Table ----------
@@ -398,7 +527,6 @@ class OptimizationRunDialog(QDialog):
     def accept(self):
         if self._overlay_target is None:
             cfg = dict(read_settings())
-            cfg["opt_show_summary"] = bool(self._chk_summary and self._chk_summary.isChecked())
             cfg["opt_show_graph"] = bool(self._chk_graph and self._chk_graph.isChecked())
             write_settings(cfg)
         super().accept()
