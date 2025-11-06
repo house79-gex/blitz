@@ -6,44 +6,46 @@ from PySide6.QtCore import Qt, QRectF, QPointF, QSize
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF
 from PySide6.QtWidgets import QWidget
 
-# Gap visivo coerente col kerf angolare minimo del pezzo precedente
-from ui_qt.logic.refiner import _kerf_joint_min_for_piece
-
+from ui_qt.logic.refiner import (
+    joint_consumption,
+    bar_used_length
+)
 
 class PlanVisualizerWidget(QWidget):
     """
-    Visualizzazione grafica del piano barre/pezzi.
-    - Ogni barra è una riga alta 16 px (rettangolo di sfondo).
-    - Ogni pezzo è disegnato dentro la barra:
-        * rettangolo se angoli ~0°,
-        * trapezio con lati inclinati secondo l'angolo reale (offset = tan(ang) * altezza).
-    - I pezzi sono separati da un gap proporzionale al kerf angolare del giunto precedente.
-    - Etichetta della lunghezza (mm) dentro al pezzo, se c'è spazio.
-    - Evidenziazione pezzi tagliati: non vengono rimossi, ma resi con stile "done".
-      Selezione per signature (len, ax, ad), marcando le prime N occorrenze (left→right).
-    - Barra attiva/pending più contrastata: la prima barra che contiene ancora pezzi non tagliati
-      viene evidenziata con uno sfondo diverso; le barre già completate sono desaturate.
+    Visualizzazione grafica piano barre:
+    - Gap tra pezzi = consumo giunto (kerf effettivo dopo recupero + ripasso).
+    - Bordi rossi per barre quasi overflow (usato > stock - warn_threshold).
+    - Evidenzia pezzi tagliati (stato done).
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._bars: List[List[Dict[str, float]]] = []
         self._stock: float = 6500.0
-        self._kerf: float = 3.0  # kerf base (il gap per giunto sarà _kerf_joint_min_for_piece in mm)
+
+        # Parametri consumi
+        self._kerf_base: float = 3.0
+        self._ripasso_mm: float = 0.0
+        self._reversible: bool = False
+        self._thickness_mm: float = 0.0
+        self._angle_tol: float = 0.5
+        self._max_angle: float = 60.0
+        self._max_factor: float = 2.0
+        self._warn_thr: float = 0.5
 
         # Stili
         self._bg = QColor("#ffffff")
-        self._bar_bg = QColor("#e9edf2")         # sfondo barra default
-        self._bar_bg_active = QColor("#fff3cd")  # barra attiva (giallo tenue)
-        self._bar_bg_done = QColor("#f2f2f2")    # barra completata
+        self._bar_bg = QColor("#e9edf2")
+        self._bar_bg_active = QColor("#fff3cd")
+        self._bar_bg_done = QColor("#f2f2f2")
         self._border = QColor("#3b4b5a")
+        self._border_warn = QColor("#ff2d2d")
         self._piece_fg = QColor("#1976d2")
         self._piece_fg_alt = QColor("#26a69a")
         self._piece_done = QColor("#9ccc65")
         self._text = QColor("#2c3e50")
 
-        # Stato evidenziazione
-        # signature: (L:2dec, ax:1dec, ad:1dec) -> count_done
         self._done_counts: Dict[Tuple[float, float, float], int] = {}
 
         self.setMinimumSize(480, 200)
@@ -51,17 +53,27 @@ class PlanVisualizerWidget(QWidget):
     def sizeHint(self) -> QSize:
         return QSize(720, 360)
 
-    # ---------------- API ----------------
-    def set_data(self, bars: List[List[Dict[str, float]]], stock_mm: float, kerf_mm: float = 3.0):
+    def set_data(self,
+                 bars: List[List[Dict[str, float]]],
+                 stock_mm: float,
+                 kerf_base: float,
+                 ripasso_mm: float,
+                 reversible: bool,
+                 thickness_mm: float,
+                 angle_tol: float,
+                 max_angle: float,
+                 max_factor: float,
+                 warn_threshold_mm: float):
         self._bars = bars or []
-        try:
-            self._stock = float(stock_mm) if stock_mm else 6500.0
-        except Exception:
-            self._stock = 6500.0
-        try:
-            self._kerf = float(kerf_mm) if kerf_mm else 3.0
-        except Exception:
-            self._kerf = 3.0
+        self._stock = float(stock_mm)
+        self._kerf_base = float(kerf_base)
+        self._ripasso_mm = float(ripasso_mm)
+        self._reversible = bool(reversible)
+        self._thickness_mm = float(thickness_mm)
+        self._angle_tol = float(angle_tol)
+        self._max_angle = float(max_angle)
+        self._max_factor = float(max_factor)
+        self._warn_thr = float(warn_threshold_mm)
         self.update()
 
     def reset_done(self):
@@ -73,20 +85,15 @@ class PlanVisualizerWidget(QWidget):
         self._done_counts[sig] = self._done_counts.get(sig, 0) + 1
         self.update()
 
-    # ---------------- Helpers disegno ----------------
     @staticmethod
     def _is_square_angle(a: float) -> bool:
         try:
-            return abs(float(a)) <= 0.2  # tolleranza visiva ~0.2°
+            return abs(float(a)) <= 0.2
         except Exception:
             return True
 
     @staticmethod
     def _offset_for_angle(px_height: float, ang_deg: float) -> float:
-        """
-        Offset orizzontale per rappresentare lo smusso a 'ang_deg' reali:
-        offset = tan(angolo) * altezza_pezzo (proiezione semplice).
-        """
         try:
             a = abs(float(ang_deg))
         except Exception:
@@ -96,24 +103,16 @@ class PlanVisualizerWidget(QWidget):
         return math.tan(math.radians(a)) * px_height
 
     def _precompute_active_bar(self) -> Tuple[int, List[bool]]:
-        """
-        Restituisce:
-        - indice della prima barra che ha ancora pezzi non tagliati (active_idx) o -1 se tutte finite
-        - lista booleana per ogni barra che indica se è completamente finita (done_flags)
-        """
-        encountered: Dict[Tuple[float, float, float], int] = {}
+        encountered: Dict[Tuple[float,float,float], int] = {}
         active_idx = -1
         done_flags: List[bool] = []
         for bi, bar in enumerate(self._bars):
             bar_all_done = True
             for piece in bar:
-                try:
-                    L = float(piece.get("len", 0.0))
-                    ax = float(piece.get("ax", 0.0))
-                    ad = float(piece.get("ad", 0.0))
-                except Exception:
-                    continue
-                sig = (round(L, 2), round(ax, 1), round(ad, 1))
+                L = float(piece.get("len", 0.0))
+                ax = float(piece.get("ax", 0.0))
+                ad = float(piece.get("ad", 0.0))
+                sig = (round(L,2), round(ax,1), round(ad,1))
                 idx = encountered.get(sig, 0) + 1
                 encountered[sig] = idx
                 done_quota = self._done_counts.get(sig, 0)
@@ -121,11 +120,10 @@ class PlanVisualizerWidget(QWidget):
                 if not is_done:
                     bar_all_done = False
             done_flags.append(bar_all_done)
-            if (not bar_all_done) and active_idx == -1:
+            if not bar_all_done and active_idx == -1:
                 active_idx = bi
         return active_idx, done_flags
 
-    # ---------------- Paint ----------------
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
@@ -144,7 +142,6 @@ class PlanVisualizerWidget(QWidget):
         if n_bars <= 0:
             return
 
-        # Ogni barra: altezza fissa 16 px, spaziata verticalmente
         bar_h = 16.0
         vspace = 6.0
         total_h = n_bars * bar_h + (n_bars - 1) * vspace
@@ -152,28 +149,32 @@ class PlanVisualizerWidget(QWidget):
             vspace = max(2.0, (avail_h - n_bars * bar_h) / max(1, n_bars - 1))
             total_h = n_bars * bar_h + (n_bars - 1) * vspace
 
-        # Scala orizzontale: stock -> (avail_w - 40) per margini/etichette
         scale_x = (avail_w - 40) / max(1.0, self._stock)
 
-        # Determina barra attiva e barre completate
         active_idx, bar_done_flags = self._precompute_active_bar()
 
-        # Penne
         pen_bar = QPen(self._border); pen_bar.setWidth(1)
+        pen_warn = QPen(self._border_warn); pen_warn.setWidth(2)
         pen_piece_border = QPen(QColor("#2c3e50")); pen_piece_border.setWidth(1)
 
-        # Font
         font = p.font()
         font.setPointSizeF(9.0)
         p.setFont(font)
 
-        encountered: Dict[Tuple[float, float, float], int] = {}
+        encountered: Dict[Tuple[float,float,float], int] = {}
 
         for bi, bar in enumerate(self._bars):
             top = y0 + bi * (bar_h + vspace)
-            # Rettangolo barra + colore in base allo stato
             bar_rect = QRectF(x0, top, avail_w - 20, bar_h)
-            p.setPen(pen_bar)
+
+            used_len = bar_used_length(
+                bar, self._kerf_base, self._ripasso_mm,
+                self._reversible, self._thickness_mm,
+                self._angle_tol, self._max_angle, self._max_factor
+            )
+            near_overflow = (self._stock - used_len) <= self._warn_thr + 1e-6
+
+            p.setPen(pen_warn if near_overflow else pen_bar)
             if bar_done_flags[bi]:
                 bg = self._bar_bg_done
             elif bi == active_idx:
@@ -183,36 +184,24 @@ class PlanVisualizerWidget(QWidget):
             p.fillRect(bar_rect, QBrush(bg))
             p.drawRect(bar_rect)
 
-            # Pezzi dentro la barra
             inner_pad = 2.0
             piece_h = max(1.0, bar_h - inner_pad * 2)
             piece_y = top + inner_pad
-
-            cursor_x = x0 + inner_pad + 2.0  # piccolo margine sinistro
+            cursor_x = x0 + inner_pad + 2.0
 
             for pi, piece in enumerate(bar):
-                try:
-                    L = float(piece.get("len", 0.0))
-                    ax = float(piece.get("ax", 0.0))
-                    ad = float(piece.get("ad", 0.0))
-                except Exception:
-                    continue
-
+                L = float(piece.get("len", 0.0))
+                ax = float(piece.get("ax", 0.0))
+                ad = float(piece.get("ad", 0.0))
                 w = max(1.0, L * scale_x)
 
-                # Offset "reale" basato sull'angolo
                 off_l = 0.0 if self._is_square_angle(ax) else self._offset_for_angle(piece_h, ax)
                 off_r = 0.0 if self._is_square_angle(ad) else self._offset_for_angle(piece_h, ad)
-                # Evita poligoni degeneri se pezzo molto corto
-                max_off = max(0.0, (w * 0.49))
-                off_l = min(off_l, max_off)
-                off_r = min(off_r, max_off)
+                max_off = max(0.0, w * 0.49)
+                off_l = min(off_l, max_off); off_r = min(off_r, max_off)
 
-                x_left = cursor_x
-                x_right = cursor_x + w
-                y_top = piece_y
-                y_bot = piece_y + piece_h
-
+                x_left = cursor_x; x_right = cursor_x + w
+                y_top = piece_y; y_bot = piece_y + piece_h
                 pts = [
                     QPointF(x_left + off_l, y_top),
                     QPointF(x_right - off_r, y_top),
@@ -221,21 +210,17 @@ class PlanVisualizerWidget(QWidget):
                 ]
                 poly = QPolygonF(pts)
 
-                # Determina se questo pezzo è "done"
-                sig = (round(L, 2), round(ax, 1), round(ad, 1))
+                sig = (round(L,2), round(ax,1), round(ad,1))
                 idx = encountered.get(sig, 0) + 1
                 encountered[sig] = idx
                 done_quota = self._done_counts.get(sig, 0)
                 is_done = idx <= done_quota
 
-                # Riempimento: alternato; se done, colore dedicato
-                fill = self._piece_done if is_done else (self._piece_fg if (pi % 2 == 0) else self._piece_fg_alt)
-
+                fill = self._piece_done if is_done else (self._piece_fg if pi % 2 == 0 else self._piece_fg_alt)
                 p.setPen(pen_piece_border)
                 p.setBrush(QBrush(fill))
                 p.drawPolygon(poly)
 
-                # Etichetta lunghezza (se spazio sufficiente)
                 label = f"{L:.0f} mm"
                 p.setPen(QPen(self._text))
                 if w >= 46:
@@ -244,13 +229,20 @@ class PlanVisualizerWidget(QWidget):
                     p.drawText(QRectF(x_left - 2, y_top - 12, max(46.0, w + 6), 12),
                                Qt.AlignLeft | Qt.AlignVCenter, label)
 
-                # Sposta di pezzo + kerf angolare minimo del giunto se non è l'ultimo pezzo
                 if pi < len(bar) - 1:
-                    kerf_gap_mm = _kerf_joint_min_for_piece(piece, self._kerf)
-                    cursor_x += w + max(0.0, kerf_gap_mm * scale_x)
+                    gap_tot, _, _, _ = joint_consumption(
+                        piece, self._kerf_base, self._ripasso_mm,
+                        self._reversible, self._thickness_mm,
+                        self._angle_tol, self._max_angle, self._max_factor
+                    )
+                    cursor_x += w + max(0.0, gap_tot * scale_x)
                 else:
                     cursor_x += w
 
-            # Etichetta barra a sinistra
             p.setPen(pen_bar)
-            p.drawText(QRectF(x0 - 8, top - 1, 36, 16), Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
+            p.drawText(QRectF(x0 - 8, top - 1, 36, 16),
+                       Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
+            if near_overflow:
+                p.drawText(QRectF(bar_rect.right() - 90, top - 1, 90, 16),
+                           Qt.AlignRight | Qt.AlignVCenter,
+                           f"Res {(self._stock - used_len):.1f}mm")
