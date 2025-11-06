@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 
 def _bar_used_length(bar: List[Dict[str, float]], kerf: float) -> float:
     if not bar:
@@ -32,13 +32,11 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
     Refine pass locale sulle ultime 'tail_bars' barre con una MILP:
     - Minimizza #barre usate, massimizza materiale usato nelle barre attive
     - Rispetta il kerf: sum(L) + kerf*(n_pezzi - z_barra) <= stock
-
-    Requisiti: PuLP disponibile. In assenza, ritorna barre/residui originali.
+    Requisiti: PuLP. Se non disponibile, ritorna barre/residui originali.
     """
     try:
         import pulp  # type: ignore
     except Exception:
-        # PuLP non disponibile → nessuna refine
         return _order_with_max_residual_last(list(bars), stock, kerf)
 
     if not bars or tail_bars <= 0:
@@ -49,7 +47,6 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
     head = [list(b) for b in bars[:start]]
     tail = [list(b) for b in bars[start:]]
 
-    # Colleziona item del tail (mantieni dict per intero, ma usi solo len nel modello)
     items: List[Dict[str, float]] = []
     for b in tail:
         for p in b:
@@ -57,42 +54,33 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
     if not items:
         return _order_with_max_residual_last(list(bars), stock, kerf)
 
-    # Numero massimo di barre nel tail: tieni K uguale al numero di barre originali del tail
     K = len(tail)
     J = len(items)
     lengths = [float(p.get("len", 0.0)) for p in items]
     kerf = float(kerf)
     stock = float(stock)
 
-    # Modello
     prob = pulp.LpProblem("tail_refine", pulp.LpMinimize)
 
-    # Variabili
     x = pulp.LpVariable.dicts("x", (range(J), range(K)), lowBound=0, upBound=1, cat=pulp.LpBinary)
-    y = pulp.LpVariable.dicts("y", range(K), lowBound=0, cat=pulp.LpInteger)  # numero pezzi sulla barra k
-    z = pulp.LpVariable.dicts("z", range(K), lowBound=0, upBound=1, cat=pulp.LpBinary)  # barra usata
+    y = pulp.LpVariable.dicts("y", range(K), lowBound=0, cat=pulp.LpInteger)
+    z = pulp.LpVariable.dicts("z", range(K), lowBound=0, upBound=1, cat=pulp.LpBinary)
 
-    # Vincoli: ogni item assegnato a una barra
     for j in range(J):
         prob += pulp.lpSum(x[j][k] for k in range(K)) == 1, f"assign_{j}"
 
-    BIGM = J  # limite superiore per y
+    BIGM = J
     for k in range(K):
-        # y_k = somma pezzi sulla barra k
         prob += y[k] == pulp.lpSum(x[j][k] for j in range(J)), f"y_def_{k}"
-        # y_k <= M * z_k
         prob += y[k] <= BIGM * z[k], f"use_link_{k}"
-        # Capacità: sum(L) + kerf*(y_k - z_k) <= stock
         prob += (
             pulp.lpSum(lengths[j] * x[j][k] for j in range(J)) + kerf * (y[k] - z[k]) <= stock
         ), f"cap_{k}"
 
-    # Obiettivo: minimizza W * sum(z_k) - sum(sum(L_j x_jk)) per favorire densità
     W = 1_000_000
     objective = W * pulp.lpSum(z[k] for k in range(K)) - pulp.lpSum(lengths[j] * x[j][k] for j in range(J) for k in range(K))
     prob += objective
 
-    # Solver
     try:
         solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=int(time_limit_s))
     except Exception:
@@ -101,13 +89,10 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
     try:
         prob.solve(solver) if solver else prob.solve()
     except Exception:
-        # in caso di errori: ritorna originale
         return _order_with_max_residual_last(list(bars), stock, kerf)
 
-    # Ricostruisci barre del tail dall'assegnamento
     new_tail: List[List[Dict[str, float]]] = [[] for _ in range(K)]
     for j in range(J):
-        # trova la barra k assegnata
         k_ass = None
         for k in range(K):
             v = x[j][k].value()
@@ -115,17 +100,78 @@ def refine_tail_ilp(bars: List[List[Dict[str, float]]],
                 k_ass = k
                 break
         if k_ass is None:
-            # fallback (non dovrebbe accadere)
             k_ass = 0
         new_tail[k_ass].append(items[j])
 
-    # Filtra barre vuote (z_k ~ 0)
     refined_tail = []
     for k in range(K):
         zk = z[k].value() or 0.0
         if zk > 0.5 and new_tail[k]:
             refined_tail.append(new_tail[k])
 
-    # Unisci head + refined_tail e rimetti la barra con residuo massimo per ultima
     out = head + refined_tail
     return _order_with_max_residual_last(out, stock, kerf)
+
+def pack_bars_knapsack_ilp(pieces: List[Dict[str, float]],
+                           stock: float,
+                           kerf: float,
+                           per_bar_time_s: int = 3) -> Tuple[List[List[Dict[str, float]]], List[float]]:
+    """
+    Costruisce le barre iterativamente risolvendo un knapsack ILP per OGNI barra:
+    - Variabili x_j in {0,1} per selezionare i pezzi di questa barra
+    - y = somma x_j, z binaria: se y>=1 allora z=1
+    - Capacità: sum(L_j x_j) + kerf*(y - z) <= stock (kerf sui giunti: y-1 se y>=1)
+    - Obiettivo: massimizzare sum(L_j x_j)
+    Se PuLP non è disponibile: ritorna ([], []) così il chiamante può fallback a BFD.
+    """
+    try:
+        import pulp  # type: ignore
+    except Exception:
+        return [], []
+
+    remaining = [dict(p) for p in pieces]
+    bars: List[List[Dict[str, float]]] = []
+
+    while remaining:
+        J = len(remaining)
+        lengths = [float(p.get("len", 0.0)) for p in remaining]
+        prob = pulp.LpProblem("bar_knapsack", pulp.LpMaximize)
+
+        x = pulp.LpVariable.dicts("x", range(J), lowBound=0, upBound=1, cat=pulp.LpBinary)
+        y = pulp.LpVariable("y", lowBound=0, cat=pulp.LpInteger)
+        z = pulp.LpVariable("z", lowBound=0, upBound=1, cat=pulp.LpBinary)
+
+        prob += y == pulp.lpSum(x[j] for j in range(J)), "y_def"
+        prob += y <= J * z, "use_link_le"
+        prob += y >= z, "use_link_ge"
+        prob += pulp.lpSum(lengths[j] * x[j] for j in range(J)) + float(kerf) * (y - z) <= float(stock), "capacity"
+
+        prob += pulp.lpSum(lengths[j] * x[j] for j in range(J)), "objective"
+
+        try:
+            solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=int(per_bar_time_s))
+        except Exception:
+            solver = None
+
+        try:
+            prob.solve(solver) if solver else prob.solve()
+        except Exception:
+            # In caso di problemi, interrompi la costruzione e restituisci quanto fatto
+            break
+
+        # Estrai i pezzi selezionati per questa barra
+        chosen_idx = [j for j in range(J) if (x[j].value() or 0.0) > 0.5]
+        if not chosen_idx:
+            # Nessun pezzo selezionato (può succedere per limiti solver) -> inserisci 1 pezzo max
+            best_j = max(range(J), key=lambda j: lengths[j])
+            chosen_idx = [best_j]
+
+        bar = [remaining[j] for j in chosen_idx]
+        bars.append(bar)
+
+        # Rimuovi i selezionati
+        mask = set(chosen_idx)
+        remaining = [remaining[j] for j in range(J) if j not in mask]
+
+    # Calcola residui e ordina l'ultima barra come quella con residuo massimo
+    return _order_with_max_residual_last(bars, float(stock), float(kerf))
