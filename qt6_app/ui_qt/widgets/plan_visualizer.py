@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import math
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QSize
@@ -13,10 +13,12 @@ from ui_qt.logic.refiner import (
 
 class PlanVisualizerWidget(QWidget):
     """
-    Visualizzazione grafica piano barre:
+    Visualizzazione grafica del piano barre (Automatico):
     - Gap tra pezzi = consumo giunto (kerf effettivo dopo recupero + ripasso).
     - Bordi rossi per barre quasi overflow (usato > stock - warn_threshold).
     - Evidenzia pezzi tagliati (stato done).
+    - SPECCHIO VERTICALE (invert_vertical): gli angoli di taglio sono rappresentati specularmente in verticale.
+    - Supporto 'barra corrente' impostata dalla logica di Automatico (set_current_bar).
     """
 
     def __init__(self, parent=None):
@@ -46,13 +48,19 @@ class PlanVisualizerWidget(QWidget):
         self._piece_done = QColor("#9ccc65")
         self._text = QColor("#2c3e50")
 
+        # Stato pezzi fatti e barra corrente
         self._done_counts: Dict[Tuple[float, float, float], int] = {}
+        self._current_bar_index: Optional[int] = None  # se None → calcolo automatico
+
+        # Rappresentazione speculare verticale degli angoli
+        self._invert_vertical: bool = True
 
         self.setMinimumSize(480, 200)
 
     def sizeHint(self) -> QSize:
         return QSize(720, 360)
 
+    # ------------ API ------------
     def set_data(self,
                  bars: List[List[Dict[str, float]]],
                  stock_mm: float,
@@ -85,6 +93,27 @@ class PlanVisualizerWidget(QWidget):
         self._done_counts[sig] = self._done_counts.get(sig, 0) + 1
         self.update()
 
+    def set_current_bar(self, index: Optional[int]):
+        """Imposta la barra corrente (evidenziata). Se None, la deduco dai pezzi 'done'."""
+        if index is None:
+            self._current_bar_index = None
+        else:
+            try:
+                idx = int(index)
+                if 0 <= idx < len(self._bars):
+                    self._current_bar_index = idx
+                else:
+                    self._current_bar_index = None
+            except Exception:
+                self._current_bar_index = None
+        self.update()
+
+    def set_invert_vertical(self, on: bool):
+        """Abilita/disabilita l'inversione verticale nella rappresentazione degli angoli."""
+        self._invert_vertical = bool(on)
+        self.update()
+
+    # ------------ Helpers ------------
     @staticmethod
     def _is_square_angle(a: float) -> bool:
         try:
@@ -103,7 +132,12 @@ class PlanVisualizerWidget(QWidget):
         return math.tan(math.radians(a)) * px_height
 
     def _precompute_active_bar(self) -> Tuple[int, List[bool]]:
-        encountered: Dict[Tuple[float,float,float], int] = {}
+        """
+        Deduco la barra attiva scorrendo le barre in ordine e “consumando” i pezzi fatti
+        per firma (len, ax, ad) man mano (encountered).
+        Ritorna (indice_barra_attiva, flags_barra_finita[]).
+        """
+        encountered: Dict[Tuple[float, float, float], int] = {}
         active_idx = -1
         done_flags: List[bool] = []
         for bi, bar in enumerate(self._bars):
@@ -112,7 +146,7 @@ class PlanVisualizerWidget(QWidget):
                 L = float(piece.get("len", 0.0))
                 ax = float(piece.get("ax", 0.0))
                 ad = float(piece.get("ad", 0.0))
-                sig = (round(L,2), round(ax,1), round(ad,1))
+                sig = (round(L, 2), round(ax, 1), round(ad, 1))
                 idx = encountered.get(sig, 0) + 1
                 encountered[sig] = idx
                 done_quota = self._done_counts.get(sig, 0)
@@ -124,6 +158,7 @@ class PlanVisualizerWidget(QWidget):
                 active_idx = bi
         return active_idx, done_flags
 
+    # ------------ paintEvent ------------
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
@@ -151,7 +186,9 @@ class PlanVisualizerWidget(QWidget):
 
         scale_x = (avail_w - 40) / max(1.0, self._stock)
 
-        active_idx, bar_done_flags = self._precompute_active_bar()
+        # Deduci barra attiva dai pezzi fatti, poi eventualmente sovrascrivi con quella imposta dall'esterno
+        computed_active_idx, bar_done_flags = self._precompute_active_bar()
+        active_idx = computed_active_idx if (self._current_bar_index is None) else min(max(self._current_bar_index, 0), n_bars - 1)
 
         pen_bar = QPen(self._border); pen_bar.setWidth(1)
         pen_warn = QPen(self._border_warn); pen_warn.setWidth(2)
@@ -161,7 +198,7 @@ class PlanVisualizerWidget(QWidget):
         font.setPointSizeF(9.0)
         p.setFont(font)
 
-        encountered: Dict[Tuple[float,float,float], int] = {}
+        encountered: Dict[Tuple[float, float, float], int] = {}
 
         for bi, bar in enumerate(self._bars):
             top = y0 + bi * (bar_h + vspace)
@@ -202,15 +239,26 @@ class PlanVisualizerWidget(QWidget):
 
                 x_left = cursor_x; x_right = cursor_x + w
                 y_top = piece_y; y_bot = piece_y + piece_h
-                pts = [
-                    QPointF(x_left + off_l, y_top),
-                    QPointF(x_right - off_r, y_top),
-                    QPointF(x_right, y_bot),
-                    QPointF(x_left, y_bot),
-                ]
+
+                if not self._invert_vertical:
+                    # Angoli applicati sul bordo superiore (rappresentazione originale)
+                    pts = [
+                        QPointF(x_left + off_l,  y_top),  # top-left
+                        QPointF(x_right - off_r, y_top),  # top-right
+                        QPointF(x_right,         y_bot),  # bottom-right
+                        QPointF(x_left,          y_bot),  # bottom-left
+                    ]
+                else:
+                    # SPECCHIO VERTICALE: angoli applicati sul bordo inferiore
+                    pts = [
+                        QPointF(x_left,          y_top),                  # top-left
+                        QPointF(x_right,         y_top),                  # top-right
+                        QPointF(x_right - off_r, y_bot),                  # bottom-right (taglio DX)
+                        QPointF(x_left + off_l,  y_bot),                  # bottom-left (taglio SX)
+                    ]
                 poly = QPolygonF(pts)
 
-                sig = (round(L,2), round(ax,1), round(ad,1))
+                sig = (round(L, 2), round(ax, 1), round(ad, 1))
                 idx = encountered.get(sig, 0) + 1
                 encountered[sig] = idx
                 done_quota = self._done_counts.get(sig, 0)
