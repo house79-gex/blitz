@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import csv
 from datetime import datetime
 
@@ -32,6 +32,9 @@ from ui_qt.logic.refiner import (
 )
 
 
+# ---------------------------------------------------------
+# Riepilogo ottimizzazione (tabellare)
+# ---------------------------------------------------------
 class OptimizationSummaryDialog(QDialog):
     COLS = ["Barra","Pezzi","Usato (mm)","Residuo (mm)","Efficienza (%)",
             "Kerf ang (mm)","Ripasso (mm)","Recupero (mm)","Dettaglio","Warn"]
@@ -176,10 +179,12 @@ class OptimizationSummaryDialog(QDialog):
         printer = QPrinter(QPrinter.HighResolution)
         printer.setOutputFormat(QPrinter.PdfFormat)
         printer.setOutputFileName(path)
-        # PySide6: il metodo è print_ (non print)
         doc.print_(printer)
 
 
+# ---------------------------------------------------------
+# Dialog principale di run ottimizzazione
+# ---------------------------------------------------------
 class OptimizationRunDialog(QDialog):
     simulationRequested = Signal()
     startRequested = Signal()
@@ -188,13 +193,17 @@ class OptimizationRunDialog(QDialog):
     GRAPH_BAR_H = 16
     GRAPH_V_GAP = 6
 
-    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[Widget] = None):
+    strict_bar_mode = True  # Finire completamente la barra prima di passare alla successiva
+
+    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]],
+                 overlay_target: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
         self.profile = profile
         self._rows: List[Dict[str, Any]] = [dict(r) for r in rows]
 
+        # Config dal settings
         cfg = read_settings()
         self._stock = float(cfg.get("opt_stock_mm", 6500.0))
         stock_use = float(cfg.get("opt_stock_usable_mm", 0.0))
@@ -219,13 +228,18 @@ class OptimizationRunDialog(QDialog):
 
         self._bars: List[List[Dict[str, float]]] = []
         self._bars_residuals: List[float] = []
+        self._bar_idx: int = -1
+        self._piece_idx: int = -1
+        self._done_by_index: Dict[int, List[bool]] = {}  # stato pezzi tagliati per barra
 
         self._build()
         self._compute_plan_once()
+        self._init_done_state()
         self._refresh_views()
         self._apply_geometry()
         self._resize_graph_area()
 
+    # ---------------- UI build ----------------
     def _build(self):
         root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
 
@@ -233,14 +247,16 @@ class OptimizationRunDialog(QDialog):
         self._chk_graph = QCheckBox("Mostra grafica piano"); self._chk_graph.setChecked(self._show_graph)
         self._chk_graph.toggled.connect(self._toggle_graph)
         btn_summary = QPushButton("Riepilogo…"); btn_summary.clicked.connect(self._open_summary)
-        btn_start = QPushButton("Simula Avanzamento (F9)"); btn_start.clicked.connect(lambda: self.startRequested.emit())
-        btn_cut = QPushButton("Simula START (F7)"); btn_cut.clicked.connect(lambda: self.simulationRequested.emit())
+        btn_start = QPushButton("Avanza pezzo (F9)"); btn_start.clicked.connect(lambda: self.startRequested.emit())
+        btn_cut = QPushButton("Simula taglio (F7)"); btn_cut.clicked.connect(lambda: self.simulationRequested.emit())
         ol.addWidget(self._chk_graph); ol.addStretch(1); ol.addWidget(btn_summary); ol.addWidget(btn_start); ol.addWidget(btn_cut)
         root.addWidget(opts, 0)
 
         self._panel_graph = QFrame()
         gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(6,6,6,6); gl.setSpacing(4)
         self._graph = PlanVisualizerWidget(self)
+        # SPECCHIO VERTICALE angoli
+        self._graph.set_invert_vertical(True)
         gl.addWidget(self._graph, 1)
         root.addWidget(self._panel_graph, 0)
 
@@ -263,11 +279,7 @@ class OptimizationRunDialog(QDialog):
             cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
         self._resize_graph_area()
 
-    def _open_summary(self):
-        dlg = OptimizationSummaryDialog(self, self.profile, self._bars, self._bars_residuals, self._stock)
-        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
-        dlg.show()
-
+    # ---------------- Packing & Piano ----------------
     def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
         pieces: List[Dict[str, float]] = []
         for r in self._rows:
@@ -292,17 +304,10 @@ class OptimizationRunDialog(QDialog):
                 if used + p["len"] + extra <= self._stock + 1e-6:
                     b.append(p); placed = True; break
             if not placed:
-                if p["len"] <= self._stock + 1e-6:
-                    bars.append([p])
-                else:
-                    bars.append([p])
+                bars.append([p])
         rem = residuals(bars, self._stock, self._kerf_base, self._ripasso,
                         self._reversible, self._thickness,
                         self._angle_tol, self._max_angle, self._max_factor)
-        if rem:
-            max_idx = max(range(len(rem)), key=lambda k: rem[k])
-            if max_idx != len(bars) - 1:
-                bars.append(bars.pop(max_idx)); rem.append(rem.pop(max_idx))
         return bars, rem
 
     def _compute_plan_once(self):
@@ -326,9 +331,65 @@ class OptimizationRunDialog(QDialog):
         else:
             bars, rem = self._pack_bfd(pieces)
 
+        # Refine tail (se fallisce ignora)
+        try:
+            bars, rem = refine_tail_ilp(
+                bars, self._stock, self._kerf_base,
+                self._ripasso, self._reversible, self._thickness,
+                self._angle_tol, tail_bars=self._tail_n,
+                time_limit_s=self._tail_t,
+                max_angle=self._max_angle, max_factor=self._max_factor
+            )
+        except Exception:
+            pass
+
+        # Sistemazione overflow (pezzi rimossi e ripiazzati)
+        fixed_bars: List[List[Dict[str, float]]] = []
+        overflow: List[Dict[str, float]] = []
+        for bar in bars:
+            b = list(bar)
+            while b and bar_used_length(b, self._kerf_base, self._ripasso,
+                                       self._reversible, self._thickness,
+                                       self._angle_tol, self._max_angle, self._max_factor) > self._stock + 1e-6:
+                overflow.append(b.pop())
+            fixed_bars.append(b)
+
+        if overflow:
+            # riaggiunge overflow per first-fit
+            for piece in sorted(overflow, key=lambda x: x["len"], reverse=True):
+                placed = False
+                for fb in fixed_bars:
+                    used = bar_used_length(fb, self._kerf_base, self._ripasso,
+                                           self._reversible, self._thickness,
+                                           self._angle_tol, self._max_angle, self._max_factor)
+                    extra = joint_consumption(fb[-1], self._kerf_base, self._ripasso,
+                                              self._reversible, self._thickness,
+                                              self._angle_tol, self._max_angle, self._max_factor)[0] if fb else 0.0
+                    if used + piece["len"] + extra <= self._stock + 1e-6:
+                        fb.append(piece); placed = True; break
+                if not placed:
+                    fixed_bars.append([piece])
+
+        bars = fixed_bars
+        rem = residuals(bars, self._stock, self._kerf_base, self._ripasso,
+                        self._reversible, self._thickness,
+                        self._angle_tol, self._max_angle, self._max_factor)
+
+        # ORDINAMENTO BARRE: priorità barre con pezzi più lunghi (strict sequencing)
+        bars.sort(key=lambda b: max((p["len"] for p in b), default=0.0), reverse=True)
+
         self._bars = bars
         self._bars_residuals = rem
 
+    def _init_done_state(self):
+        self._bar_idx = 0 if self._bars else -1
+        self._piece_idx = -1
+        self._done_by_index = {i: [False]*len(b) for i, b in enumerate(self._bars)}
+        # evidenzia barra corrente
+        self._graph.set_current_bar(self._bar_idx if self._bar_idx >= 0 else None)
+        self._graph.set_done_by_index(self._done_by_index)
+
+    # ---------------- Views ----------------
     def _refresh_views(self):
         self._graph.set_data(
             self._bars, stock_mm=self._stock,
@@ -337,6 +398,9 @@ class OptimizationRunDialog(QDialog):
             angle_tol=self._angle_tol, max_angle=self._max_angle,
             max_factor=self._max_factor, warn_threshold_mm=self._warn_thr
         )
+        self._graph.set_invert_vertical(True)  # assicurati specchio
+        self._graph.set_done_by_index(self._done_by_index)
+        self._graph.set_current_bar(self._bar_idx if self.strict_bar_mode else None)
         self._reload_table()
         self._resize_graph_area()
 
@@ -350,6 +414,13 @@ class OptimizationRunDialog(QDialog):
             self._tbl.setItem(row, 2, QTableWidgetItem(f"{float(r.get('ang_dx',0.0)):.1f}"))
             self._tbl.setItem(row, 3, QTableWidgetItem(str(q)))
 
+    # ---------------- Summary dialog ----------------
+    def _open_summary(self):
+        dlg = OptimizationSummaryDialog(self, self.profile, self._bars, self._bars_residuals, self._stock)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        dlg.show()
+
+    # ---------------- Geometry / sizing ----------------
     def _apply_geometry(self):
         if self._overlay_target is not None:
             try:
@@ -362,7 +433,7 @@ class OptimizationRunDialog(QDialog):
             screen = QApplication.primaryScreen()
             if screen:
                 avail = screen.availableGeometry()
-                self.resize(max(720, self.width()), int(avail.height() - 32))
+                self.resize(max(820, self.width()), int(avail.height() - 32))
                 self.move(avail.x() + 12, avail.y() + 12)
 
     def _desired_graph_height(self, n_bars: int) -> int:
@@ -385,8 +456,22 @@ class OptimizationRunDialog(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event); self._resize_graph_area()
 
+    # ---------------- Aggiornamento dopo taglio ----------------
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        self._graph.mark_done(length_mm, ang_sx, ang_dx)
+        # Trova il pezzo attivo per indice (strict) se possibile
+        if self.strict_bar_mode and 0 <= self._bar_idx < len(self._bars):
+            bar = self._bars[self._bar_idx]
+            # Se _piece_idx fuori range, prova a localizzarlo per matching
+            if not (0 <= self._piece_idx < len(bar)):
+                for i, p in enumerate(bar):
+                    if abs(p["len"] - length_mm) <= 0.01 and abs(p["ax"] - ang_sx) <= 0.01 and abs(p["ad"] - ang_dx) <= 0.01 and not self._done_by_index[self._bar_idx][i]:
+                        self._piece_idx = i
+                        break
+            if 0 <= self._piece_idx < len(bar):
+                self._done_by_index[self._bar_idx][self._piece_idx] = True
+                self._graph.mark_done_index(self._bar_idx, self._piece_idx)
+
+        # Aggiorna qty tabellare
         tol_L = 0.01; tol_A = 0.01
         for r in self._rows:
             try:
@@ -397,20 +482,64 @@ class OptimizationRunDialog(QDialog):
                     break
             except Exception:
                 continue
-        self._refresh_views()
 
+        # Passa alla prossima barra SOLO se quella corrente è completamente tagliata
+        if self.strict_bar_mode and 0 <= self._bar_idx < len(self._bars):
+            if all(self._done_by_index[self._bar_idx]):
+                self._bar_idx += 1
+                self._piece_idx = -1
+                self._graph.set_current_bar(self._bar_idx if self._bar_idx < len(self._bars) else None)
+
+        self._graph.set_done_by_index(self._done_by_index)
+        self._reload_table()
+
+    # ---------------- API per la pagina Automatico ----------------
+    def arm_next_piece(self) -> Optional[Tuple[float, float, float]]:
+        """
+        Determina il prossimo pezzo da armare rispettando strict bar mode:
+        - Resta nella barra corrente finché non è completa.
+        - Usa il primo indice non done.
+        """
+        if not self._bars or self._bar_idx >= len(self._bars):
+            return None
+        bar = self._bars[self._bar_idx]
+        if self.strict_bar_mode:
+            # Trova primo non fatto
+            try:
+                next_idx = next(i for i, done in enumerate(self._done_by_index[self._bar_idx]) if not done)
+            except StopIteration:
+                # barra finita → passa alla successiva; ritorna None (pagina deciderà di richiedere nuovo arm)
+                self._bar_idx += 1
+                self._piece_idx = -1
+                self._graph.set_current_bar(self._bar_idx if self._bar_idx < len(self._bars) else None)
+                return None
+            self._piece_idx = next_idx
+            p = bar[self._piece_idx]
+            return (p["len"], p["ax"], p["ad"])
+        else:
+            # modalità legacy: sequenziale flat
+            self._piece_idx += 1
+            if self._piece_idx >= len(bar):
+                self._bar_idx += 1
+                self._piece_idx = 0
+                if self._bar_idx >= len(self._bars):
+                    return None
+                bar = self._bars[self._bar_idx]
+            p = bar[self._piece_idx]
+            return (p["len"], p["ax"], p["ad"])
+
+    # ---------------- Eventi tastiera ----------------
     def keyPressEvent(self, ev: QKeyEvent):
         try:
             if ev.key() == Qt.Key_F7:
-                self.simulationRequested.emit()
-                ev.accept(); return
+                self.simulationRequested.emit(); ev.accept(); return
             if ev.key() == Qt.Key_F9:
-                self.startRequested.emit()
-                ev.accept(); return
+                self.startRequested.emit(); ev.accept(); return
         except Exception:
             pass
         super().keyPressEvent(ev)
 
+    # ---------------- Chiusura / Persistenza ----------------
     def accept(self):
         if self._overlay_target is None:
             cfg = dict(read_settings())
