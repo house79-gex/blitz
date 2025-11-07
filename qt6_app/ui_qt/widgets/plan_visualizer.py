@@ -13,7 +13,7 @@ from ui_qt.logic.refiner import (
 
 class PlanVisualizerWidget(QWidget):
     """
-    Visualizzazione grafica piano barre:
+    Visualizzazione grafica piano barre (Automatico):
     - Gap tra pezzi = consumo giunto (kerf effettivo dopo recupero + ripasso).
     - Bordi rossi per barre quasi overflow (usato > stock - warn_threshold).
     - Evidenzia pezzi tagliati (stato done).
