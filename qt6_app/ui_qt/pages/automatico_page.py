@@ -154,9 +154,9 @@ class AutomaticoPage(QWidget):
         self.seq.finished.connect(self._on_seq_done)
 
         self.tbl_cut: Optional[QTableWidget] = None
-        self.lbl_target: Optional[QLabel] = None
-        self.lbl_done: Optional[QLabel] = None
-        self.lbl_remaining: Optional[QLabel] = None
+        self.lbl_target: Optional[Label] = None
+        self.lbl_done: Optional[Label] = None
+        self.lbl_remaining: Optional[Label] = None
         self.status: Optional[StatusPanel] = None
         self.btn_start_row: Optional[QPushButton] = None
         self.viewer_frame: Optional[QFrame] = None
@@ -209,10 +209,22 @@ class AutomaticoPage(QWidget):
             self._fq_offset_mm = float(read_settings().get("semi_offset_mm", 120.0))
         except Exception:
             self._fq_offset_mm = 120.0
+        # Posizione sicura per extra-corti (solo DX), configurabile
+        try:
+            self._extshort_safe_mm = float(read_settings().get("auto_extshort_safe_pos_mm", 400.0))
+        except Exception:
+            self._extshort_safe_mm = 400.0
+        # Kerf per extra-corti
+        try:
+            self._kerf_base_mm = float(read_settings().get("opt_kerf_mm", 3.0))
+        except Exception:
+            self._kerf_base_mm = 3.0
 
-        # Stato FQ 2 fasi
+        # Stato Fuori Quota / extra-corto
+        # mode: "fq" (2 fasi o monofase) oppure "extshort" (intest0->final)
         self._fq_state: Dict[str, Any] = {
-            "active": False, "phase": "", "final_target": 0.0,
+            "active": False, "mode": "", "phase": "", "sub": "",
+            "final_target": 0.0,
             "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0
         }
 
@@ -230,6 +242,13 @@ class AutomaticoPage(QWidget):
 
         root.addWidget(Header(self.appwin, "AUTOMATICO", mode="default",
                               on_home=self._nav_home, on_reset=self._reset_and_home))
+
+        # Banner messaggi grandi
+        self.banner = QLabel("")
+        self.banner.setVisible(False)
+        self.banner.setAlignment(Qt.AlignCenter)
+        self.banner.setStyleSheet("QLabel { background:#ffe7ba; color:#1b1b1b; font-size:18px; font-weight:800; padding:8px 12px; border:1px solid #c49a28; border-radius:6px; }")
+        root.addWidget(self.banner)
 
         top = QHBoxLayout()
         btn_import = QPushButton("Importa…"); btn_import.clicked.connect(self._import_cutlist); top.addWidget(btn_import)
@@ -320,6 +339,22 @@ class AutomaticoPage(QWidget):
 
         QShortcut(QKeySequence("Space"), self, activated=self._handle_start_trigger)
 
+    def _show_banner(self, msg: str, level: str = "info"):
+        # level: info/ok/warn
+        styles = {
+            "info": "background:#ffe7ba; color:#1b1b1b; border:1px solid #c49a28;",
+            "ok":   "background:#d4efdf; color:#145a32; border:1px solid #27ae60;",
+            "warn": "background:#fdecea; color:#7b241c; border:1px solid #c0392b;",
+        }
+        sty = styles.get(level, styles["info"])
+        self.banner.setText(msg)
+        self.banner.setStyleSheet(f"QLabel {{{sty} font-size:20px; font-weight:900; padding:10px 14px; border-radius:8px;}}")
+        self.banner.setVisible(True)
+
+    def _hide_banner(self):
+        self.banner.setVisible(False)
+        self.banner.setText("")
+
     def _row_is_header(self, row: int) -> bool:
         it = self.tbl_cut.item(row, 0)
         return bool(it) and not bool(it.flags() & Qt.ItemIsSelectable)
@@ -360,8 +395,9 @@ class AutomaticoPage(QWidget):
         self._brake_locked = False; self._blade_prev = False; self._start_prev = False
         self._move_target_mm = 0.0; self._inpos_since = 0.0; self._lock_on_inpos = False
         self._sig_total_counts.clear(); self._cur_sig = None
-        self._fq_state = {"active": False, "phase": "", "final_target": 0.0, "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
+        self._fq_state = {"active": False, "mode": "", "phase": "", "sub": "", "final_target": 0.0, "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
         if self.tbl_cut: self.tbl_cut.setRowCount(0)
+        self._hide_banner()
         self._update_counters_ui()
 
     def _import_cutlist(self):
@@ -418,6 +454,7 @@ class AutomaticoPage(QWidget):
                     self.tbl_cut.setItem(r, col, it)
         self._mode = "idle"; self._active_row = None; self._manual_job = None
         self._finished_rows.clear(); self._sig_total_counts.clear(); self._cur_sig = None
+        self._hide_banner()
         self._update_counters_ui()
 
     def _on_optimize_clicked(self):
@@ -651,6 +688,7 @@ class AutomaticoPage(QWidget):
         for (L, ax, ad), qty in items.items():
             self._sig_total_counts[self._sig_key(prof, L, ax, ad)] = int(qty)
 
+        self._hide_banner()
         self._update_counters_ui()
         self._toast(f"Piano ottimizzato per {prof}. Barre: {len(bars)}.", "info")
 
@@ -751,17 +789,39 @@ class AutomaticoPage(QWidget):
         if self._is_dummy():
             QTimer.singleShot(150, lambda: self._ensure_test_lock(1, 1))
 
+    def _set_pressers(self, left_locked: Optional[bool] = None, right_locked: Optional[bool] = None):
+        """
+        Prova varie API per comandare i pressori; fallback su attributi.
+        left_locked/right_locked: True=pressore chiuso (premuto), False=aperto.
+        """
+        try:
+            if left_locked is not None:
+                if hasattr(self.machine, "set_left_presser_locked"):
+                    self.machine.set_left_presser_locked(bool(left_locked))
+                elif hasattr(self.machine, "set_output"):
+                    self.machine.set_output("left_presser_lock", bool(left_locked))
+                else:
+                    setattr(self.machine, "left_presser_locked", bool(left_locked))
+            if right_locked is not None:
+                if hasattr(self.machine, "set_right_presser_locked"):
+                    self.machine.set_right_presser_locked(bool(right_locked))
+                elif hasattr(self.machine, "set_output"):
+                    self.machine.set_output("right_presser_lock", bool(right_locked))
+                else:
+                    setattr(self.machine, "right_presser_locked", bool(right_locked))
+        except Exception:
+            pass
+
     def _move_and_arm(self, length: float, ax: float, ad: float, profile: str, element: str):
         """
         length: lunghezza ESTERNA. Applica compensazione thickness*tan(|ang|).
-        Fuori Quota:
-          - Se eff_len < min: per OGNI pezzo:
-              * se (ax==0 e ad==0): SOLO fase offset con SX (DX inibita)
-              * altrimenti: 2 fasi
-                    1) intestatura: SX inibita, DX abilitata con angolo 'ad', posiziona a minima
-                       Banner: "Posizionare elemento per intestatura"
-                    2) offset: DX inibita, SX abilitata, posiziona a eff_len+offset
-                       Banner: "Posizionare elemento in battuta offset Fuori quota"
+        Fuori Quota per ogni pezzo:
+          - Se (ax,ad)==(0,0) e eff_len < min:
+              * Se eff_len+offset >= min: monofase SX (offset)
+              * Se eff_len+offset <  min: modalità extra-corto DX:
+                    intest0: DX @0° a safe (es. 400mm), banner "Intestatura"
+                    final:   SX abilitata/DX inibita, pos = safe - eff - kerf, banner "Battuta offset"
+          - Se angoli diversi da 0 e eff_len < min: due fasi (intestatura -> offset) come descritto.
         """
         self._unlock_brake(silent=True)
 
@@ -777,47 +837,80 @@ class AutomaticoPage(QWidget):
         eff_len = self._effective_position_length(length, ax, ad, thickness_mm)
         target_len, ok, min_q, max_q = self._enforce_length_limits(eff_len)
 
+        both_zero = (abs(ax) <= 0.2 and abs(ad) <= 0.2)
+        min_with_offset = max(min_q, eff_len + float(self._fq_offset_mm))
+
         # Sotto minima → Fuori Quota per ogni pezzo
         if not ok and eff_len < min_q - 1e-6:
-            both_zero = (abs(ax) <= 0.2 and abs(ad) <= 0.2)
-            final_target = max(min_q, eff_len + float(self._fq_offset_mm))
-
             if both_zero:
-                # FQ monofase: SOLO SX (DX inibita), posiziona a offset
-                self._fq_state = {
-                    "active": True, "phase": "offset",
-                    "final_target": float(final_target),
-                    "ax": float(ax), "ad": float(ad),
-                    "profile": profile, "element": element, "min_q": float(min_q)
-                }
-                try:
-                    if hasattr(self.machine, "set_left_blade_inhibit"):
-                        self.machine.set_left_blade_inhibit(False)  # SX abilitata
-                    setattr(self.machine, "right_blade_inhibit", True)   # DX inibita
-                except Exception:
-                    pass
-                # Angoli come da pezzo (entrambi 0 tipicamente)
-                try:
-                    if hasattr(self.machine, "set_head_angles"):
-                        self.machine.set_head_angles(float(ax), float(ad))
-                    else:
-                        setattr(self.machine, "left_head_angle", float(ax))
-                        setattr(self.machine, "right_head_angle", float(ad))
-                except Exception:
-                    pass
-                self._toast("Posizionare elemento in battuta offset Fuori quota", "info")
-                self._position_machine_exact(final_target, ax, ad, profile, element)
-                try:
-                    setattr(self.machine, "semi_auto_target_pieces", 1)
-                    setattr(self.machine, "semi_auto_count_done", 0)
-                except Exception:
-                    pass
-                return
+                if eff_len + self._fq_offset_mm >= min_q - 1e-6:
+                    # Monofase: SX abilitata, DX inibita, pos a offset
+                    self._fq_state = {
+                        "active": True, "mode": "fq", "phase": "offset", "sub": "",
+                        "final_target": float(min_with_offset),
+                        "ax": float(ax), "ad": float(ad),
+                        "profile": profile, "element": element, "min_q": float(min_q)
+                    }
+                    try:
+                        if hasattr(self.machine, "set_left_blade_inhibit"):
+                            self.machine.set_left_blade_inhibit(False)
+                        setattr(self.machine, "right_blade_inhibit", True)
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self.machine, "set_head_angles"):
+                            self.machine.set_head_angles(float(ax), float(ad))
+                        else:
+                            setattr(self.machine, "left_head_angle", float(ax))
+                            setattr(self.machine, "right_head_angle", float(ad))
+                    except Exception:
+                        pass
+                    self._show_banner("Posizionare elemento in battuta offset Fuori quota", "warn")
+                    self._position_machine_exact(min_with_offset, ax, ad, profile, element)
+                    try:
+                        setattr(self.machine, "semi_auto_target_pieces", 1)
+                        setattr(self.machine, "semi_auto_count_done", 0)
+                    except Exception:
+                        pass
+                    return
+                else:
+                    # Extra-corto DX: intestatura 0° a safe, poi pos = safe - eff - kerf
+                    final_target = max(0.0, self._extshort_safe_mm - eff_len - self._kerf_base_mm)
+                    self._fq_state = {
+                        "active": True, "mode": "extshort", "phase": "intest", "sub": "intest0",
+                        "final_target": float(final_target),
+                        "ax": float(ax), "ad": float(ad),
+                        "profile": profile, "element": element, "min_q": float(min_q)
+                    }
+                    # Lamatura: usa solo DX
+                    try:
+                        if hasattr(self.machine, "set_left_blade_inhibit"):
+                            self.machine.set_left_blade_inhibit(True)   # SX inibita
+                        setattr(self.machine, "right_blade_inhibit", False)  # DX abilitata
+                    except Exception:
+                        pass
+                    # Angoli 0°
+                    try:
+                        if hasattr(self.machine, "set_head_angles"):
+                            self.machine.set_head_angles(0.0, 0.0)
+                        else:
+                            setattr(self.machine, "left_head_angle", 0.0)
+                            setattr(self.machine, "right_head_angle", 0.0)
+                    except Exception:
+                        pass
+                    self._show_banner("Modalità EXTRA-CORTO: Posizionare elemento per intestatura a DX (0°)", "warn")
+                    self._position_machine_exact(self._extshort_safe_mm, 0.0, 0.0, profile, element)
+                    try:
+                        setattr(self.machine, "semi_auto_target_pieces", 1)
+                        setattr(self.machine, "semi_auto_count_done", 0)
+                    except Exception:
+                        pass
+                    return
 
-            # Due fasi: intestatura poi offset
+            # Angoli diversi da 0: due fasi standard (intestatura -> offset)
             self._fq_state = {
-                "active": True, "phase": "intest",
-                "final_target": float(final_target),
+                "active": True, "mode": "fq", "phase": "intest", "sub": "",
+                "final_target": float(min_with_offset),
                 "ax": float(ax), "ad": float(ad),
                 "profile": profile, "element": element, "min_q": float(min_q)
             }
@@ -828,7 +921,7 @@ class AutomaticoPage(QWidget):
                 setattr(self.machine, "right_blade_inhibit", False)
             except Exception:
                 pass
-            # Angoli intestatura: DX all'angolo appropriato 'ad', SX come 'ax'
+            # Angoli intestatura: usa ad su DX, ax su SX
             try:
                 if hasattr(self.machine, "set_head_angles"):
                     self.machine.set_head_angles(float(ax), float(ad))
@@ -838,7 +931,7 @@ class AutomaticoPage(QWidget):
             except Exception:
                 pass
 
-            self._toast("Posizionare elemento per intestatura", "info")
+            self._show_banner("Posizionare elemento per intestatura", "warn")
             self._position_machine_exact(min_q, ax, ad, profile, element)
             try:
                 setattr(self.machine, "semi_auto_target_pieces", 1)
@@ -848,10 +941,13 @@ class AutomaticoPage(QWidget):
             return
 
         # Non FQ: usa target_len (già clampato)
+        self._hide_banner()
         if hasattr(self.machine, "set_left_blade_inhibit"):
             try: self.machine.set_left_blade_inhibit(False)
             except Exception: pass
         setattr(self.machine, "right_blade_inhibit", False)
+        # Pressori default chiusi (locked True)
+        self._set_pressers(left_locked=True, right_locked=True)
 
         self._position_machine_exact(target_len, ax, ad, profile, element)
         try:
@@ -989,7 +1085,7 @@ class AutomaticoPage(QWidget):
 
     def _handle_start_trigger(self):
         if self._mode != "plan" or not self._bars: return
-        # Se siamo nel mezzo del Fuori Quota, ignora START (si completa con i due tagli / monofase)
+        # Durante FQ (qualsiasi modalità), START ignorato finché non finisce la sequenza
         if self._fq_state.get("active", False):
             return
 
@@ -1050,54 +1146,105 @@ class AutomaticoPage(QWidget):
             self._dec_selected_row_qty()
             return
 
-        # Gestione Fuori Quota a due fasi / monofase
+        # Gestione Fuori Quota / Extra-corto
         if self._fq_state.get("active", False):
+            mode = self._fq_state.get("mode", "")
             phase = self._fq_state.get("phase", "")
-            if phase == "intest":
-                # Conclusa intestatura, avvia FASE 2 (offset con SX)
-                try:
-                    if hasattr(self.machine, "set_left_blade_inhibit"):
-                        self.machine.set_left_blade_inhibit(False)  # SX abilitata
-                    setattr(self.machine, "right_blade_inhibit", True)   # DX inibita
-                except Exception:
-                    pass
-                # Ripristina angoli pezzo
-                ax = float(self._fq_state.get("ax", 0.0))
-                ad = float(self._fq_state.get("ad", 0.0))
-                prof = str(self._fq_state.get("profile", ""))
-                elem = str(self._fq_state.get("element", ""))
-                target2 = float(self._fq_state.get("final_target", 0.0))
-                try:
-                    if hasattr(self.machine, "set_head_angles"):
-                        self.machine.set_head_angles(float(ax), float(ad))
-                    else:
-                        setattr(self.machine, "left_head_angle", float(ax))
-                        setattr(self.machine, "right_head_angle", float(ad))
-                except Exception:
-                    pass
-                self._toast("Posizionare elemento in battuta offset Fuori quota", "info")
-                self._position_machine_exact(target2, ax, ad, prof, elem)
-                # Riarmo contapezzi per secondo taglio
-                try:
-                    setattr(self.machine, "semi_auto_target_pieces", 1)
-                    setattr(self.machine, "semi_auto_count_done", 0)
-                except Exception:
-                    pass
-                # passa a fase offset
-                self._fq_state["phase"] = "offset"
-                return
+            sub = self._fq_state.get("sub", "")
 
-            elif phase == "offset":
-                # Concluso taglio offset (secondo taglio o monofase)
-                try:
-                    if hasattr(self.machine, "set_left_blade_inhibit"):
-                        self.machine.set_left_blade_inhibit(False)
-                    setattr(self.machine, "right_blade_inhibit", False)
-                except Exception:
-                    pass
-                self._fq_state = {"active": False, "phase": "", "final_target": 0.0,
-                                  "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
-                # poi continua con decremento normale
+            if mode == "fq":
+                if phase == "intest":
+                    # Passa alla fase offset: SX abilitata, DX inibita
+                    try:
+                        if hasattr(self.machine, "set_left_blade_inhibit"):
+                            self.machine.set_left_blade_inhibit(False)
+                        setattr(self.machine, "right_blade_inhibit", True)
+                    except Exception:
+                        pass
+                    ax = float(self._fq_state.get("ax", 0.0))
+                    ad = float(self._fq_state.get("ad", 0.0))
+                    prof = str(self._fq_state.get("profile", ""))
+                    elem = str(self._fq_state.get("element", ""))
+                    target2 = float(self._fq_state.get("final_target", 0.0))
+                    try:
+                        if hasattr(self.machine, "set_head_angles"):
+                            self.machine.set_head_angles(float(ax), float(ad))
+                        else:
+                            setattr(self.machine, "left_head_angle", float(ax))
+                            setattr(self.machine, "right_head_angle", float(ad))
+                    except Exception:
+                        pass
+                    self._show_banner("Posizionare elemento in battuta offset Fuori quota", "warn")
+                    self._position_machine_exact(target2, ax, ad, prof, elem)
+                    try:
+                        setattr(self.machine, "semi_auto_target_pieces", 1)
+                        setattr(self.machine, "semi_auto_count_done", 0)
+                    except Exception:
+                        pass
+                    self._fq_state["phase"] = "offset"
+                    return
+
+                elif phase == "offset":
+                    # Fine FQ standard
+                    try:
+                        if hasattr(self.machine, "set_left_blade_inhibit"):
+                            self.machine.set_left_blade_inhibit(False)
+                        setattr(self.machine, "right_blade_inhibit", False)
+                    except Exception:
+                        pass
+                    self._hide_banner()
+                    self._fq_state = {"active": False, "mode": "", "phase": "", "sub": "", "final_target": 0.0,
+                                      "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
+                    # prosegue con decremento
+
+            elif mode == "extshort":
+                if sub == "intest0":
+                    # Dopo intestatura 0°, prepara battuta offset speciale:
+                    # Pressori: SX chiuso (locked), DX aperto per posizionamento, poi verrà richiuso prima del taglio
+                    self._set_pressers(left_locked=True, right_locked=False)
+                    # Inibizioni: usa SOLO SX per il taglio finale (come richiesto per battuta)
+                    try:
+                        if hasattr(self.machine, "set_left_blade_inhibit"):
+                            self.machine.set_left_blade_inhibit(False)  # SX abilitata
+                        setattr(self.machine, "right_blade_inhibit", True)   # DX inibita
+                    except Exception:
+                        pass
+                    # Angoli: 0°
+                    try:
+                        if hasattr(self.machine, "set_head_angles"):
+                            self.machine.set_head_angles(0.0, 0.0)
+                        else:
+                            setattr(self.machine, "left_head_angle", 0.0)
+                            setattr(self.machine, "right_head_angle", 0.0)
+                    except Exception:
+                        pass
+                    prof = str(self._fq_state.get("profile", ""))
+                    elem = str(self._fq_state.get("element", ""))
+                    target2 = float(self._fq_state.get("final_target", 0.0))
+                    self._show_banner("Modalità EXTRA-CORTO: Posizionare elemento in battuta DX (offset speciale)", "warn")
+                    self._position_machine_exact(target2, 0.0, 0.0, prof, elem)
+                    try:
+                        setattr(self.machine, "semi_auto_target_pieces", 1)
+                        setattr(self.machine, "semi_auto_count_done", 0)
+                    except Exception:
+                        pass
+                    self._fq_state["sub"] = "final"
+                    return
+
+                elif sub == "final":
+                    # Prima del taglio finale, chiudi anche DX per bloccaggio (se richiesto)
+                    self._set_pressers(left_locked=True, right_locked=True)
+                    # Al termine di questo taglio, ripristina
+                    try:
+                        if hasattr(self.machine, "set_left_blade_inhibit"):
+                            self.machine.set_left_blade_inhibit(False)
+                        setattr(self.machine, "right_blade_inhibit", False)
+                    except Exception:
+                        pass
+                    self._hide_banner()
+                    self._fq_state = {"active": False, "mode": "", "phase": "", "sub": "",
+                                      "final_target": 0.0, "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
+                    # segue decremento
 
         new_done = done + 1
         try: setattr(self.machine, "semi_auto_count_done", new_done)
@@ -1133,7 +1280,7 @@ class AutomaticoPage(QWidget):
             except Exception: pass
 
             if self._mode == "plan":
-                # Auto-continue normale (anche su ultima barra, se abilitato), non durante FQ attivo
+                # Auto-continue normale (anche su ultima barra, se abilitato), non durante sequenze FQ attive
                 next_piece = self._peek_next_piece_global()
                 same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
                 nxt = self._get_next_indices()
@@ -1350,13 +1497,15 @@ class AutomaticoPage(QWidget):
             except Exception: pass
             self._poll = None
         self._unlock_brake(silent=True)
-        # Ripristina inibizioni se erano state modificate
+        # Ripristina inibizioni & pressori
         try:
             if hasattr(self.machine, "set_left_blade_inhibit"):
                 self.machine.set_left_blade_inhibit(False)
             setattr(self.machine, "right_blade_inhibit", False)
         except Exception:
             pass
+        self._set_pressers(left_locked=True, right_locked=True)
+        self._hide_banner()
         super().hideEvent(ev)
 
     def _on_step_started(self, idx: int, step: dict): pass
