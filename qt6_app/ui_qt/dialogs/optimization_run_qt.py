@@ -16,7 +16,6 @@ try:
 except Exception:
     QPrinter = None
 
-# Settings with fallback
 try:
     from ui_qt.utils.settings import read_settings, write_settings
 except Exception:
@@ -209,18 +208,12 @@ class OptimizationRunDialog(QDialog):
         self._max_angle = float(cfg.get("opt_kerf_max_angle_deg", 60.0))
         self._max_factor = float(cfg.get("opt_kerf_max_factor", 2.0))
         self._warn_thr = float(cfg.get("opt_warn_overflow_mm", 0.5))
-        self._solver = str(cfg.get("opt_solver", "ILP_KNAP")).upper()
-        self._per_bar_time = int(cfg.get("opt_time_limit_s", 15))
-        self._tail_n = int(cfg.get("opt_refine_tail_bars", 6))
-        self._tail_t = int(cfg.get("opt_refine_time_s", 25))
-        self._cons_angle = float(cfg.get("opt_knap_conservative_angle_deg", 45.0))
 
         self._overlay_target: Optional[QWidget] = overlay_target
         self._show_graph = True if self._overlay_target is not None else bool(cfg.get("opt_show_graph", True))
 
         self._bars: List[List[Dict[str, float]]] = []
         self._bars_residuals: List[float] = []
-        # Stato "done" per evidenziare in verde
         self._done_by_index: Dict[int, List[bool]] = {}
 
         self._build()
@@ -230,9 +223,39 @@ class OptimizationRunDialog(QDialog):
         self._apply_geometry()
         self._resize_graph_area()
 
+    # Banner grande in dialog
+    def show_banner(self, msg: str, level: str = "info"):
+        styles = {
+            "info": "background:#ffe7ba; color:#1b1b1b; border:1px solid #c49a28;",
+            "ok":   "background:#d4efdf; color:#145a32; border:1px solid #27ae60;",
+            "warn": "background:#fdecea; color:#7b241c; border:1px solid #c0392b;",
+        }
+        sty = styles.get(level, styles["info"])
+        if not hasattr(self, "_banner"):
+            return
+        self._banner.setText(msg)
+        self._banner.setStyleSheet(f"QLabel {{{sty} font-size:20px; font-weight:900; padding:10px 14px; border-radius:8px;}}")
+        self._banner.setVisible(True)
+        try:
+            self._banner.raise_()
+        except Exception:
+            pass
+
+    def hide_banner(self):
+        if hasattr(self, "_banner") and self._banner:
+            self._banner.setVisible(False)
+            self._banner.setText("")
+
     # ---------------- UI build ----------------
     def _build(self):
         root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
+
+        # Banner sempre in primo piano nel dialog
+        self._banner = QLabel("")
+        self._banner.setVisible(False)
+        self._banner.setAlignment(Qt.AlignCenter)
+        self._banner.setStyleSheet("QLabel { background:#ffe7ba; color:#1b1b1b; font-size:18px; font-weight:800; padding:8px 12px; border:1px solid #c49a28; border-radius:6px; }")
+        root.addWidget(self._banner)
 
         opts = QFrame(); ol = QHBoxLayout(opts); ol.setContentsMargins(0,0,0,0); ol.setSpacing(6)
         self._chk_graph = QCheckBox("Mostra grafica piano"); self._chk_graph.setChecked(self._show_graph)
@@ -306,39 +329,36 @@ class OptimizationRunDialog(QDialog):
 
     def _compute_plan_once(self):
         pieces = self._expand_rows_to_unit_pieces()
-        # Solver: ILP_KNAP/ILP preferiti, fallback BFD
-        if self._solver in ("ILP_KNAP", "ILP"):
-            bars, rem = pack_bars_knapsack_ilp(
-                pieces=pieces,
-                stock=self._stock,
-                kerf_base=self._kerf_base,
-                ripasso_mm=self._ripasso,
-                conservative_angle_deg=self._cons_angle,
-                max_angle=self._max_angle,
-                max_factor=self._max_factor,
-                reversible=self._reversible,
-                thickness_mm=self._thickness,
-                angle_tol=self._angle_tol,
-                per_bar_time_s=self._per_bar_time
-            )
-            if not bars:
-                bars, rem = self._pack_bfd(pieces)
-        else:
+        solver = "ILP_KNAP"  # resta coerente con l'esterno
+
+        bars, rem = pack_bars_knapsack_ilp(
+            pieces=pieces,
+            stock=self._stock,
+            kerf_base=self._kerf_base,
+            ripasso_mm=self._ripasso,
+            conservative_angle_deg=float(read_settings().get("opt_knap_conservative_angle_deg", 45.0)),
+            max_angle=self._max_angle,
+            max_factor=self._max_factor,
+            reversible=self._reversible,
+            thickness_mm=self._thickness,
+            angle_tol=self._angle_tol,
+            per_bar_time_s=int(read_settings().get("opt_time_limit_s", 15))
+        )
+        if not bars:
             bars, rem = self._pack_bfd(pieces)
 
-        # Refine tail (best-effort)
         try:
             bars, rem = refine_tail_ilp(
                 bars, self._stock, self._kerf_base,
                 self._ripasso, self._reversible, self._thickness,
-                self._angle_tol, tail_bars=self._tail_n,
-                time_limit_s=self._tail_t,
+                self._angle_tol, tail_bars=int(read_settings().get("opt_refine_tail_bars", 6)),
+                time_limit_s=int(read_settings().get("opt_refine_time_s", 25)),
                 max_angle=self._max_angle, max_factor=self._max_factor
             )
         except Exception:
             pass
 
-        # Sanitize overflow (pezzi eccedenti rimessi in altre barre)
+        # Sanitize overflow
         fixed_bars: List[List[Dict[str, float]]] = []
         overflow: List[Dict[str, float]] = []
         for bar in bars:
@@ -377,11 +397,9 @@ class OptimizationRunDialog(QDialog):
     # ---------------- Views & state ----------------
     def _init_done_state(self):
         self._done_by_index = {i: [False]*len(b) for i, b in enumerate(self._bars)}
-        # Il widget determina da solo la barra attiva (prima incompleta)
         self._graph.set_done_by_index(self._done_by_index)
 
     def _current_bar_index(self) -> Optional[int]:
-        # Manteniamo questo helper se serve altrove (non più usato dal widget)
         for i, b in enumerate(self._bars):
             flags = self._done_by_index.get(i, [])
             if not (len(flags) == len(b) and all(flags)):
@@ -397,7 +415,6 @@ class OptimizationRunDialog(QDialog):
             max_factor=self._max_factor, warn_threshold_mm=self._warn_thr
         )
         self._graph.set_done_by_index(self._done_by_index)
-        # Niente set_current_bar: la barra attiva è sempre la prima incompleta
         self._reload_table()
         self._resize_graph_area()
 
@@ -435,10 +452,10 @@ class OptimizationRunDialog(QDialog):
     def _resize_graph_area(self):
         if not (self._panel_graph and self._graph and self._tbl): return
         total_h = self.height()
-        opts_h = self._chk_graph.sizeHint().height()
+        hdr_h = 40
         table_min = self.TABLE_MIN_H
         margins = 8 + 8 + 6
-        avail_for_graph = max(100, total_h - (opts_h + margins + table_min))
+        avail_for_graph = max(100, total_h - (hdr_h + margins + table_min))
         desired = self._desired_graph_height(len(self._bars))
         gh = min(desired, avail_for_graph)
         self._graph.setMinimumHeight(int(gh))
@@ -448,82 +465,30 @@ class OptimizationRunDialog(QDialog):
         super().resizeEvent(event); self._resize_graph_area()
 
     # ---------------- Mark done after cut ----------------
-    def _mark_first_match_done_local(self, length_mm: float, ang_sx: float, ang_dx: float,
-                                     len_tol: float = 0.01, ang_tol: float = 0.05) -> Optional[Tuple[int,int]]:
-        """
-        Trova e marca nel nostro stato locale (_done_by_index) il primo pezzo non fatto che corrisponde a (L, angoli).
-        Ritorna (bar_idx, piece_idx) se trovato, altrimenti None.
-        """
-        for bi, bar in enumerate(self._bars):
-            flags = self._done_by_index.get(bi, [])
-            if not flags:
-                flags = [False]*len(bar)
-                self._done_by_index[bi] = flags
-            for pi, p in enumerate(bar):
-                if flags[pi]:
-                    continue
-                if (abs(float(p.get("len",0.0)) - float(length_mm)) <= len_tol and
-                    abs(float(p.get("ax",0.0)) - float(ang_sx))   <= ang_tol and
-                    abs(float(p.get("ad",0.0)) - float(ang_dx))   <= ang_tol):
-                    flags[pi] = True
-                    return (bi, pi)
-        return None
-
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
         """
-        Colora SUBITO in verde il pezzo nel grafico, decrementa la tabella, aggiorna viste.
+        Colorazione verde del pezzo nel grafico e decremento della tabella.
+        Chiamato da AutomaticoPage solo al taglio “finale” per ogni pezzo.
         """
-        # 1) Stato locale + widget
-        self._mark_first_match_done_local(length_mm, ang_sx, ang_dx)
+        # 1) Stato grafico
         try:
             self._graph.mark_done_by_signature(length_mm, ang_sx, ang_dx)
         except Exception:
             pass
 
-        # 2) Decrementa la riga corrispondente in tabella (se presente)
+        # 2) Decrementa quantità corrispondente in tabella
         tol_L = 0.01; tol_A = 0.01
-        for r in self._rows:
+        for i in range(self._tbl.rowCount()):
             try:
-                if abs(float(r.get("length_mm",0.0)) - length_mm) <= tol_L \
-                   and abs(float(r.get("ang_sx",0.0)) - ang_sx) <= tol_A \
-                   and abs(float(r.get("ang_dx",0.0)) - ang_dx) <= tol_A:
-                    r["qty"] = max(0, int(r.get("qty",0)) - 1)
-                    break
+                L = float(self._tbl.item(i, 0).text())
+                ax = float(self._tbl.item(i, 1).text())
+                ad = float(self._tbl.item(i, 2).text())
+                q = int(self._tbl.item(i, 3).text())
             except Exception:
                 continue
+            if abs(L - length_mm) <= tol_L and abs(ax - ang_sx) <= tol_A and abs(ad - ang_dx) <= tol_A:
+                self._tbl.setItem(i, 3, QTableWidgetItem(str(max(q - 1, 0))))
+                break
 
-        # 3) Aggiorna viste: la barra attiva sarà la prima incompleta
-        self._graph.set_done_by_index(self._done_by_index)
-        self._reload_table()
-
-        # 4) Se tutto finito, chiudi
-        if self._current_bar_index() is None:
-            try:
-                self.accept()
-            except Exception:
-                try: self.close()
-                except Exception: pass
-            return
-
-    # ---------------- Events & persist ----------------
-    def keyPressEvent(self, ev: QKeyEvent):
-        try:
-            if ev.key() == Qt.Key_F7:
-                self.simulationRequested.emit()
-                ev.accept(); return
-            if ev.key() == Qt.Key_F9:
-                self.startRequested.emit()
-                ev.accept(); return
-        except Exception:
-            pass
-        super().keyPressEvent(ev)
-
-    def accept(self):
-        if self._overlay_target is None:
-            cfg = dict(read_settings())
-            cfg["opt_show_graph"] = bool(self._chk_graph and self._chk_graph.isChecked())
-            write_settings(cfg)
-        super().accept()
-
-    def reject(self):
-        self.accept()
+        # 3) Refresh
+        self._graph.update()
