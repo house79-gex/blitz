@@ -348,7 +348,7 @@ class AutomaticoPage(QWidget):
         self.banner.setStyleSheet(f"QLabel {{{sty} font-size:20px; font-weight:900; padding:10px 14px; border-radius:8px;}}")
         self.banner.setVisible(True)
         self.banner.raise_()
-        # propaga anche nel dialog di ottimizzazione, se aperto
+        # propaga anche nel dialog di ottimizzazione
         if self._opt_dialog and hasattr(self._opt_dialog, "show_banner"):
             try:
                 self._opt_dialog.show_banner(msg, level)
@@ -795,8 +795,7 @@ class AutomaticoPage(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Posizionamento", str(e)); return
         self._move_target_mm = float(target_mm); self._inpos_since = 0.0; self._lock_on_inpos = True
-        if self._is_dummy():
-            QTimer.singleShot(150, lambda: self._ensure_test_lock(1, 1))
+        # IMPORTANT: niente lock freno qui. Lock solo in _try_lock_on_inpos quando realmente in posizione.
 
     def _set_pressers(self, left_locked: Optional[bool] = None, right_locked: Optional[bool] = None):
         """
@@ -826,9 +825,7 @@ class AutomaticoPage(QWidget):
         Fuori Quota per ogni pezzo:
           - Se (ax,ad)==(0,0) e eff_len < min:
               * Se eff_len+offset >= min: monofase SX (offset)
-              * Se eff_len+offset <  min: modalità extra-corto DX:
-                    intest0: DX @0° a safe (es. 400mm), banner "Intestatura"
-                    final:   SX abilitata/DX inibita, pos = safe - eff - kerf, banner "Battuta offset"
+              * Se eff_len+offset <  min: modalità extra-corto DX
           - Se angoli diversi da 0 e eff_len < min: due fasi (intestatura -> offset).
         """
         self._unlock_brake(silent=True)
@@ -965,51 +962,64 @@ class AutomaticoPage(QWidget):
 
     # ---------------- Fine Fuori Quota & posizionamento ----------------
 
-    def _is_dummy(self) -> bool:
-        try:
-            n = type(self.machine).__name__.lower()
-            return ("dummy" in n) or ("mock" in n)
-        except Exception:
-            return (not hasattr(self.machine, "encoder_position")) and (not hasattr(self.machine, "positioning_active"))
-
-    def _ensure_test_lock(self, tgt: int, remaining: int):
-        if self._is_dummy() and (tgt > 0) and (remaining > 0) and not self._brake_locked:
-            self._lock_brake(); self._lock_on_inpos = False
+    def _is_simulator(self) -> bool:
+        # Più robusto: considera simulator solo se esplicitamente segnalato
+        for attr in ("is_simulator", "is_mock", "is_dummy"):
+            if hasattr(self.machine, attr):
+                try:
+                    if bool(getattr(self.machine, attr)):
+                        return True
+                except Exception:
+                    pass
+        return False
 
     def _try_lock_on_inpos(self):
-        if not self._lock_on_inpos: return
-        if self._is_dummy():
-            self._lock_brake(); self._lock_on_inpos = False; return
+        # Lock freno SOLO quando in posizione
+        if not self._lock_on_inpos:
+            return
         tol = float(read_settings().get("inpos_tol_mm", 0.20))
         pos = getattr(self.machine, "encoder_position", None)
-        if pos is None: pos = getattr(self.machine, "position_current", None)
-        try: posf = float(pos)
-        except Exception: posf = None
+        if pos is None:
+            pos = getattr(self.machine, "position_current", None)
+        try:
+            posf = float(pos)
+        except Exception:
+            posf = None
         in_mov = bool(getattr(self.machine, "positioning_active", False))
         in_pos = (posf is not None) and (abs(posf - self._move_target_mm) <= tol)
         if in_pos and not in_mov:
             now = time.time()
             if self._inpos_since == 0.0:
-                self._inpos_since = now; return
+                self._inpos_since = now
+                return
             if (now - self._inpos_since) < 0.10:
                 return
-            self._lock_brake(); self._lock_on_inpos = False
+            self._lock_brake()
+            self._lock_on_inpos = False
 
     def _lock_brake(self):
         try:
-            if hasattr(self.machine, "set_output"): self.machine.set_output("head_brake", True)
-            elif hasattr(self.machine, "head_brake_lock"): self.machine.head_brake_lock()
-            else: setattr(self.machine, "brake_active", True)
+            if hasattr(self.machine, "set_output"):
+                self.machine.set_output("head_brake", True)
+            elif hasattr(self.machine, "head_brake_lock"):
+                self.machine.head_brake_lock()
+            else:
+                setattr(self.machine, "brake_active", True)
             self._brake_locked = True
-        except Exception: pass
+        except Exception:
+            pass
 
     def _unlock_brake(self, silent: bool = False):
         try:
-            if hasattr(self.machine, "set_output"): self.machine.set_output("head_brake", False)
-            elif hasattr(self.machine, "head_brake_unlock"): self.machine.head_brake_unlock()
-            else: setattr(self.machine, "brake_active", False)
+            if hasattr(self.machine, "set_output"):
+                self.machine.set_output("head_brake", False)
+            elif hasattr(self.machine, "head_brake_unlock"):
+                self.machine.head_brake_unlock()
+            else:
+                setattr(self.machine, "brake_active", False)
             self._brake_locked = False
-        except Exception: pass
+        except Exception:
+            pass
 
     def _auto_continue_enabled_fn(self) -> bool:
         return bool(self._auto_continue_enabled)
@@ -1148,13 +1158,13 @@ class AutomaticoPage(QWidget):
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
         remaining = max(tgt - done, 0)
 
-        self._ensure_test_lock(tgt, remaining)
-        # Se non armata (es. manuale), decremente selezione e ritorna
+        # NON bloccare mai il freno qui; è gestito solo da _try_lock_on_inpos
         if not (self._brake_locked and tgt > 0 and remaining > 0):
+            # Se non “armata”, decremente la riga selezionata (modalità manuale)
             self._dec_selected_row_qty()
             return
 
-        # Gestione Fuori Quota / Extra-corto
+        # Gestione Fuori Quota / Extra-corto (come definito prima)
         if self._fq_state.get("active", False):
             mode = self._fq_state.get("mode", "")
             phase = self._fq_state.get("phase", "")
@@ -1162,7 +1172,6 @@ class AutomaticoPage(QWidget):
 
             if mode == "fq":
                 if phase == "intest":
-                    # Passa a fase offset: SX abilitata, DX inibita
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
                             self.machine.set_left_blade_inhibit(False)
@@ -1193,7 +1202,6 @@ class AutomaticoPage(QWidget):
                     return
 
                 elif phase == "offset":
-                    # Fine FQ standard
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
                             self.machine.set_left_blade_inhibit(False)
@@ -1203,19 +1211,17 @@ class AutomaticoPage(QWidget):
                     self._hide_banner()
                     self._fq_state = {"active": False, "mode": "", "phase": "", "sub": "", "final_target": 0.0,
                                       "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
-                    # segue decremento
+                    # poi continua con decremento
 
             elif mode == "extshort":
                 if sub == "intest0":
-                    # Prepara battuta offset speciale
                     self._set_pressers(left_locked=True, right_locked=False)
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
-                            self.machine.set_left_blade_inhibit(False)  # SX abilitata
-                        setattr(self.machine, "right_blade_inhibit", True)   # DX inibita
+                            self.machine.set_left_blade_inhibit(False)
+                        setattr(self.machine, "right_blade_inhibit", True)
                     except Exception:
                         pass
-                    # Angoli: 0°
                     try:
                         if hasattr(self.machine, "set_head_angles"):
                             self.machine.set_head_angles(0.0, 0.0)
@@ -1238,9 +1244,7 @@ class AutomaticoPage(QWidget):
                     return
 
                 elif sub == "final":
-                    # Chiudi DX prima del taglio finale
                     self._set_pressers(left_locked=True, right_locked=True)
-                    # Ripristina inibizioni dopo il taglio
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
                             self.machine.set_left_blade_inhibit(False)
@@ -1286,7 +1290,6 @@ class AutomaticoPage(QWidget):
             except Exception: pass
 
             if self._mode == "plan":
-                # Auto-continue normale, non durante sequenze FQ attive
                 next_piece = self._peek_next_piece_global()
                 same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
                 nxt = self._get_next_indices()
