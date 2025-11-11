@@ -132,7 +132,6 @@ class OptimizationConfigDialog(QDialog):
         cfg["opt_kerf_max_factor"] = f(self.ed_max_factor.text(), 2.0)
         cfg["opt_knap_conservative_angle_deg"] = f(self.ed_cons_ang.text(), 45.0)
         cfg["opt_current_profile_reversible"] = bool(self.chk_reversible.isChecked())
-        cfg["opt_current_profile_thickness_mm"] = f(self.ed_thickness.text(), 0.0)
         cfg["opt_reversible_angle_tol_deg"] = f(self.ed_angle_tol.text(), 0.5)
         cfg["opt_warn_overflow_mm"] = f(self.ed_warn_over.text(), 0.5)
         cfg["opt_auto_continue_enabled"] = bool(self.chk_auto_cont.isChecked())
@@ -154,9 +153,9 @@ class AutomaticoPage(QWidget):
         self.seq.finished.connect(self._on_seq_done)
 
         self.tbl_cut: Optional[QTableWidget] = None
-        self.lbl_target: Optional[Label] = None
-        self.lbl_done: Optional[Label] = None
-        self.lbl_remaining: Optional[Label] = None
+        self.lbl_target: Optional[QLabel] = None
+        self.lbl_done: Optional[QLabel] = None
+        self.lbl_remaining: Optional[QLabel] = None
         self.status: Optional[StatusPanel] = None
         self.btn_start_row: Optional[QPushButton] = None
         self.viewer_frame: Optional[QFrame] = None
@@ -204,7 +203,7 @@ class AutomaticoPage(QWidget):
         self._in_item_change: bool = False
         self._qty_editing_row: int = -1
 
-        # Fuori Quota offset (come semi-auto)
+        # Fuori Quota offset
         try:
             self._fq_offset_mm = float(read_settings().get("semi_offset_mm", 120.0))
         except Exception:
@@ -214,14 +213,13 @@ class AutomaticoPage(QWidget):
             self._extshort_safe_mm = float(read_settings().get("auto_extshort_safe_pos_mm", 400.0))
         except Exception:
             self._extshort_safe_mm = 400.0
-        # Kerf per extra-corti
+        # Kerf base per extra-corti
         try:
             self._kerf_base_mm = float(read_settings().get("opt_kerf_mm", 3.0))
         except Exception:
             self._kerf_base_mm = 3.0
 
         # Stato Fuori Quota / extra-corto
-        # mode: "fq" (2 fasi o monofase) oppure "extshort" (intest0->final)
         self._fq_state: Dict[str, Any] = {
             "active": False, "mode": "", "phase": "", "sub": "",
             "final_target": 0.0,
@@ -243,7 +241,7 @@ class AutomaticoPage(QWidget):
         root.addWidget(Header(self.appwin, "AUTOMATICO", mode="default",
                               on_home=self._nav_home, on_reset=self._reset_and_home))
 
-        # Banner messaggi grandi
+        # Banner grande (anche replicato nel dialog di ottimizzazione)
         self.banner = QLabel("")
         self.banner.setVisible(False)
         self.banner.setAlignment(Qt.AlignCenter)
@@ -340,7 +338,6 @@ class AutomaticoPage(QWidget):
         QShortcut(QKeySequence("Space"), self, activated=self._handle_start_trigger)
 
     def _show_banner(self, msg: str, level: str = "info"):
-        # level: info/ok/warn
         styles = {
             "info": "background:#ffe7ba; color:#1b1b1b; border:1px solid #c49a28;",
             "ok":   "background:#d4efdf; color:#145a32; border:1px solid #27ae60;",
@@ -350,10 +347,22 @@ class AutomaticoPage(QWidget):
         self.banner.setText(msg)
         self.banner.setStyleSheet(f"QLabel {{{sty} font-size:20px; font-weight:900; padding:10px 14px; border-radius:8px;}}")
         self.banner.setVisible(True)
+        self.banner.raise_()
+        # propaga anche nel dialog di ottimizzazione, se aperto
+        if self._opt_dialog and hasattr(self._opt_dialog, "show_banner"):
+            try:
+                self._opt_dialog.show_banner(msg, level)
+            except Exception:
+                pass
 
     def _hide_banner(self):
         self.banner.setVisible(False)
         self.banner.setText("")
+        if self._opt_dialog and hasattr(self._opt_dialog, "hide_banner"):
+            try:
+                self._opt_dialog.hide_banner()
+            except Exception:
+                pass
 
     def _row_is_header(self, row: int) -> bool:
         it = self.tbl_cut.item(row, 0)
@@ -791,8 +800,7 @@ class AutomaticoPage(QWidget):
 
     def _set_pressers(self, left_locked: Optional[bool] = None, right_locked: Optional[bool] = None):
         """
-        Prova varie API per comandare i pressori; fallback su attributi.
-        left_locked/right_locked: True=pressore chiuso (premuto), False=aperto.
+        Comanda i pressori; True=chiuso (premuto), False=aperto.
         """
         try:
             if left_locked is not None:
@@ -821,7 +829,7 @@ class AutomaticoPage(QWidget):
               * Se eff_len+offset <  min: modalità extra-corto DX:
                     intest0: DX @0° a safe (es. 400mm), banner "Intestatura"
                     final:   SX abilitata/DX inibita, pos = safe - eff - kerf, banner "Battuta offset"
-          - Se angoli diversi da 0 e eff_len < min: due fasi (intestatura -> offset) come descritto.
+          - Se angoli diversi da 0 e eff_len < min: due fasi (intestatura -> offset).
         """
         self._unlock_brake(silent=True)
 
@@ -946,7 +954,7 @@ class AutomaticoPage(QWidget):
             try: self.machine.set_left_blade_inhibit(False)
             except Exception: pass
         setattr(self.machine, "right_blade_inhibit", False)
-        # Pressori default chiusi (locked True)
+        # Pressori default chiusi
         self._set_pressers(left_locked=True, right_locked=True)
 
         self._position_machine_exact(target_len, ax, ad, profile, element)
@@ -1085,7 +1093,7 @@ class AutomaticoPage(QWidget):
 
     def _handle_start_trigger(self):
         if self._mode != "plan" or not self._bars: return
-        # Durante FQ (qualsiasi modalità), START ignorato finché non finisce la sequenza
+        # durante FQ/extra-corto, ignora START finché la sequenza non è terminata
         if self._fq_state.get("active", False):
             return
 
@@ -1141,7 +1149,7 @@ class AutomaticoPage(QWidget):
         remaining = max(tgt - done, 0)
 
         self._ensure_test_lock(tgt, remaining)
-        # Se non armata, in modalità manuale decremente selezione e ritorna
+        # Se non armata (es. manuale), decremente selezione e ritorna
         if not (self._brake_locked and tgt > 0 and remaining > 0):
             self._dec_selected_row_qty()
             return
@@ -1154,7 +1162,7 @@ class AutomaticoPage(QWidget):
 
             if mode == "fq":
                 if phase == "intest":
-                    # Passa alla fase offset: SX abilitata, DX inibita
+                    # Passa a fase offset: SX abilitata, DX inibita
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
                             self.machine.set_left_blade_inhibit(False)
@@ -1195,14 +1203,12 @@ class AutomaticoPage(QWidget):
                     self._hide_banner()
                     self._fq_state = {"active": False, "mode": "", "phase": "", "sub": "", "final_target": 0.0,
                                       "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
-                    # prosegue con decremento
+                    # segue decremento
 
             elif mode == "extshort":
                 if sub == "intest0":
-                    # Dopo intestatura 0°, prepara battuta offset speciale:
-                    # Pressori: SX chiuso (locked), DX aperto per posizionamento, poi verrà richiuso prima del taglio
+                    # Prepara battuta offset speciale
                     self._set_pressers(left_locked=True, right_locked=False)
-                    # Inibizioni: usa SOLO SX per il taglio finale (come richiesto per battuta)
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
                             self.machine.set_left_blade_inhibit(False)  # SX abilitata
@@ -1232,9 +1238,9 @@ class AutomaticoPage(QWidget):
                     return
 
                 elif sub == "final":
-                    # Prima del taglio finale, chiudi anche DX per bloccaggio (se richiesto)
+                    # Chiudi DX prima del taglio finale
                     self._set_pressers(left_locked=True, right_locked=True)
-                    # Al termine di questo taglio, ripristina
+                    # Ripristina inibizioni dopo il taglio
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
                             self.machine.set_left_blade_inhibit(False)
@@ -1280,7 +1286,7 @@ class AutomaticoPage(QWidget):
             except Exception: pass
 
             if self._mode == "plan":
-                # Auto-continue normale (anche su ultima barra, se abilitato), non durante sequenze FQ attive
+                # Auto-continue normale, non durante sequenze FQ attive
                 next_piece = self._peek_next_piece_global()
                 same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
                 nxt = self._get_next_indices()
