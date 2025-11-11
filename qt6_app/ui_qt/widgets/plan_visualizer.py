@@ -14,10 +14,12 @@ from ui_qt.logic.refiner import (
 class PlanVisualizerWidget(QWidget):
     """
     Visualizzazione grafica del piano (Automatico):
-    - Barre su righe, pezzi come trapezi con base maggiore in alto e base minore in basso.
-    - Gap tra pezzi = consumo giunto (joint_consumption).
-    - Evidenziazione: barra attiva, pezzi tagliati.
-    - Supporto “done per indice” (deterministico) e fallback “per firma”.
+    - Barre in righe con sfondi chiari ben distinti dai pezzi.
+    - Pezzi come trapezi ribaltati: base maggiore in alto, base minore in basso.
+    - Gap tra pezzi = max(consumo giunto, somma punte superiori) per evitare accavallamenti.
+    - Evidenziazione: pezzi tagliati in verde; pezzi non tagliati con colori alternati.
+    - Barra attiva in ambra chiaro; barra completata in grigio chiaro.
+    - Stato “done” deterministico per indice (con fallback per firma se serve).
     """
 
     def __init__(self, parent=None):
@@ -35,22 +37,23 @@ class PlanVisualizerWidget(QWidget):
         self._max_factor: float = 2.0
         self._warn_thr: float = 0.5
 
-        # Stili
+        # Stili: sfondi barra neutri ben distinti dai pezzi
         self._bg = QColor("#ffffff")
-        self._bar_bg = QColor("#f5f7fa")
-        self._bar_bg_active = QColor("#ffe7ba")
-        self._bar_bg_done = QColor("#eef0f2")
+        self._bar_bg = QColor("#f0f2f5")        # normale
+        self._bar_bg_active = QColor("#fff2cc") # attiva
+        self._bar_bg_done = QColor("#e9edf2")   # completata
         self._border = QColor("#3b4b5a")
         self._border_warn = QColor("#ff2d2d")
 
-        self._piece_fg = QColor("#1976d2")
-        self._piece_fg_alt = QColor("#26a69a")
-        self._piece_done = QColor("#2ecc71")
+        # Pezzi: alternanza per leggibilità
+        self._piece_fg = QColor("#1976d2")      # blu
+        self._piece_fg_alt = QColor("#26a69a")  # teal
+        self._piece_done = QColor("#2ecc71")    # verde fatto
         self._text = QColor("#2c3e50")
 
         # Stato
-        self._done_counts: Dict[Tuple[float, float, float], int] = {}  # fallback legacy per firma
-        self._done_by_index: Dict[int, List[bool]] = {}  # bar_idx -> flags
+        self._done_counts: Dict[Tuple[float, float, float], int] = {}  # fallback legacy
+        self._done_by_index: Dict[int, List[bool]] = {}                # bar_idx -> flags
         self._current_bar_index: Optional[int] = None
 
         self.setMinimumSize(520, 220)
@@ -90,21 +93,8 @@ class PlanVisualizerWidget(QWidget):
         self._current_bar_index = None
         self.update()
 
-    def mark_done(self, length_mm: float, ang_sx: float, ang_dx: float):
-        # fallback per firma
-        sig = (round(float(length_mm), 2), round(float(ang_sx), 1), round(float(ang_dx), 1))
-        self._done_counts[sig] = self._done_counts.get(sig, 0) + 1
-        self.update()
-
     def set_done_by_index(self, done_map: Dict[int, List[bool]]):
         self._done_by_index = {int(k): list(v) for k, v in (done_map or {}).items()}
-        self.update()
-
-    def mark_done_index(self, bar_idx: int, piece_idx: int):
-        if bar_idx not in self._done_by_index and 0 <= bar_idx < len(self._bars):
-            self._done_by_index[bar_idx] = [False]*len(self._bars[bar_idx])
-        if bar_idx in self._done_by_index and 0 <= piece_idx < len(self._done_by_index[bar_idx]):
-            self._done_by_index[bar_idx][piece_idx] = True
         self.update()
 
     def set_current_bar(self, index: Optional[int]):
@@ -113,6 +103,40 @@ class PlanVisualizerWidget(QWidget):
         else:
             self._current_bar_index = int(index)
         self.update()
+
+    def mark_done_index(self, bar_idx: int, piece_idx: int):
+        if bar_idx not in self._done_by_index and 0 <= bar_idx < len(self._bars):
+            self._done_by_index[bar_idx] = [False]*len(self._bars[bar_idx])
+        if bar_idx in self._done_by_index and 0 <= piece_idx < len(self._done_by_index[bar_idx]):
+            self._done_by_index[bar_idx][piece_idx] = True
+            self.update()
+
+    def mark_done_by_signature(self, length_mm: float, ang_sx: float, ang_dx: float,
+                               len_tol: float = 0.01, ang_tol: float = 0.05) -> bool:
+        """
+        Marca il primo pezzo non ancora fatto che matcha la firma (L, ax, ad) con tolleranze.
+        Ritorna True se trovato e marcato, altrimenti False.
+        """
+        Lr = float(length_mm)
+        Ax = float(ang_sx)
+        Ad = float(ang_dx)
+        for bi, bar in enumerate(self._bars):
+            flags = self._done_by_index.get(bi, [])
+            if not flags:
+                flags = [False]*len(bar)
+                self._done_by_index[bi] = flags
+            for pi, p in enumerate(bar):
+                if flags[pi]:
+                    continue
+                if (abs(float(p.get("len", 0.0)) - Lr) <= len_tol and
+                    abs(float(p.get("ax", 0.0)) - Ax) <= ang_tol and
+                    abs(float(p.get("ad", 0.0)) - Ad) <= ang_tol):
+                    flags[pi] = True
+                    # aggiorna barra corrente per evidenza
+                    self._current_bar_index = bi
+                    self.update()
+                    return True
+        return False
 
     # ------------ Helpers ------------
     @staticmethod
@@ -132,8 +156,19 @@ class PlanVisualizerWidget(QWidget):
             return 0.0
         return math.tan(math.radians(a)) * px_height
 
+    def _precompute_active_bar_from_index_map(self) -> Tuple[int, List[bool]]:
+        done_flags: List[bool] = []
+        active_idx = -1
+        for bi, bar in enumerate(self._bars):
+            flags = self._done_by_index.get(bi, [])
+            bar_all_done = (len(flags) >= len(bar)) and all(bool(x) for x in flags[:len(bar)])
+            done_flags.append(bar_all_done)
+            if not bar_all_done and active_idx == -1:
+                active_idx = bi
+        return active_idx, done_flags
+
     def _precompute_active_bar_from_done_counts(self) -> Tuple[int, List[bool]]:
-        # Deduci barra attiva da “done per firma” (compat)
+        # Fallback legacy (se non usi done_by_index)
         encountered: Dict[Tuple[float, float, float], int] = {}
         active_idx = -1
         done_flags: List[bool] = []
@@ -150,17 +185,6 @@ class PlanVisualizerWidget(QWidget):
                 is_done = idx <= done_quota
                 if not is_done:
                     bar_all_done = False
-            done_flags.append(bar_all_done)
-            if not bar_all_done and active_idx == -1:
-                active_idx = bi
-        return active_idx, done_flags
-
-    def _precompute_active_bar_from_index_map(self) -> Tuple[int, List[bool]]:
-        done_flags: List[bool] = []
-        active_idx = -1
-        for bi, bar in enumerate(self._bars):
-            flags = self._done_by_index.get(bi, [])
-            bar_all_done = (len(flags) >= len(bar)) and all(bool(x) for x in flags[:len(bar)])
             done_flags.append(bar_all_done)
             if not bar_all_done and active_idx == -1:
                 active_idx = bi
@@ -194,7 +218,6 @@ class PlanVisualizerWidget(QWidget):
 
         scale_x = (avail_w - 40) / max(1.0, self._stock)
 
-        # Active bar & done flags
         if self._done_by_index:
             computed_active_idx, bar_done_flags = self._precompute_active_bar_from_index_map()
         else:
@@ -222,6 +245,7 @@ class PlanVisualizerWidget(QWidget):
             )
             near_overflow = (self._stock - used_len) <= self._warn_thr + 1e-6
 
+            # Sfondo barra
             p.setPen(pen_warn if near_overflow else pen_bar)
             if bar_done_flags[bi]:
                 bg = self._bar_bg_done
@@ -251,16 +275,16 @@ class PlanVisualizerWidget(QWidget):
 
                 x_left = cursor_x; x_right = cursor_x + w
 
-                # Trapezio: BASE MAGGIORE in alto (espansione top), BASE MINORE in basso (non espansa)
+                # Trapezio ribaltato: espansione sul lato alto
                 pts = [
-                    QPointF(x_left  - off_l, y_top),  # top-left (lato lungo)
+                    QPointF(x_left  - off_l, y_top),  # top-left (base maggiore)
                     QPointF(x_right + off_r, y_top),  # top-right
-                    QPointF(x_right,         y_bot),  # bottom-right (lato corto)
+                    QPointF(x_right,         y_bot),  # bottom-right (base minore)
                     QPointF(x_left,          y_bot),  # bottom-left
                 ]
                 poly = QPolygonF(pts)
 
-                # Stato done: preferisci mappa per indice, fallback su firma
+                # Stato done (preferisci per indice)
                 if bi in self._done_by_index and pi < len(self._done_by_index[bi]):
                     is_done = bool(self._done_by_index[bi][pi])
                 else:
@@ -275,7 +299,7 @@ class PlanVisualizerWidget(QWidget):
                 p.setBrush(QBrush(fill))
                 p.drawPolygon(poly)
 
-                # Etichetta: centrata sul lato superiore “lungo”
+                # Etichetta
                 label = f"{L:.0f} mm"
                 p.setPen(QPen(self._text))
                 text_w = (x_right + off_r) - (x_left - off_l)
@@ -285,14 +309,22 @@ class PlanVisualizerWidget(QWidget):
                     p.drawText(QRectF(x_left - 2, y_top - 12, max(46.0, text_w + 6), 12),
                                Qt.AlignLeft | Qt.AlignVCenter, label)
 
-                # Avanzamento cursore con gap da joint_consumption
+                # Avanzamento cursore con gap sicuro (no accavallamenti)
                 if pi < len(bar) - 1:
                     gap_tot, _, _, _ = joint_consumption(
                         piece, self._kerf_base, self._ripasso_mm,
                         self._reversible, self._thickness_mm,
                         self._angle_tol, self._max_angle, self._max_factor
                     )
-                    cursor_x += w + max(0.0, gap_tot * scale_x)
+                    gap_px_bottom = max(0.0, gap_tot * scale_x)
+                    nxt = bar[pi + 1]
+                    nxt_ax = float(nxt.get("ax", 0.0))
+                    nxt_off_l = 0.0 if self._is_square_angle(nxt_ax) else self._offset_for_angle(piece_h, nxt_ax)
+                    nxt_w = max(1.0, float(nxt.get("len", 0.0)) * scale_x)
+                    nxt_off_l = min(nxt_off_l, max(0.0, nxt_w * 0.45))
+                    gap_px_vertices = off_r + nxt_off_l
+                    req_gap_px = max(gap_px_bottom, gap_px_vertices) + 1.0  # margine visivo
+                    cursor_x += w + req_gap_px
                 else:
                     cursor_x += w
 
