@@ -16,17 +16,16 @@ class PlanVisualizerWidget(QWidget):
     """
     Visualizzazione grafica del piano (Automatico):
 
-    - Barre su righe. Barra attiva evidenziata (ambra). Barre completate: sfondo grigio chiaro + bordo verde.
+    - Barre su righe. (Richiesta: NESSUN sfondo speciale per la barra attiva.)
+      Barre completate: sfondo grigio chiaro + bordo verde.
     - Pezzi come trapezi ribaltati: base maggiore in alto (punte), base minore in basso (base).
       Angoli preservati (offset orizzontali calcolati da tan(ang)*altezza), NON alterati.
-    - Nessun accavallamento:
-        gap tra pezzi = max(kerf_px, somma punte adiacenti + margine).
-      Se necessario la scala orizzontale della barra si riduce (solo lunghezze/gap, non gli angoli)
-      così tutto rientra nei margini.
-    - Dopo i pezzi, disegno esplicito dei “gap” come poligoni col colore della barra, così
-      il riempimento dei pezzi non invade la parte di barra visibile.
-    - Colori pezzi alternati (blu/teal); pezzi tagliati in verde.
-    - Stato “done” per indice (primario) con fallback per firma.
+    - Nessun accavallamento: gap tra pezzi = max(kerf_px, somma punte adiacenti + margine).
+      Se necessario la scala orizzontale si riduce (solo lunghezze/gap, non gli angoli) così tutto rientra.
+    - Dopo i pezzi, i “gap” vengono riempiti con il colore della barra per impedire che il colore dei pezzi
+      invada visivamente la barra.
+    - Colori pezzi alternati (blu / teal); pezzi tagliati in verde.
+    - Stato “done” per indice con fallback per firma (se servisse).
     """
 
     def __init__(self, parent=None):
@@ -46,8 +45,8 @@ class PlanVisualizerWidget(QWidget):
 
         # Colori barra
         self._bg = QColor("#ffffff")
-        self._bar_bg = QColor("#f0f2f5")
-        self._bar_bg_active = QColor("#ffe7ba")
+        self._bar_bg = QColor("#f0f2f5")        # sfondo normale (anche per barra attiva ora)
+        self._bar_bg_active = QColor("#ffe7ba") # NON più usato (lasciato per retrocompatibilità)
         self._bar_bg_done = QColor("#e9edf2")
         self._bar_border_done = QColor("#27ae60")
         self._border = QColor("#3b4b5a")
@@ -103,8 +102,6 @@ class PlanVisualizerWidget(QWidget):
         self._done_by_index = {int(k): list(v) for k, v in (done_map or {}).items()}
         self.update()
 
-    # Nota: non esponiamo più set_current_bar; l’evidenza segue sempre la prima incompleta.
-
     def mark_done_index(self, bar_idx: int, piece_idx: int):
         if bar_idx not in self._done_by_index and 0 <= bar_idx < len(self._bars):
             self._done_by_index[bar_idx] = [False] * len(self._bars[bar_idx])
@@ -157,6 +154,7 @@ class PlanVisualizerWidget(QWidget):
         return math.tan(math.radians(a)) * px_height
 
     def _precompute_active_bar_from_index_map(self) -> Tuple[int, List[bool]]:
+        # Manteniamo per coerenza, anche se non usiamo highlight speciale.
         done_flags: List[bool] = []
         active_idx = -1
         for bi, bar in enumerate(self._bars):
@@ -188,16 +186,6 @@ class PlanVisualizerWidget(QWidget):
                 active_idx = bi
         return active_idx, done_flags
 
-    def _first_incomplete_bar_index(self) -> Optional[int]:
-        if self._done_by_index:
-            for i, b in enumerate(self._bars):
-                flags = self._done_by_index.get(i, [])
-                if not (len(flags) == len(b) and all(flags)):
-                    return i
-            return None
-        idx, _ = self._precompute_active_bar_from_done_counts()
-        return None if idx < 0 else idx
-
     def _required_width_px(self,
                            lengths_mm: List[float],
                            kerf_mm: List[float],
@@ -205,8 +193,6 @@ class PlanVisualizerWidget(QWidget):
                            left_extra_px: float,
                            right_extra_px: float,
                            sx: float) -> float:
-        # Larghezza necessaria della barra (in px) per una data scala sx,
-        # includendo gap tra pezzi e punte ai bordi (prima/ultima).
         total = left_extra_px + right_extra_px
         total += sum(L * sx for L in lengths_mm)
         for i in range(len(kerf_mm)):
@@ -240,13 +226,11 @@ class PlanVisualizerWidget(QWidget):
             vspace = max(3.0, (avail_h - n_bars * bar_h) / max(1, n_bars - 1))
             total_h = n_bars * bar_h + (n_bars - 1) * vspace
 
-        # Area interna disponibile per la base dei pezzi
         inner_pad_y = 2.0
         inner_pad_x = 4.0
         inner_w = (avail_w - 20) - inner_pad_x * 2
         base_scale_x = max(0.0001, inner_w / max(1.0, self._stock))
 
-        # Determina SEMPRE la barra attiva come la prima incompleta
         if self._done_by_index:
             active_idx, bar_done_flags = self._precompute_active_bar_from_index_map()
         else:
@@ -262,7 +246,6 @@ class PlanVisualizerWidget(QWidget):
             top = y0 + bi * (bar_h + vspace)
             bar_rect = QRectF(x0, top, avail_w - 20, bar_h)
 
-            # Warn vicino overflow
             used_len_mm = bar_used_length(
                 bar, self._kerf_base, self._ripasso_mm,
                 self._reversible, self._thickness_mm,
@@ -270,41 +253,36 @@ class PlanVisualizerWidget(QWidget):
             )
             near_overflow = (self._stock - used_len_mm) <= self._warn_thr + 1e-6
 
-            # Pen/Brush barra
+            # Pen della barra (bordo verde se completata, rosso se near overflow)
             if bar_done_flags[bi]:
                 pen_bar = QPen(self._bar_border_done)
             else:
                 pen_bar = QPen(self._border_warn if near_overflow else self._border)
             pen_bar.setWidth(1)
 
+            # Sfondo: NO highlight per barra attiva (richiesta utente)
             if bar_done_flags[bi]:
                 bg = self._bar_bg_done
-            elif bi == active_idx:
-                bg = self._bar_bg_active
             else:
                 bg = self._bar_bg
 
-            # Sfondo barra
             p.setPen(pen_bar)
             p.fillRect(bar_rect, QBrush(bg))
             p.drawRect(bar_rect)
 
-            # Geometria verticale per pezzi
             piece_h = max(1.0, bar_h - inner_pad_y * 2)
-            y_top = top + inner_pad_y           # base maggiore (alto)
-            y_bot = top + inner_pad_y + piece_h # base minore (basso)
+            y_top = top + inner_pad_y
+            y_bot = top + inner_pad_y + piece_h
             left_inner = x0 + inner_pad_x
             right_inner = x0 + bar_rect.width() - inner_pad_x
             bar_inner_w = right_inner - left_inner
 
             if not bar:
-                # Etichetta barra
                 p.setPen(QPen(self._border, 1))
                 p.drawText(QRectF(x0 - 8, top - 1, 40, 16),
                            Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
                 continue
 
-            # Precompute numeri per la scala corretta
             lengths_mm: List[float] = []
             off_l: List[float] = []
             off_r: List[float] = []
@@ -334,7 +312,7 @@ class PlanVisualizerWidget(QWidget):
             left_extra_px = max(0.0, off_l[0])
             right_extra_px = max(0.0, off_r[-1])
 
-            # Trova scala della barra (binsearch)
+            # Binsearch scala
             low = 0.0
             high = base_scale_x
             for _ in range(24):
@@ -347,7 +325,6 @@ class PlanVisualizerWidget(QWidget):
                     high = mid
             sx_bar = low
 
-            # Geometria completa per disegno
             base_left: List[float] = []
             base_right: List[float] = []
             top_lefts: List[float] = []
@@ -374,13 +351,12 @@ class PlanVisualizerWidget(QWidget):
                 bl = base_left[pi]; br = base_right[pi]
                 tl = top_lefts[pi]; tr = top_rights[pi]
 
-                pts = [
+                poly = QPolygonF([
                     QPointF(tl, y_top),
                     QPointF(tr, y_top),
                     QPointF(br, y_bot),
                     QPointF(bl, y_bot),
-                ]
-                poly = QPolygonF(pts)
+                ])
 
                 ax = float(piece.get("ax", 0.0))
                 ad = float(piece.get("ad", 0.0))
@@ -398,7 +374,7 @@ class PlanVisualizerWidget(QWidget):
                 p.setBrush(QBrush(fill))
                 p.drawPolygon(poly)
 
-                # Etichetta in alto
+                # Etichetta
                 label = f"{L:.0f} mm"
                 text_w = max(0.0, tr - tl)
                 p.setPen(QPen(self._text))
@@ -408,7 +384,7 @@ class PlanVisualizerWidget(QWidget):
                     p.drawText(QRectF(bl - 2, y_top - 12, max(46.0, text_w + 6), 12),
                                Qt.AlignLeft | Qt.AlignVCenter, label)
 
-            # Disegna esplicitamente i GAP con il colore della barra (riempie la zona tra pezzi)
+            # Riempimento gap con colore della barra (evita "invasione" colori pezzi)
             gap_brush = QBrush(bg)
             p.setPen(Qt.NoPen)
             for i in range(len(bar) - 1):
