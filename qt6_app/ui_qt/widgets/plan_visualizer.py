@@ -20,10 +20,7 @@ class PlanVisualizerWidget(QWidget):
       La lunghezza (base minore) viene scalata per entrare nella larghezza interna della barra.
       Gli angoli (offset superiori) NON vengono ridotti: se espandono fuori dai margini, il pezzo viene traslato
       orizzontalmente per rientrare, mantenendo la forma.
-    - Nessuna rifilatura degli angoli (non alteriamo gli offsets angolari).
     - Colori pezzi alternati (blu / teal) per leggibilità, pezzi tagliati in verde.
-    - Sfondo barra distinto dal colore dei pezzi. Per la barra attiva lo sfondo ambra resta visibile
-      anche sotto i trapezi (non sovrascriviamo con “usato/residuo”).
     - Gap tra pezzi = kerf (joint_consumption) sul fondo + piccolo margine visivo.
     - Done deterministico per indice (fallback per firma se non presente).
     """
@@ -125,7 +122,6 @@ class PlanVisualizerWidget(QWidget):
                                ang_tol: float = 0.05) -> bool:
         """
         Marca il primo pezzo non fatto che matcha (L, ax, ad).
-
         Ritorna True se trovato.
         """
         Lr = float(length_mm)
@@ -143,7 +139,6 @@ class PlanVisualizerWidget(QWidget):
                     abs(float(p.get("ax", 0.0)) - Ax) <= ang_tol and
                     abs(float(p.get("ad", 0.0)) - Ad) <= ang_tol):
                     flags[pi] = True
-                    # Mantieni evidenza barra corrente
                     self._current_bar_index = bi
                     self.update()
                     return True
@@ -300,7 +295,7 @@ class PlanVisualizerWidget(QWidget):
                 ol = 0.0 if self._is_square_angle(ax) else self._offset_for_angle(piece_h, ax)
                 orr = 0.0 if self._is_square_angle(ad) else self._offset_for_angle(piece_h, ad)
 
-                # Limite ragionevole (non riduciamo ulteriormente per “kerf”, solo clamp a proporzione larghezza)
+                # Limite ragionevole (visuale) proporzionale alla larghezza (non riduciamo oltre)
                 max_off = max(0.0, w * 0.6)
                 ol = min(ol, max_off)
                 orr = min(orr, max_off)
@@ -313,18 +308,31 @@ class PlanVisualizerWidget(QWidget):
                 top_left = base_left - ol
                 top_right = base_right + orr
 
-                # Se escono dai margini orizzontali della barra, trasliamo orizzontalmente tutto il pezzo
+                # Se escono dai margini orizzontali della barra, TRASLIAMO il pezzo (non cambiamo gli angoli)
                 shift = 0.0
                 if top_left < left_inner:
                     shift = left_inner - top_left
                 if top_right + shift > right_inner:
-                    # serve un eventuale aggiustamento ulteriore (può accadere se molto largo)
                     shift -= (top_right + shift - right_inner)
 
                 base_left += shift
                 base_right += shift
                 top_left += shift
                 top_right += shift
+
+                # Clamp finale per sicurezza (non uscire col fondo)
+                overflow_left = left_inner - base_left
+                overflow_right = base_right - right_inner
+                if overflow_left > 0:
+                    base_left += overflow_left
+                    base_right += overflow_left
+                    top_left += overflow_left
+                    top_right += overflow_left
+                if overflow_right > 0:
+                    base_left -= overflow_right
+                    base_right -= overflow_right
+                    top_left -= overflow_right
+                    top_right -= overflow_right
 
                 # Trapezio (base maggiore in alto)
                 pts = [
@@ -381,4 +389,4 @@ class PlanVisualizerWidget(QWidget):
             # Etichetta barra (a sinistra)
             lab_rect = QRectF(x0 - 8, top - 1, 40, 16)
             p.setPen(QPen(self._border, 1))
-            p.drawText(lab_rect, Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")s
+            p.drawText(lab_rect, Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
