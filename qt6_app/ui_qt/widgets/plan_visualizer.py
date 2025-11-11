@@ -18,9 +18,11 @@ class PlanVisualizerWidget(QWidget):
     - Barre su righe. Barra attiva evidenziata (ambra). Barre completate: sfondo grigio chiaro + bordo verde.
     - Pezzi come trapezi ribaltati: base maggiore in alto (punte), base minore in basso (base).
       Angoli preservati (offset orizzontali calcolati da tan(ang)*altezza), NON alterati.
-    - Nessun accavallamento: il gap tra pezzi è max(kerf_px, somma punte adiacenti + margine).
-      Se necessario, la scala orizzontale per QUELLA BARRA viene ridotta (solo lunghezze/gap, NON angoli)
-      in modo che tutti i pezzi e le punte rientrino nei margini della barra.
+    - Nessun accavallamento: gap tra pezzi = max(kerf_px, somma punte adiacenti + margine).
+      Se necessario la scala orizzontale della barra si riduce (solo lunghezze/gap, non gli angoli)
+      così tutto rientra nei margini.
+    - Dopo i pezzi, disegno esplicito dei “gap” come poligoni col colore della barra, così
+      il riempimento dei pezzi non invade la parte di barra visibile.
     - Colori pezzi alternati (blu/teal); pezzi tagliati in verde.
     - Stato “done” per indice (primario) con fallback per firma.
     """
@@ -190,8 +192,6 @@ class PlanVisualizerWidget(QWidget):
                 active_idx = bi
         return active_idx, done_flags
 
-    # Calcola la larghezza necessaria della barra (in px) per una data scala sx,
-    # includendo gap tra pezzi e punte ai bordi (prima/ultima).
     def _required_width_px(self,
                            lengths_mm: List[float],
                            kerf_mm: List[float],
@@ -200,9 +200,7 @@ class PlanVisualizerWidget(QWidget):
                            right_extra_px: float,
                            sx: float) -> float:
         total = left_extra_px + right_extra_px
-        # pezzi
         total += sum(L * sx for L in lengths_mm)
-        # gap
         for i in range(len(kerf_mm)):
             total += max(kerf_mm[i] * sx, req_top_gap_px[i])
         return total
@@ -233,13 +231,11 @@ class PlanVisualizerWidget(QWidget):
             vspace = max(3.0, (avail_h - n_bars * bar_h) / max(1, n_bars - 1))
             total_h = n_bars * bar_h + (n_bars - 1) * vspace
 
-        # Area interna disponibile (dove disegnare basi dei pezzi)
         inner_pad_y = 2.0
-        inner_pad_x = 4.0  # margine orizzontale interno
+        inner_pad_x = 4.0
         inner_w = (avail_w - 20) - inner_pad_x * 2
         base_scale_x = max(0.0001, inner_w / max(1.0, self._stock))
 
-        # Barra attiva
         if self._done_by_index:
             computed_active_idx, bar_done_flags = self._precompute_active_bar_from_index_map()
         else:
@@ -257,7 +253,6 @@ class PlanVisualizerWidget(QWidget):
             top = y0 + bi * (bar_h + vspace)
             bar_rect = QRectF(x0, top, avail_w - 20, bar_h)
 
-            # Lunghezza usata (mm) per warn bordo
             used_len_mm = bar_used_length(
                 bar, self._kerf_base, self._ripasso_mm,
                 self._reversible, self._thickness_mm,
@@ -265,14 +260,12 @@ class PlanVisualizerWidget(QWidget):
             )
             near_overflow = (self._stock - used_len_mm) <= self._warn_thr + 1e-6
 
-            # Pen della barra (se completata: bordo verde)
             if bar_done_flags[bi]:
                 pen_bar = QPen(self._bar_border_done)
             else:
                 pen_bar = QPen(self._border_warn if near_overflow else self._border)
             pen_bar.setWidth(1)
 
-            # Sfondo barra base
             if bar_done_flags[bi]:
                 bg = self._bar_bg_done
             elif bi == active_idx:
@@ -284,27 +277,24 @@ class PlanVisualizerWidget(QWidget):
             p.fillRect(bar_rect, QBrush(bg))
             p.drawRect(bar_rect)
 
-            # Geometria interna per pezzi
             piece_h = max(1.0, bar_h - inner_pad_y * 2)
-            y_top = top + inner_pad_y            # base maggiore (alto)
-            y_bot = top + inner_pad_y + piece_h  # base minore (basso)
+            y_top = top + inner_pad_y
+            y_bot = top + inner_pad_y + piece_h
             left_inner = x0 + inner_pad_x
             right_inner = x0 + bar_rect.width() - inner_pad_x
             bar_inner_w = right_inner - left_inner
 
             if not bar:
-                # Etichetta barra
                 p.setPen(QPen(self._border, 1))
                 p.drawText(QRectF(x0 - 8, top - 1, 40, 16),
                            Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
                 continue
 
-            # Precompute liste
+            # Precompute numeri per la scala corretta
             lengths_mm: List[float] = []
             off_l: List[float] = []
             off_r: List[float] = []
             kerf_mm: List[float] = []
-
             for i, piece in enumerate(bar):
                 L = float(piece.get("len", 0.0))
                 ax = float(piece.get("ax", 0.0))
@@ -321,20 +311,19 @@ class PlanVisualizerWidget(QWidget):
                         self._angle_tol, self._max_angle, self._max_factor
                     )
                     kerf_mm.append(max(0.0, float(gap_mm)))
-            # Gap richiesti tra punte adiacenti (px)
+
             margin_px = 1.0
             req_top_gap_px: List[float] = []
             for i in range(len(bar) - 1):
                 req_top_gap_px.append(max(0.0, off_r[i] + off_l[i + 1] + margin_px))
 
-            # Extra ai bordi per far entrare le punte del primo e ultimo pezzo
             left_extra_px = max(0.0, off_l[0])
             right_extra_px = max(0.0, off_r[-1])
 
-            # Trova la scala sx_bar <= base_scale_x tale che tutto stia dentro bar_inner_w
+            # Trova scala di barra
             low = 0.0
             high = base_scale_x
-            for _ in range(24):  # binary search
+            for _ in range(24):
                 mid = (low + high) * 0.5
                 need = self._required_width_px(lengths_mm, kerf_mm, req_top_gap_px,
                                                left_extra_px, right_extra_px, mid)
@@ -344,35 +333,41 @@ class PlanVisualizerWidget(QWidget):
                     high = mid
             sx_bar = low
 
-            # Posizionamento: parte dalla sinistra interna + extra sinistro
-            cursor_x = left_inner + left_extra_px
+            # Geometria compiuta: base e punte per tutti i pezzi
+            base_left: List[float] = []
+            base_right: List[float] = []
+            top_lefts: List[float] = []
+            top_rights: List[float] = []
 
+            cursor_x = left_inner + left_extra_px
+            for i in range(len(bar)):
+                w = lengths_mm[i] * sx_bar
+                bl = cursor_x
+                br = cursor_x + w
+                tl = bl - off_l[i]
+                tr = br + off_r[i]
+                base_left.append(bl)
+                base_right.append(br)
+                top_lefts.append(tl)
+                top_rights.append(tr)
+                if i < len(bar) - 1:
+                    gap_px = max(kerf_mm[i] * sx_bar, req_top_gap_px[i])
+                    cursor_x = br + gap_px
+
+            # Disegna pezzi
             for pi, piece in enumerate(bar):
                 L = lengths_mm[pi]
-                w = L * sx_bar  # base minore (basso) scalata
+                bl = base_left[pi]; br = base_right[pi]
+                tl = top_lefts[pi]; tr = top_rights[pi]
 
-                # Offsets angolari NON modificati
-                ol = off_l[pi]
-                orr = off_r[pi]
-
-                # Base inferiore
-                base_left = cursor_x
-                base_right = cursor_x + w
-
-                # Punte superiori
-                top_left = base_left - ol
-                top_right = base_right + orr
-
-                # Trapezio (base maggiore in alto)
                 pts = [
-                    QPointF(top_left,  y_top),   # top-left
-                    QPointF(top_right, y_top),   # top-right
-                    QPointF(base_right, y_bot),  # bottom-right
-                    QPointF(base_left,  y_bot)   # bottom-left
+                    QPointF(tl, y_top),
+                    QPointF(tr, y_top),
+                    QPointF(br, y_bot),
+                    QPointF(bl, y_bot),
                 ]
                 poly = QPolygonF(pts)
 
-                # Stato done
                 ax = float(piece.get("ax", 0.0))
                 ad = float(piece.get("ad", 0.0))
                 if bi in self._done_by_index and pi < len(self._done_by_index[bi]):
@@ -389,26 +384,31 @@ class PlanVisualizerWidget(QWidget):
                 p.setBrush(QBrush(fill))
                 p.drawPolygon(poly)
 
-                # Etichetta lunghezza (centro lato alto)
+                # Etichetta in alto
                 label = f"{L:.0f} mm"
-                text_w = max(0.0, top_right - top_left)
+                text_w = max(0.0, tr - tl)
                 p.setPen(QPen(self._text))
                 if text_w >= 46:
-                    p.drawText(QRectF(top_left, y_top, text_w, piece_h),
-                               Qt.AlignCenter, label)
+                    p.drawText(QRectF(tl, y_top, text_w, piece_h), Qt.AlignCenter, label)
                 else:
-                    p.drawText(QRectF(base_left - 2, y_top - 12,
-                                      max(46.0, text_w + 6), 12),
+                    p.drawText(QRectF(bl - 2, y_top - 12, max(46.0, text_w + 6), 12),
                                Qt.AlignLeft | Qt.AlignVCenter, label)
 
-                # Avanza di base + gap richiesto
-                if pi < len(bar) - 1:
-                    gap_px = max(kerf_mm[pi] * sx_bar, req_top_gap_px[pi])
-                    cursor_x = base_right + gap_px
-                else:
-                    cursor_x = base_right
+            # Disegna esplicitamente i GAP con il colore della barra, così il fill dei pezzi non “entra” nella barra
+            gap_brush = QBrush(bg)
+            p.setPen(Qt.NoPen)
+            for i in range(len(bar) - 1):
+                # poligono del gap: top_right[i] -> top_left[i+1] (in alto), base_left[i+1] -> base_right[i] (in basso)
+                gpoly = QPolygonF([
+                    QPointF(top_rights[i], y_top),
+                    QPointF(top_lefts[i + 1], y_top),
+                    QPointF(base_left[i + 1], y_bot),
+                    QPointF(base_right[i], y_bot),
+                ])
+                p.setBrush(gap_brush)
+                p.drawPolygon(gpoly)
 
-            # Etichetta barra (a sinistra)
+            # Etichetta barra
             p.setPen(QPen(self._border, 1))
             p.drawText(QRectF(x0 - 8, top - 1, 40, 16),
                        Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
