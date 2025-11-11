@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import csv
 from datetime import datetime
 
@@ -10,11 +10,13 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
     QWidget, QFileDialog
 )
+
 try:
     from PySide6.QtPrintSupport import QPrinter
 except Exception:
     QPrinter = None
 
+# Settings with fallback
 try:
     from ui_qt.utils.settings import read_settings, write_settings
 except Exception:
@@ -188,7 +190,7 @@ class OptimizationRunDialog(QDialog):
     GRAPH_BAR_H = 16
     GRAPH_V_GAP = 6
 
-    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[Widget] = None):
+    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
@@ -219,13 +221,17 @@ class OptimizationRunDialog(QDialog):
 
         self._bars: List[List[Dict[str, float]]] = []
         self._bars_residuals: List[float] = []
+        # Stato "done" per evidenziare in verde
+        self._done_by_index: Dict[int, List[bool]] = {}
 
         self._build()
         self._compute_plan_once()
+        self._init_done_state()
         self._refresh_views()
         self._apply_geometry()
         self._resize_graph_area()
 
+    # ---------------- UI build ----------------
     def _build(self):
         root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
 
@@ -233,8 +239,8 @@ class OptimizationRunDialog(QDialog):
         self._chk_graph = QCheckBox("Mostra grafica piano"); self._chk_graph.setChecked(self._show_graph)
         self._chk_graph.toggled.connect(self._toggle_graph)
         btn_summary = QPushButton("Riepilogo…"); btn_summary.clicked.connect(self._open_summary)
-        btn_start = QPushButton("Simula Avanzamento (F9)"); btn_start.clicked.connect(lambda: self.startRequested.emit())
-        btn_cut = QPushButton("Simula START (F7)"); btn_cut.clicked.connect(lambda: self.simulationRequested.emit())
+        btn_start = QPushButton("Avanza (F9)"); btn_start.clicked.connect(lambda: self.startRequested.emit())
+        btn_cut = QPushButton("Simula taglio (F7)"); btn_cut.clicked.connect(lambda: self.simulationRequested.emit())
         ol.addWidget(self._chk_graph); ol.addStretch(1); ol.addWidget(btn_summary); ol.addWidget(btn_start); ol.addWidget(btn_cut)
         root.addWidget(opts, 0)
 
@@ -268,6 +274,7 @@ class OptimizationRunDialog(QDialog):
         dlg.setAttribute(Qt.WA_DeleteOnClose, True)
         dlg.show()
 
+    # ---------------- Helpers (data) ----------------
     def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
         pieces: List[Dict[str, float]] = []
         for r in self._rows:
@@ -292,21 +299,15 @@ class OptimizationRunDialog(QDialog):
                 if used + p["len"] + extra <= self._stock + 1e-6:
                     b.append(p); placed = True; break
             if not placed:
-                if p["len"] <= self._stock + 1e-6:
-                    bars.append([p])
-                else:
-                    bars.append([p])
+                bars.append([p])
         rem = residuals(bars, self._stock, self._kerf_base, self._ripasso,
                         self._reversible, self._thickness,
                         self._angle_tol, self._max_angle, self._max_factor)
-        if rem:
-            max_idx = max(range(len(rem)), key=lambda k: rem[k])
-            if max_idx != len(bars) - 1:
-                bars.append(bars.pop(max_idx)); rem.append(rem.pop(max_idx))
         return bars, rem
 
     def _compute_plan_once(self):
         pieces = self._expand_rows_to_unit_pieces()
+        # Solver: ILP_KNAP/ILP preferiti, fallback BFD
         if self._solver in ("ILP_KNAP", "ILP"):
             bars, rem = pack_bars_knapsack_ilp(
                 pieces=pieces,
@@ -326,8 +327,67 @@ class OptimizationRunDialog(QDialog):
         else:
             bars, rem = self._pack_bfd(pieces)
 
+        # Refine tail (best-effort)
+        try:
+            bars, rem = refine_tail_ilp(
+                bars, self._stock, self._kerf_base,
+                self._ripasso, self._reversible, self._thickness,
+                self._angle_tol, tail_bars=self._tail_n,
+                time_limit_s=self._tail_t,
+                max_angle=self._max_angle, max_factor=self._max_factor
+            )
+        except Exception:
+            pass
+
+        # Sanitize overflow (pezzi eccedenti rimessi in altre barre)
+        fixed_bars: List[List[Dict[str, float]]] = []
+        overflow: List[Dict[str, float]] = []
+        for bar in bars:
+            b = list(bar)
+            while b and bar_used_length(b, self._kerf_base, self._ripasso,
+                                       self._reversible, self._thickness,
+                                       self._angle_tol, self._max_angle, self._max_factor) > self._stock + 1e-6:
+                overflow.append(b.pop())
+            fixed_bars.append(b)
+        if overflow:
+            for piece in sorted(overflow, key=lambda x: x["len"], reverse=True):
+                placed = False
+                for fb in fixed_bars:
+                    used = bar_used_length(fb, self._kerf_base, self._ripasso,
+                                           self._reversible, self._thickness,
+                                           self._angle_tol, self._max_angle, self._max_factor)
+                    extra = joint_consumption(fb[-1], self._kerf_base, self._ripasso,
+                                              self._reversible, self._thickness,
+                                              self._angle_tol, self._max_angle, self._max_factor)[0] if fb else 0.0
+                    if used + piece["len"] + extra <= self._stock + 1e-6:
+                        fb.append(piece); placed = True; break
+                if not placed:
+                    fixed_bars.append([piece])
+
+        bars = fixed_bars
+        rem = residuals(bars, self._stock, self._kerf_base, self._ripasso,
+                        self._reversible, self._thickness,
+                        self._angle_tol, self._max_angle, self._max_factor)
+
+        # Ordinamento: barre con pezzo più lungo prima
+        bars.sort(key=lambda b: max((p["len"] for p in b), default=0.0), reverse=True)
+
         self._bars = bars
         self._bars_residuals = rem
+
+    # ---------------- Views & state ----------------
+    def _init_done_state(self):
+        self._done_by_index = {i: [False]*len(b) for i, b in enumerate(self._bars)}
+        # imposta barra corrente a prima incompleta
+        self._graph.set_done_by_index(self._done_by_index)
+        self._graph.set_current_bar(self._current_bar_index())
+
+    def _current_bar_index(self) -> Optional[int]:
+        for i, b in enumerate(self._bars):
+            flags = self._done_by_index.get(i, [])
+            if not (len(flags) == len(b) and all(flags)):
+                return i
+        return None
 
     def _refresh_views(self):
         self._graph.set_data(
@@ -337,6 +397,8 @@ class OptimizationRunDialog(QDialog):
             angle_tol=self._angle_tol, max_angle=self._max_angle,
             max_factor=self._max_factor, warn_threshold_mm=self._warn_thr
         )
+        self._graph.set_done_by_index(self._done_by_index)
+        self._graph.set_current_bar(self._current_bar_index())
         self._reload_table()
         self._resize_graph_area()
 
@@ -350,6 +412,7 @@ class OptimizationRunDialog(QDialog):
             self._tbl.setItem(row, 2, QTableWidgetItem(f"{float(r.get('ang_dx',0.0)):.1f}"))
             self._tbl.setItem(row, 3, QTableWidgetItem(str(q)))
 
+    # ---------------- Geometry / sizing ----------------
     def _apply_geometry(self):
         if self._overlay_target is not None:
             try:
@@ -362,7 +425,7 @@ class OptimizationRunDialog(QDialog):
             screen = QApplication.primaryScreen()
             if screen:
                 avail = screen.availableGeometry()
-                self.resize(max(720, self.width()), int(avail.height() - 32))
+                self.resize(max(820, self.width()), int(avail.height() - 32))
                 self.move(avail.x() + 12, avail.y() + 12)
 
     def _desired_graph_height(self, n_bars: int) -> int:
@@ -385,8 +448,44 @@ class OptimizationRunDialog(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event); self._resize_graph_area()
 
+    # ---------------- Mark done after cut ----------------
+    def _mark_first_match_done_local(self, length_mm: float, ang_sx: float, ang_dx: float,
+                                     len_tol: float = 0.01, ang_tol: float = 0.05) -> Optional[Tuple[int,int]]:
+        """
+        Trova e marca nel nostro stato locale (_done_by_index) il primo pezzo non fatto che corrisponde a (L, angoli).
+        Ritorna (bar_idx, piece_idx) se trovato, altrimenti None.
+        """
+        for bi, bar in enumerate(self._bars):
+            flags = self._done_by_index.get(bi, [])
+            if not flags:
+                flags = [False]*len(bar)
+                self._done_by_index[bi] = flags
+            for pi, p in enumerate(bar):
+                if flags[pi]:
+                    continue
+                if (abs(float(p.get("len",0.0)) - float(length_mm)) <= len_tol and
+                    abs(float(p.get("ax",0.0)) - float(ang_sx))   <= ang_tol and
+                    abs(float(p.get("ad",0.0)) - float(ang_dx))   <= ang_tol):
+                    flags[pi] = True
+                    return (bi, pi)
+        return None
+
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        self._graph.mark_done(length_mm, ang_sx, ang_dx)
+        """
+        Chiamata dal chiamante (Automatico) ogni volta che un pezzo è tagliato:
+        - Colora SUBITO in verde il pezzo nel grafico (mark per firma).
+        - Decrementa la quantità nella tabella di input (primo matching).
+        - Aggiorna barra corrente e, se piano completato, chiude il dialog.
+        """
+        # 1) Stato locale + grafico
+        idx = self._mark_first_match_done_local(length_mm, ang_sx, ang_dx)
+        try:
+            # marca anche nel widget (cerca il primo non-fatto che matcha)
+            self._graph.mark_done_by_signature(length_mm, ang_sx, ang_dx)
+        except Exception:
+            pass
+
+        # 2) Decrementa la riga corrispondente in tabella (se presente)
         tol_L = 0.01; tol_A = 0.01
         for r in self._rows:
             try:
@@ -397,8 +496,23 @@ class OptimizationRunDialog(QDialog):
                     break
             except Exception:
                 continue
-        self._refresh_views()
 
+        # 3) Aggiorna views: barra corrente = prima incompleta
+        self._graph.set_done_by_index(self._done_by_index)
+        self._graph.set_current_bar(self._current_bar_index())
+        self._reload_table()
+
+        # 4) Se tutto finito, chiudi
+        if self._current_bar_index() is None:
+            # Tutte le barre sono complete
+            try:
+                self.accept()
+            except Exception:
+                try: self.close()
+                except Exception: pass
+            return
+
+    # ---------------- Events & persist ----------------
     def keyPressEvent(self, ev: QKeyEvent):
         try:
             if ev.key() == Qt.Key_F7:
