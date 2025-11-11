@@ -62,7 +62,6 @@ class PlanVisualizerWidget(QWidget):
         # Stato “done”
         self._done_counts: Dict[Tuple[float, float, float], int] = {}
         self._done_by_index: Dict[int, List[bool]] = {}
-        self._current_bar_index: Optional[int] = None
 
         self.setMinimumSize(520, 220)
 
@@ -92,34 +91,25 @@ class PlanVisualizerWidget(QWidget):
         self._max_angle = float(max_angle)
         self._max_factor = float(max_factor)
         self._warn_thr = float(warn_threshold_mm)
-        self.reset_done()  # reset + attiva la prima barra incompleta
+        self.reset_done()
         self.update()
 
     def reset_done(self):
         self._done_counts.clear()
         self._done_by_index = {i: [False] * len(b) for i, b in enumerate(self._bars)}
-        self._current_bar_index = self._first_incomplete_bar_index()
         self.update()
 
     def set_done_by_index(self, done_map: Dict[int, List[bool]]):
         self._done_by_index = {int(k): list(v) for k, v in (done_map or {}).items()}
-        self._current_bar_index = self._first_incomplete_bar_index()
         self.update()
 
-    def set_current_bar(self, index: Optional[int]):
-        # Forzatura esplicita (se None, verrà scelto automaticamente in paintEvent)
-        if index is None or index < 0 or index >= len(self._bars):
-            self._current_bar_index = None
-        else:
-            self._current_bar_index = int(index)
-        self.update()
+    # Nota: non esponiamo più set_current_bar; l’evidenza segue sempre la prima incompleta.
 
     def mark_done_index(self, bar_idx: int, piece_idx: int):
         if bar_idx not in self._done_by_index and 0 <= bar_idx < len(self._bars):
             self._done_by_index[bar_idx] = [False] * len(self._bars[bar_idx])
         if bar_idx in self._done_by_index and 0 <= piece_idx < len(self._done_by_index[bar_idx]):
             self._done_by_index[bar_idx][piece_idx] = True
-            self._current_bar_index = self._first_incomplete_bar_index()
             self.update()
 
     def mark_done_by_signature(self,
@@ -143,7 +133,6 @@ class PlanVisualizerWidget(QWidget):
                     abs(float(p.get("ax", 0.0)) - Ax) <= ang_tol and
                     abs(float(p.get("ad", 0.0)) - Ad) <= ang_tol):
                     flags[pi] = True
-                    self._current_bar_index = self._first_incomplete_bar_index()
                     self.update()
                     return True
         return False
@@ -257,16 +246,11 @@ class PlanVisualizerWidget(QWidget):
         inner_w = (avail_w - 20) - inner_pad_x * 2
         base_scale_x = max(0.0001, inner_w / max(1.0, self._stock))
 
-        # Determina barra attiva e flag “done”
+        # Determina SEMPRE la barra attiva come la prima incompleta
         if self._done_by_index:
-            computed_active_idx, bar_done_flags = self._precompute_active_bar_from_index_map()
+            active_idx, bar_done_flags = self._precompute_active_bar_from_index_map()
         else:
-            computed_active_idx, bar_done_flags = self._precompute_active_bar_from_done_counts()
-
-        # Se non forzato, usa la prima barra incompleta (così la prima barra è sempre evidenziata all’inizio)
-        auto_active_idx = computed_active_idx
-        active_idx = auto_active_idx if (self._current_bar_index is None) else \
-            min(max(self._current_bar_index, 0), n_bars - 1)
+            active_idx, bar_done_flags = self._precompute_active_bar_from_done_counts()
 
         font = p.font()
         font.setPointSizeF(9.0)
@@ -424,7 +408,7 @@ class PlanVisualizerWidget(QWidget):
                     p.drawText(QRectF(bl - 2, y_top - 12, max(46.0, text_w + 6), 12),
                                Qt.AlignLeft | Qt.AlignVCenter, label)
 
-            # Disegna esplicitamente i GAP con il colore della barra
+            # Disegna esplicitamente i GAP con il colore della barra (riempie la zona tra pezzi)
             gap_brush = QBrush(bg)
             p.setPen(Qt.NoPen)
             for i in range(len(bar) - 1):
