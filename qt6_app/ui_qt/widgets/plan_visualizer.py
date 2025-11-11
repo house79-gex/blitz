@@ -15,14 +15,14 @@ from ui_qt.logic.refiner import (
 class PlanVisualizerWidget(QWidget):
     """
     Visualizzazione grafica del piano (Automatico):
-    - Barre su righe. Barra attiva evidenziata (ambra). Barre completate con cornice verde + sfondo grigio chiaro.
-    - Pezzi come trapezi ribaltati: base maggiore in alto, base minore in basso (angoli preservati, NON modificati).
-      La lunghezza (base minore) viene scalata per entrare nella larghezza interna della barra.
-      Gli angoli (offset superiori) NON vengono ridotti: se espandono fuori dai margini, il pezzo viene traslato
-      orizzontalmente per rientrare, mantenendo la forma.
-    - Colori pezzi alternati (blu / teal) per leggibilità, pezzi tagliati in verde.
-    - Gap tra pezzi = kerf (joint_consumption) sul fondo + piccolo margine visivo.
-    - Done deterministico per indice (fallback per firma se non presente).
+    - Barre su righe. Barra attiva evidenziata (ambra). Barre completate: sfondo grigio chiaro + bordo verde.
+    - Pezzi come trapezi ribaltati: base maggiore in alto (punte), base minore in basso (base).
+      Angoli preservati (offset orizzontali calcolati da tan(ang)*altezza), NON alterati.
+    - Nessun accavallamento: il gap tra pezzi è max(kerf_px, somma punte adiacenti + margine).
+      Se necessario, la scala orizzontale per QUELLA BARRA viene ridotta (solo lunghezze/gap, NON angoli)
+      in modo che tutti i pezzi e le punte rientrino nei margini della barra.
+    - Colori pezzi alternati (blu/teal); pezzi tagliati in verde.
+    - Stato “done” per indice (primario) con fallback per firma.
     """
 
     def __init__(self, parent=None):
@@ -120,10 +120,6 @@ class PlanVisualizerWidget(QWidget):
                                ang_dx: float,
                                len_tol: float = 0.01,
                                ang_tol: float = 0.05) -> bool:
-        """
-        Marca il primo pezzo non fatto che matcha (L, ax, ad).
-        Ritorna True se trovato.
-        """
         Lr = float(length_mm)
         Ax = float(ang_sx)
         Ad = float(ang_dx)
@@ -194,6 +190,23 @@ class PlanVisualizerWidget(QWidget):
                 active_idx = bi
         return active_idx, done_flags
 
+    # Calcola la larghezza necessaria della barra (in px) per una data scala sx,
+    # includendo gap tra pezzi e punte ai bordi (prima/ultima).
+    def _required_width_px(self,
+                           lengths_mm: List[float],
+                           kerf_mm: List[float],
+                           req_top_gap_px: List[float],
+                           left_extra_px: float,
+                           right_extra_px: float,
+                           sx: float) -> float:
+        total = left_extra_px + right_extra_px
+        # pezzi
+        total += sum(L * sx for L in lengths_mm)
+        # gap
+        for i in range(len(kerf_mm)):
+            total += max(kerf_mm[i] * sx, req_top_gap_px[i])
+        return total
+
     # ------------ paint ------------
     def paintEvent(self, ev):
         p = QPainter(self)
@@ -224,15 +237,13 @@ class PlanVisualizerWidget(QWidget):
         inner_pad_y = 2.0
         inner_pad_x = 4.0  # margine orizzontale interno
         inner_w = (avail_w - 20) - inner_pad_x * 2
-        scale_x = max(0.0001, inner_w / max(1.0, self._stock))
+        base_scale_x = max(0.0001, inner_w / max(1.0, self._stock))
 
-        # Determina barra attiva
+        # Barra attiva
         if self._done_by_index:
             computed_active_idx, bar_done_flags = self._precompute_active_bar_from_index_map()
         else:
             computed_active_idx, bar_done_flags = self._precompute_active_bar_from_done_counts()
-
-        # Se non è stato forzato manualmente un indice, usa il calcolato (anche la prima barra verrà evidenziata)
         active_idx = computed_active_idx if (self._current_bar_index is None) else \
             min(max(self._current_bar_index, 0), n_bars - 1)
 
@@ -246,7 +257,7 @@ class PlanVisualizerWidget(QWidget):
             top = y0 + bi * (bar_h + vspace)
             bar_rect = QRectF(x0, top, avail_w - 20, bar_h)
 
-            # Lunghezza usata (mm)
+            # Lunghezza usata (mm) per warn bordo
             used_len_mm = bar_used_length(
                 bar, self._kerf_base, self._ripasso_mm,
                 self._reversible, self._thickness_mm,
@@ -261,7 +272,7 @@ class PlanVisualizerWidget(QWidget):
                 pen_bar = QPen(self._border_warn if near_overflow else self._border)
             pen_bar.setWidth(1)
 
-            # Sfondo barra base (non viene coperto dai pezzi)
+            # Sfondo barra base
             if bar_done_flags[bi]:
                 bg = self._bar_bg_done
             elif bi == active_idx:
@@ -279,60 +290,78 @@ class PlanVisualizerWidget(QWidget):
             y_bot = top + inner_pad_y + piece_h  # base minore (basso)
             left_inner = x0 + inner_pad_x
             right_inner = x0 + bar_rect.width() - inner_pad_x
+            bar_inner_w = right_inner - left_inner
 
-            cursor_x = left_inner
-            margin_px = 1.0  # piccolo margine visivo sui gap
+            if not bar:
+                # Etichetta barra
+                p.setPen(QPen(self._border, 1))
+                p.drawText(QRectF(x0 - 8, top - 1, 40, 16),
+                           Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
+                continue
 
-            for pi, piece in enumerate(bar):
+            # Precompute liste
+            lengths_mm: List[float] = []
+            off_l: List[float] = []
+            off_r: List[float] = []
+            kerf_mm: List[float] = []
+
+            for i, piece in enumerate(bar):
                 L = float(piece.get("len", 0.0))
                 ax = float(piece.get("ax", 0.0))
                 ad = float(piece.get("ad", 0.0))
-
-                # Larghezza base minore (basso) scalata
-                w = max(1.0, L * scale_x)
-
-                # Offsets angolari (NON modificati / rifilati)
+                lengths_mm.append(max(0.0, L))
                 ol = 0.0 if self._is_square_angle(ax) else self._offset_for_angle(piece_h, ax)
                 orr = 0.0 if self._is_square_angle(ad) else self._offset_for_angle(piece_h, ad)
+                off_l.append(ol)
+                off_r.append(orr)
+                if i < len(bar) - 1:
+                    gap_mm, _, _, _ = joint_consumption(
+                        piece, self._kerf_base, self._ripasso_mm,
+                        self._reversible, self._thickness_mm,
+                        self._angle_tol, self._max_angle, self._max_factor
+                    )
+                    kerf_mm.append(max(0.0, float(gap_mm)))
+            # Gap richiesti tra punte adiacenti (px)
+            margin_px = 1.0
+            req_top_gap_px: List[float] = []
+            for i in range(len(bar) - 1):
+                req_top_gap_px.append(max(0.0, off_r[i] + off_l[i + 1] + margin_px))
 
-                # Limite ragionevole (visuale) proporzionale alla larghezza (non riduciamo oltre)
-                max_off = max(0.0, w * 0.6)
-                ol = min(ol, max_off)
-                orr = min(orr, max_off)
+            # Extra ai bordi per far entrare le punte del primo e ultimo pezzo
+            left_extra_px = max(0.0, off_l[0])
+            right_extra_px = max(0.0, off_r[-1])
+
+            # Trova la scala sx_bar <= base_scale_x tale che tutto stia dentro bar_inner_w
+            low = 0.0
+            high = base_scale_x
+            for _ in range(24):  # binary search
+                mid = (low + high) * 0.5
+                need = self._required_width_px(lengths_mm, kerf_mm, req_top_gap_px,
+                                               left_extra_px, right_extra_px, mid)
+                if need <= bar_inner_w:
+                    low = mid
+                else:
+                    high = mid
+            sx_bar = low
+
+            # Posizionamento: parte dalla sinistra interna + extra sinistro
+            cursor_x = left_inner + left_extra_px
+
+            for pi, piece in enumerate(bar):
+                L = lengths_mm[pi]
+                w = L * sx_bar  # base minore (basso) scalata
+
+                # Offsets angolari NON modificati
+                ol = off_l[pi]
+                orr = off_r[pi]
 
                 # Base inferiore
                 base_left = cursor_x
                 base_right = cursor_x + w
 
-                # Posizione desiderata delle punte superiori
+                # Punte superiori
                 top_left = base_left - ol
                 top_right = base_right + orr
-
-                # Se escono dai margini orizzontali della barra, TRASLIAMO il pezzo (non cambiamo gli angoli)
-                shift = 0.0
-                if top_left < left_inner:
-                    shift = left_inner - top_left
-                if top_right + shift > right_inner:
-                    shift -= (top_right + shift - right_inner)
-
-                base_left += shift
-                base_right += shift
-                top_left += shift
-                top_right += shift
-
-                # Clamp finale per sicurezza (non uscire col fondo)
-                overflow_left = left_inner - base_left
-                overflow_right = base_right - right_inner
-                if overflow_left > 0:
-                    base_left += overflow_left
-                    base_right += overflow_left
-                    top_left += overflow_left
-                    top_right += overflow_left
-                if overflow_right > 0:
-                    base_left -= overflow_right
-                    base_right -= overflow_right
-                    top_left -= overflow_right
-                    top_right -= overflow_right
 
                 # Trapezio (base maggiore in alto)
                 pts = [
@@ -344,6 +373,8 @@ class PlanVisualizerWidget(QWidget):
                 poly = QPolygonF(pts)
 
                 # Stato done
+                ax = float(piece.get("ax", 0.0))
+                ad = float(piece.get("ad", 0.0))
                 if bi in self._done_by_index and pi < len(self._done_by_index[bi]):
                     is_done = bool(self._done_by_index[bi][pi])
                 else:
@@ -360,7 +391,7 @@ class PlanVisualizerWidget(QWidget):
 
                 # Etichetta lunghezza (centro lato alto)
                 label = f"{L:.0f} mm"
-                text_w = top_right - top_left
+                text_w = max(0.0, top_right - top_left)
                 p.setPen(QPen(self._text))
                 if text_w >= 46:
                     p.drawText(QRectF(top_left, y_top, text_w, piece_h),
@@ -370,23 +401,14 @@ class PlanVisualizerWidget(QWidget):
                                       max(46.0, text_w + 6), 12),
                                Qt.AlignLeft | Qt.AlignVCenter, label)
 
-                # Gap (kerf) solo sulla base minore (non modifichiamo angoli)
+                # Avanza di base + gap richiesto
                 if pi < len(bar) - 1:
-                    gap_mm, _, _, _ = joint_consumption(
-                        piece, self._kerf_base, self._ripasso_mm,
-                        self._reversible, self._thickness_mm,
-                        self._angle_tol, self._max_angle, self._max_factor
-                    )
-                    gap_px = max(0.0, gap_mm * scale_x) + margin_px
+                    gap_px = max(kerf_mm[pi] * sx_bar, req_top_gap_px[pi])
                     cursor_x = base_right + gap_px
                 else:
                     cursor_x = base_right
 
-                # Evita overflow base sul lato destro (clamp finale)
-                if cursor_x > right_inner:
-                    cursor_x = right_inner
-
             # Etichetta barra (a sinistra)
-            lab_rect = QRectF(x0 - 8, top - 1, 40, 16)
             p.setPen(QPen(self._border, 1))
-            p.drawText(lab_rect, Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
+            p.drawText(QRectF(x0 - 8, top - 1, 40, 16),
+                       Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
