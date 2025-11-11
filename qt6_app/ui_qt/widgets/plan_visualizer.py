@@ -381,4 +381,4 @@ class PlanVisualizerWidget(QWidget):
             # Etichetta barra (a sinistra)
             lab_rect = QRectF(x0 - 8, top - 1, 40, 16)
             p.setPen(QPen(self._border, 1))
-            p.drawText(lab_rect, Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
+            p.drawText(lab_rect, Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")s
