@@ -196,7 +196,6 @@ class AutomaticoPage(QWidget):
         self._sig_total_counts: Dict[Tuple[str, float, float, float], int] = {}
         self._cur_sig: Optional[Tuple[str, float, float, float]] = None
 
-        # stato editor Quantità
         self._in_item_change: bool = False
         self._qty_editing_row: int = -1
 
@@ -240,13 +239,11 @@ class AutomaticoPage(QWidget):
                                   QHeaderView.ResizeToContents, QHeaderView.ResizeToContents,
                                   QHeaderView.ResizeToContents, QHeaderView.Stretch]):
             hdr.setSectionResizeMode(i, mode)
-        self.tbl_cut.setEditTriggers(QAbstractItemView.NoEditTriggers)  # default non-editabile
+        self.tbl_cut.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_cut.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_cut.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_cut.setAlternatingRowColors(True)
         self.tbl_cut.setStyleSheet("QTableWidget::item:selected { background:#1976d2; color:#ffffff; font-weight:700; }")
-
-        # eventi
         self.tbl_cut.cellDoubleClicked.connect(self._on_cell_double_clicked)
         self.tbl_cut.setMouseTracking(True)
         self.tbl_cut.cellEntered.connect(self._on_cell_entered)
@@ -408,14 +405,12 @@ class AutomaticoPage(QWidget):
         self._open_opt_dialog(prof)
 
     def _on_cell_double_clicked(self, row: int, col: int):
-        # intestazione → ottimizza
         if self._row_is_header(row):
             profile = self.tbl_cut.item(row, 0).text().strip()
             if profile:
                 self._optimize_profile(profile)
                 self._open_opt_dialog(profile)
             return
-        # doppio click su colonna Quantità (5) quando q=0 → apri editor inline stabile
         if col == 5:
             it = self.tbl_cut.item(row, 5)
             if it:
@@ -424,13 +419,11 @@ class AutomaticoPage(QWidget):
                 except Exception:
                     q = 0
                 if q == 0:
-                    # consenti edit esplicitamente e apri editor persistente (niente "editing failed")
                     it.setFlags(it.flags() | Qt.ItemIsEditable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                     self.tbl_cut.setCurrentItem(it)
                     self.tbl_cut.openPersistentEditor(it)
                     self._qty_editing_row = row
                     return
-        # altro: nessuna azione
 
     def _open_opt_config(self):
         dlg = OptimizationConfigDialog(self)
@@ -581,7 +574,7 @@ class AutomaticoPage(QWidget):
             pass
 
         fixed_bars: List[List[Dict[str, float]]] = []
-        overflow: List[Dict[str, float]]] = []
+        overflow: List[Dict[str, float]] = []  # CORRETTO QUI
         for bar in bars:
             b = list(bar)
             while b and bar_used_length(b, kerf_base, self._ripasso_mm,
@@ -610,8 +603,7 @@ class AutomaticoPage(QWidget):
         rem = residuals(bars, stock, kerf_base, self._ripasso_mm,
                         reversible_now, thickness_mm,
                         angle_tol, max_angle, max_factor)
-        # nessun riordino per residuo (evita salti)
-        # priorità: barre con pezzo più lungo prima
+
         bars.sort(key=lambda b: max((p["len"] for p in b), default=0.0), reverse=True)
 
         self._plan_profile = prof; self._bars = bars; self._bar_idx = 0; self._piece_idx = -1
@@ -621,7 +613,6 @@ class AutomaticoPage(QWidget):
         for (L, ax, ad), qty in items.items():
             self._sig_total_counts[self._sig_key(prof, L, ax, ad)] = int(qty)
 
-        # disattiva auto-advance cross-bar
         self._auto_continue_across_bars = False
 
         self._update_counters_ui()
@@ -649,7 +640,6 @@ class AutomaticoPage(QWidget):
                         angle_tol, max_angle, max_factor)
         return bars, rem
 
-    # ---- movimento/lock ----
     def _move_and_arm(self, length: float, ax: float, ad: float, profile: str, element: str):
         self._unlock_brake(silent=True)
         if hasattr(self.machine, "set_active_mode"):
@@ -716,7 +706,6 @@ class AutomaticoPage(QWidget):
             self._brake_locked = False
         except Exception: pass
 
-    # ---- util piano ----
     def _auto_continue_enabled_fn(self) -> bool:
         return bool(self._auto_continue_enabled)
 
@@ -797,7 +786,6 @@ class AutomaticoPage(QWidget):
             if self._read_input(k): return True
         return False
 
-    # ---- AVANZO PIANO (START) ----
     def _handle_start_trigger(self):
         if self._mode != "plan" or not self._bars: return
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
@@ -846,7 +834,6 @@ class AutomaticoPage(QWidget):
     def simulate_cut_from_dialog(self):
         self._simulate_cut_once()
 
-    # ---- TAGLIO (IMPULSO LAMA) ----
     def _simulate_cut_once(self):
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
@@ -854,7 +841,6 @@ class AutomaticoPage(QWidget):
 
         self._ensure_test_lock(tgt, remaining)
         if not (self._brake_locked and tgt > 0 and remaining > 0):
-            # fallback: se non siamo armati (o fuori plan/manual) prova a decrementare la riga selezionata
             self._dec_selected_row_qty()
             return
 
@@ -876,7 +862,6 @@ class AutomaticoPage(QWidget):
                     f"{float(cur_piece['ad']):.1f}"
                 )
         else:
-            # fallback: decrementa riga selezionata
             self._dec_selected_row_qty()
 
         if self._opt_dialog and cur_piece:
@@ -912,7 +897,6 @@ class AutomaticoPage(QWidget):
                 else:
                     self._unlock_brake()
 
-                # chiudi dialog se piano esaurito
                 try:
                     rem_all = self._sum_remaining_for_profile(self._plan_profile)
                 except Exception:
@@ -939,7 +923,6 @@ class AutomaticoPage(QWidget):
 
         self._update_counters_ui()
 
-    # ---- Fallback decremento riga selezionata ----
     def _dec_selected_row_qty(self):
         try:
             r = self.tbl_cut.currentRow()
@@ -1011,7 +994,6 @@ class AutomaticoPage(QWidget):
                 return True
         return False
 
-    # ---- UI helpers ----
     def _update_counters_ui(self):
         if self._mode == "plan" and self._cur_sig:
             total = int(self._sig_total_counts.get(self._cur_sig, 0))
@@ -1028,7 +1010,6 @@ class AutomaticoPage(QWidget):
         self.lbl_done.setText(str(done_m))
         self.lbl_remaining.setText(str(rem_m))
 
-    # ---- Tooltip e editor Quantità ----
     def _on_cell_entered(self, row: int, col: int):
         if row < 0 or self._row_is_header(row) or col != 5:
             return
@@ -1061,7 +1042,6 @@ class AutomaticoPage(QWidget):
             val = max(0, val)
             if txt != str(val):
                 it.setText(str(val))
-            # Se >0 chiudi editor persistente e rendi non-editabile
             if val > 0:
                 if self.tbl_cut.isPersistentEditorOpen(it):
                     self.tbl_cut.closePersistentEditor(it)
@@ -1069,12 +1049,10 @@ class AutomaticoPage(QWidget):
                 if self._qty_editing_row == row:
                     self._qty_editing_row = -1
             else:
-                # lascia la possibilità di editarlo di nuovo al prossimo doppio click
                 it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         finally:
             self._in_item_change = False
 
-    # ---- lifecycle ----
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_F7:
             self._simulate_cut_once(); event.accept(); return
@@ -1118,7 +1096,6 @@ class AutomaticoPage(QWidget):
         self._unlock_brake(silent=True)
         super().hideEvent(ev)
 
-    # Sequencer (no-op)
     def _on_step_started(self, idx: int, step: dict): pass
     def _on_step_finished(self, idx: int, step: dict): pass
     def _on_seq_done(self): self._toast("Automatico: completato", "ok")
