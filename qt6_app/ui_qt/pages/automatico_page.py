@@ -574,7 +574,7 @@ class AutomaticoPage(QWidget):
             pass
 
         fixed_bars: List[List[Dict[str, float]]] = []
-        overflow: List[Dict[str, float]] = []  # CORRETTO QUI
+        overflow: List[Dict[str, float]] = []
         for bar in bars:
             b = list(bar)
             while b and bar_used_length(b, kerf_base, self._ripasso_mm,
@@ -603,7 +603,7 @@ class AutomaticoPage(QWidget):
         rem = residuals(bars, stock, kerf_base, self._ripasso_mm,
                         reversible_now, thickness_mm,
                         angle_tol, max_angle, max_factor)
-
+        # Ordina barre per priorità “pezzo più lungo”
         bars.sort(key=lambda b: max((p["len"] for p in b), default=0.0), reverse=True)
 
         self._plan_profile = prof; self._bars = bars; self._bar_idx = 0; self._piece_idx = -1
@@ -613,7 +613,8 @@ class AutomaticoPage(QWidget):
         for (L, ax, ad), qty in items.items():
             self._sig_total_counts[self._sig_key(prof, L, ax, ad)] = int(qty)
 
-        self._auto_continue_across_bars = False
+        # NON forziamo più il blocco across-barras: rispetta la config utente
+        # self._auto_continue_across_bars rimane come da settings
 
         self._update_counters_ui()
         self._toast(f"Piano ottimizzato per {prof}. Barre: {len(bars)}.", "info")
@@ -882,6 +883,8 @@ class AutomaticoPage(QWidget):
                 same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
                 nxt = self._get_next_indices()
                 across = bool(nxt and (nxt[0] != self._bar_idx))
+                # AUTO-CONTINUE: sempre attivo se abilitato (anche sull'ultima barra),
+                # e se across-bar è permesso dalle impostazioni.
                 allowed = self._auto_continue_enabled_fn() and same_next and (not across or self._auto_continue_across_bars)
 
                 if allowed and nxt is not None:
@@ -897,6 +900,7 @@ class AutomaticoPage(QWidget):
                 else:
                     self._unlock_brake()
 
+                # chiudi dialog se piano esaurito
                 try:
                     rem_all = self._sum_remaining_for_profile(self._plan_profile)
                 except Exception:
