@@ -178,7 +178,6 @@ class OptimizationSummaryDialog(QDialog):
         printer = QPrinter(QPrinter.HighResolution)
         printer.setOutputFormat(QPrinter.PdfFormat)
         printer.setOutputFileName(path)
-        # PySide6: il metodo è print_ (non print)
         doc.print_(printer)
 
 
@@ -378,11 +377,11 @@ class OptimizationRunDialog(QDialog):
     # ---------------- Views & state ----------------
     def _init_done_state(self):
         self._done_by_index = {i: [False]*len(b) for i, b in enumerate(self._bars)}
-        # imposta barra corrente a prima incompleta
+        # Il widget determina da solo la barra attiva (prima incompleta)
         self._graph.set_done_by_index(self._done_by_index)
-        self._graph.set_current_bar(self._current_bar_index())
 
     def _current_bar_index(self) -> Optional[int]:
+        # Manteniamo questo helper se serve altrove (non più usato dal widget)
         for i, b in enumerate(self._bars):
             flags = self._done_by_index.get(i, [])
             if not (len(flags) == len(b) and all(flags)):
@@ -398,7 +397,7 @@ class OptimizationRunDialog(QDialog):
             max_factor=self._max_factor, warn_threshold_mm=self._warn_thr
         )
         self._graph.set_done_by_index(self._done_by_index)
-        self._graph.set_current_bar(self._current_bar_index())
+        # Niente set_current_bar: la barra attiva è sempre la prima incompleta
         self._reload_table()
         self._resize_graph_area()
 
@@ -472,15 +471,11 @@ class OptimizationRunDialog(QDialog):
 
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
         """
-        Chiamata dal chiamante (Automatico) ogni volta che un pezzo è tagliato:
-        - Colora SUBITO in verde il pezzo nel grafico (mark per firma).
-        - Decrementa la quantità nella tabella di input (primo matching).
-        - Aggiorna barra corrente e, se piano completato, chiude il dialog.
+        Colora SUBITO in verde il pezzo nel grafico, decrementa la tabella, aggiorna viste.
         """
-        # 1) Stato locale + grafico
-        idx = self._mark_first_match_done_local(length_mm, ang_sx, ang_dx)
+        # 1) Stato locale + widget
+        self._mark_first_match_done_local(length_mm, ang_sx, ang_dx)
         try:
-            # marca anche nel widget (cerca il primo non-fatto che matcha)
             self._graph.mark_done_by_signature(length_mm, ang_sx, ang_dx)
         except Exception:
             pass
@@ -497,14 +492,12 @@ class OptimizationRunDialog(QDialog):
             except Exception:
                 continue
 
-        # 3) Aggiorna views: barra corrente = prima incompleta
+        # 3) Aggiorna viste: la barra attiva sarà la prima incompleta
         self._graph.set_done_by_index(self._done_by_index)
-        self._graph.set_current_bar(self._current_bar_index())
         self._reload_table()
 
         # 4) Se tutto finito, chiudi
         if self._current_bar_index() is None:
-            # Tutte le barre sono complete
             try:
                 self.accept()
             except Exception:
