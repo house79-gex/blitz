@@ -4,7 +4,7 @@ import csv
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal, QRect
-from PySide6.QtGui import QKeyEvent, QTextDocument, QColor, QBrush
+from PySide6.QtGui import QKeyEvent, QTextDocument, QColor, QBrush, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
@@ -216,12 +216,20 @@ class OptimizationRunDialog(QDialog):
         self._bars_residuals: List[float] = []
         self._done_by_index: Dict[int, List[bool]] = {}
 
+        self.setFocusPolicy(Qt.StrongFocus)
+
         self._build()
         self._compute_plan_once()
         self._init_done_state()
         self._refresh_views()
         self._apply_geometry()
         self._resize_graph_area()
+
+        # Scorciatoie tastiera per lavorare dal dialog
+        self._sc_f7 = QShortcut(QKeySequence("F7"), self)
+        self._sc_f7.activated.connect(lambda: self.simulationRequested.emit())
+        self._sc_f9 = QShortcut(QKeySequence("F9"), self)
+        self._sc_f9.activated.connect(lambda: self.startRequested.emit())
 
     # Banner grande in dialog
     def show_banner(self, msg: str, level: str = "info"):
@@ -238,6 +246,8 @@ class OptimizationRunDialog(QDialog):
         self._banner.setVisible(True)
         try:
             self._banner.raise_()
+            self.raise_()
+            self.activateWindow()
         except Exception:
             pass
 
@@ -250,7 +260,7 @@ class OptimizationRunDialog(QDialog):
     def _build(self):
         root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
 
-        # Banner sempre in primo piano nel dialog
+        # Banner
         self._banner = QLabel("")
         self._banner.setVisible(False)
         self._banner.setAlignment(Qt.AlignCenter)
@@ -281,6 +291,13 @@ class OptimizationRunDialog(QDialog):
         root.addWidget(self._tbl, 1)
 
         self._apply_toggles()
+
+    def keyPressEvent(self, e: QKeyEvent):
+        if e.key() == Qt.Key_F7:
+            self.simulationRequested.emit(); e.accept(); return
+        if e.key() == Qt.Key_F9:
+            self.startRequested.emit(); e.accept(); return
+        super().keyPressEvent(e)
 
     def _apply_toggles(self):
         self._panel_graph.setVisible(self._show_graph)
@@ -329,7 +346,6 @@ class OptimizationRunDialog(QDialog):
 
     def _compute_plan_once(self):
         pieces = self._expand_rows_to_unit_pieces()
-        solver = "ILP_KNAP"  # resta coerente con l'esterno
 
         bars, rem = pack_bars_knapsack_ilp(
             pieces=pieces,
@@ -358,7 +374,7 @@ class OptimizationRunDialog(QDialog):
         except Exception:
             pass
 
-        # Sanitize overflow
+        # Overflow → ricollocazione semplice
         fixed_bars: List[List[Dict[str, float]]] = []
         overflow: List[Dict[str, float]] = []
         for bar in bars:
@@ -388,7 +404,6 @@ class OptimizationRunDialog(QDialog):
                         self._reversible, self._thickness,
                         self._angle_tol, self._max_angle, self._max_factor)
 
-        # Ordinamento: barre con pezzo più lungo prima
         bars.sort(key=lambda b: max((p["len"] for p in b), default=0.0), reverse=True)
 
         self._bars = bars
@@ -398,13 +413,6 @@ class OptimizationRunDialog(QDialog):
     def _init_done_state(self):
         self._done_by_index = {i: [False]*len(b) for i, b in enumerate(self._bars)}
         self._graph.set_done_by_index(self._done_by_index)
-
-    def _current_bar_index(self) -> Optional[int]:
-        for i, b in enumerate(self._bars):
-            flags = self._done_by_index.get(i, [])
-            if not (len(flags) == len(b) and all(flags)):
-                return i
-        return None
 
     def _refresh_views(self):
         self._graph.set_data(
@@ -467,16 +475,13 @@ class OptimizationRunDialog(QDialog):
     # ---------------- Mark done after cut ----------------
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
         """
-        Colorazione verde del pezzo nel grafico e decremento della tabella.
-        Chiamato da AutomaticoPage solo al taglio “finale” per ogni pezzo.
+        Colora nel grafico e decrementa tabella. Chiamato da AutomaticoPage al taglio finale del pezzo.
         """
-        # 1) Stato grafico
         try:
             self._graph.mark_done_by_signature(length_mm, ang_sx, ang_dx)
         except Exception:
             pass
 
-        # 2) Decrementa quantità corrispondente in tabella
         tol_L = 0.01; tol_A = 0.01
         for i in range(self._tbl.rowCount()):
             try:
@@ -490,5 +495,4 @@ class OptimizationRunDialog(QDialog):
                 self._tbl.setItem(i, 3, QTableWidgetItem(str(max(q - 1, 0))))
                 break
 
-        # 3) Refresh
         self._graph.update()
