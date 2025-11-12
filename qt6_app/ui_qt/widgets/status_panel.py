@@ -25,9 +25,8 @@ class StatusPanel(QWidget):
     - HOMED (verde/giallo)
     - FRENO (BLOCCATO=verde / SBLOCCATO=arancio)
     - FRIZIONE (INSERITA=verde / DISINSERITA=arancio)
-    - QUOTA (mm)
     - TESTA SX/DX (ABILITATA/DISABILITATA) in base a inibizione lama
-    - PRESSORE SX/DX (CHIUSO/APERTO)
+    (NOTA: QUOTA e PRESSORI sono stati rimossi su richiesta)
     """
     def __init__(self, machine_state, title="STATO", parent=None):
         super().__init__(parent)
@@ -62,23 +61,15 @@ class StatusPanel(QWidget):
         self.w_homed = _pill("-", MUTED)
         self.w_brake = _pill("-", MUTED)
         self.w_clutch = _pill("-", MUTED)
-        self.w_enc = QLabel("—")
-        self.w_enc.setStyleSheet("font-weight:700; font-size: 11pt; color:#2980b9;")
-        # Nuovi indicatori
         self.w_head_sx = _pill("-", MUTED)
         self.w_head_dx = _pill("-", MUTED)
-        self.w_press_sx = _pill("-", MUTED)
-        self.w_press_dx = _pill("-", MUTED)
 
         add_row(0, "EMG", self.w_emg)
         add_row(1, "HOMED", self.w_homed)
         add_row(2, "FRENO", self.w_brake)
         add_row(3, "FRIZIONE", self.w_clutch)
-        add_row(4, "QUOTA", self.w_enc)
-        add_row(5, "TESTA SX", self.w_head_sx)
-        add_row(6, "TESTA DX", self.w_head_dx)
-        add_row(7, "PRESSORE SX", self.w_press_sx)
-        add_row(8, "PRESSORE DX", self.w_press_dx)
+        add_row(4, "TESTA SX", self.w_head_sx)
+        add_row(5, "TESTA DX", self.w_head_dx)
 
         root.addStretch(1)
 
@@ -89,16 +80,6 @@ class StatusPanel(QWidget):
                 try: return bool(getattr(self.m, n))
                 except Exception: return default
         return default
-
-    def _n(self, *names) -> Optional[float]:
-        for n in names:
-            if hasattr(self.m, n):
-                try:
-                    v = getattr(self.m, n)
-                    return float(v)
-                except Exception:
-                    return None
-        return None
 
     def refresh(self):
         emg = self._b("emergency_active", "emg_active", "is_emg", "in_emergency")
@@ -125,14 +106,6 @@ class StatusPanel(QWidget):
             f"font-weight:800; font-size: 11pt; color:white; background:{OK if clutch else WARN}; border-radius:10px; padding:2px 6px;"
         )
 
-        enc = self._n("encoder_position", "position_current", "pos_mm", "quota_mm")
-        if enc is not None:
-            self.w_enc.setText(f"{enc:.2f} mm")
-            self.w_enc.setStyleSheet("font-weight:700; font-size: 11pt; color:#2980b9;")
-        else:
-            self.w_enc.setText("—")
-            self.w_enc.setStyleSheet("color:#7f8c8d; font-weight:600; font-size: 11pt;")
-
         # TESTE: interpreto “inhibit = True” come DISABILITATA
         inh_sx = self._b("left_blade_inhibit", "lama_sx_inibita", "sx_inhibit", default=False)
         inh_dx = self._b("right_blade_inhibit", "lama_dx_inibita", "dx_inhibit", default=False)
@@ -144,17 +117,4 @@ class StatusPanel(QWidget):
         self.w_head_dx.setText("ABILITATA" if not inh_dx else "DISABILITATA")
         self.w_head_dx.setStyleSheet(
             f"font-weight:800; font-size: 11pt; color:white; background:{OK if not inh_dx else WARN}; border-radius:10px; padding:2px 6px;"
-        )
-
-        # PRESSORI: True = chiuso (premuto)
-        prs_sx = self._b("left_presser_locked", "pressore_sx_chiuso", "sx_presser_locked", default=True)
-        prs_dx = self._b("right_presser_locked", "pressore_dx_chiuso", "dx_presser_locked", default=True)
-
-        self.w_press_sx.setText("CHIUSO" if prs_sx else "APERTO")
-        self.w_press_sx.setStyleSheet(
-            f"font-weight:800; font-size: 11pt; color:white; background:{OK if prs_sx else WARN}; border-radius:10px; padding:2px 6px;"
-        )
-        self.w_press_dx.setText("CHIUSO" if prs_dx else "APERTO")
-        self.w_press_dx.setStyleSheet(
-            f"font-weight:800; font-size: 11pt; color:white; background:{OK if prs_dx else WARN}; border-radius:10px; padding:2px 6px;"
         )
