@@ -159,7 +159,8 @@ class AutomaticoPage(QWidget):
         self.status: Optional[StatusPanel] = None
         self.btn_start_row: Optional[QPushButton] = None
         self.viewer_frame: Optional[QFrame] = None
-        self.lbl_quota_card: Optional[QLabel] = None  # Nuova label QUOTA vicino Start
+        self.lbl_quota_card: Optional[QLabel] = None
+        self.lbl_quota_title: Optional[QLabel] = None
 
         self._orders = OrdersStore()
         self._profiles_store = ProfilesStore()
@@ -219,11 +220,11 @@ class AutomaticoPage(QWidget):
         except Exception:
             self._kerf_base_mm = 3.0
 
-        # Ritardo apertura pressori prima di sbloccare/riposizionare (ms)
+        # Pausa dopo rientro lama: apri pressori, sblocca freno, attendi e poi posiziona
         try:
-            self._pressers_delay_ms = int(float(read_settings().get("auto_pressers_open_delay_ms", 600)))
+            self._after_cut_pause_ms = int(float(read_settings().get("auto_after_cut_pause_ms", 300)))
         except Exception:
-            self._pressers_delay_ms = 600
+            self._after_cut_pause_ms = 300
 
         # Stato sequenze fuori quota / extra-corto
         self._fq_state: Dict[str, Any] = {
@@ -295,40 +296,40 @@ class AutomaticoPage(QWidget):
         vf.addWidget(self.tbl_cut, 1)
         ll.addWidget(viewer_frame, 1)
 
-               # Riga Start + QUOTA (accanto)
+        # Riga Start + QUOTA con cornici azzurre
         start_row = QHBoxLayout()
         start_row.addStretch(1)
 
         # Pulsante Start
         self.btn_start_row = QPushButton("Start")
-        self.btn_start_row.setMinimumHeight(48)
+        self.btn_start_row.setMinimumHeight(56)
         self.btn_start_row.setStyleSheet(
-            "QPushButton { background:#2ecc71; color:white; font-weight:800; font-size:18px; padding:12px 32px; border-radius:10px; } "
+            "QPushButton { background:#2ecc71; color:white; font-weight:900; font-size:20px; padding:12px 32px; border-radius:10px; } "
             "QPushButton:hover { background:#27ae60; } QPushButton:pressed { background:#239b56; }"
         )
         self.btn_start_row.clicked.connect(self._start_row)
         start_row.addWidget(self.btn_start_row, 0, Qt.AlignCenter)
 
-        # Spazio tra pulsante e card quota
         start_row.addSpacing(12)
 
-        # Etichetta "Quota"
+        # Etichetta titolo "Quota" con cornice azzurra
         self.lbl_quota_title = QLabel("Quota")
         self.lbl_quota_title.setAlignment(Qt.AlignCenter)
-        self.lbl_quota_title.setMinimumHeight(48)
+        self.lbl_quota_title.setMinimumHeight(56)
         self.lbl_quota_title.setStyleSheet(
-            "QLabel { background:transparent; color:#2c3e50; font-weight:800; font-size:18px; padding:12px 18px; }"
+            "QLabel { background:#f0f8ff; color:#2c3e50; font-weight:900; font-size:20px; "
+            "padding:12px 24px; border:2px solid #3498db; border-radius:10px; }"
         )
         start_row.addWidget(self.lbl_quota_title, 0, Qt.AlignCenter)
 
-        # Valore Quota (card più lunga e font più grande)
+        # Valore Quota con cornice azzurra, più lunga e font più grande
         self.lbl_quota_card = QLabel("— mm")
         self.lbl_quota_card.setAlignment(Qt.AlignCenter)
-        self.lbl_quota_card.setMinimumHeight(48)   # stessa altezza del pulsante Start
-        self.lbl_quota_card.setMinimumWidth(260)   # aumenta la lunghezza (larghezza minima)
+        self.lbl_quota_card.setMinimumHeight(56)
+        self.lbl_quota_card.setMinimumWidth(320)
         self.lbl_quota_card.setStyleSheet(
-            "QLabel { background:#ecf0f1; color:#2c3e50; font-weight:900; font-size:24px; "  # font più alto
-            "padding:12px 36px; border:1px solid #bdc3c7; border-radius:10px; }"
+            "QLabel { background:#e8f4ff; color:#1f2d3d; font-weight:900; font-size:28px; "
+            "padding:12px 40px; border:2px solid #3498db; border-radius:10px; }"
         )
         start_row.addWidget(self.lbl_quota_card, 0, Qt.AlignCenter)
 
@@ -807,8 +808,23 @@ class AutomaticoPage(QWidget):
             if self.lbl_thickness:
                 self.lbl_thickness.setText("— mm")
 
-    def _position_machine_exact(self, target_mm: float, ax: float, ad: float, profile: str, element: str):
-        """Posiziona senza ulteriori logiche FQ/compensazioni."""
+    def _position_machine_exact(self, target_mm: float, ax: float, ad: float, profile: str, element: str, allow_pressers_locked: bool = False):
+        """
+        Posiziona a target_mm con angoli ax/ad.
+        Sicurezza: NON muovere se freno bloccato o pressori chiusi (salvo allow_pressers_locked=True per fasi speciali).
+        """
+        # Sicurezza freno
+        if bool(getattr(self.machine, "brake_active", False)):
+            self._show_banner("Freno bloccato: sbloccare prima di posizionare.", "warn")
+            return
+        # Sicurezza pressori (se richiesto)
+        if not allow_pressers_locked:
+            lp = bool(getattr(self.machine, "left_presser_locked", False))
+            rp = bool(getattr(self.machine, "right_presser_locked", False))
+            if lp or rp:
+                self._show_banner("Pressori chiusi: aprire i pressori prima di posizionare.", "warn")
+                return
+
         if hasattr(self.machine, "set_active_mode"):
             try: self.machine.set_active_mode("semi")
             except Exception: pass
@@ -824,7 +840,7 @@ class AutomaticoPage(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Posizionamento", str(e)); return
         self._move_target_mm = float(target_mm); self._inpos_since = 0.0; self._lock_on_inpos = True
-        # Il freno si blocca SOLO in _try_lock_on_inpos (quando in posizione)
+        # Il freno si blocca SOLO in _try_lock_on_inpos, dopo che la macchina è in posizione.
 
     def _set_pressers(self, left_locked: Optional[bool] = None, right_locked: Optional[bool] = None):
         try:
@@ -847,10 +863,10 @@ class AutomaticoPage(QWidget):
 
     def _move_and_arm(self, length: float, ax: float, ad: float, profile: str, element: str):
         """
-        Sequenze FQ/extra-corto a consenso. Vedi conversazione precedente per la logica.
+        Sequenze FQ/extra-corto a consenso. Vedi commenti nelle varie fasi.
         """
-        self._unlock_brake(silent=True)
-
+        # NON sbloccare automaticamente il freno qui; è gestito dalla sequenza di consenso.
+        # Tuttavia, se la macchina fornisce API che sbloccano all'avvio movimento, la guardia in _position_machine_exact impedirà di muovere con freno attivo.
         thickness_mm = self._get_profile_thickness(profile)
         if thickness_mm <= 0.0 and self._current_profile_thickness > 0.0:
             thickness_mm = float(self._current_profile_thickness)
@@ -870,6 +886,7 @@ class AutomaticoPage(QWidget):
             self._piece_fq_pending = True
             if both_zero:
                 if eff_len + self._fq_offset_mm >= min_q - 1e-6:
+                    # Monofase: SX abilitata, DX inibita
                     self._fq_state = {
                         "active": True, "mode": "fq", "phase": "offset", "sub": "",
                         "final_target": float(min_with_offset),
@@ -889,6 +906,8 @@ class AutomaticoPage(QWidget):
                             setattr(self.machine, "right_head_angle", float(ad))
                     except Exception: pass
                     self._show_banner("Posizionare elemento in battuta offset Fuori quota", "warn")
+                    # Per sicurezza, lascia pressori aperti durante il posizionamento
+                    self._set_pressers(left_locked=False, right_locked=False)
                     self._position_machine_exact(min_with_offset, ax, ad, profile, element)
                     try:
                         setattr(self.machine, "semi_auto_target_pieces", 1)
@@ -896,6 +915,7 @@ class AutomaticoPage(QWidget):
                     except Exception: pass
                     return
                 else:
+                    # Extra‑corto DX: intest 0° a safe
                     final_target = max(0.0, self._extshort_safe_mm - eff_len - self._kerf_base_mm)
                     self._fq_state = {
                         "active": True, "mode": "extshort", "phase": "intest", "sub": "intest0",
@@ -905,8 +925,8 @@ class AutomaticoPage(QWidget):
                     }
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
-                            self.machine.set_left_blade_inhibit(True)
-                        setattr(self.machine, "right_blade_inhibit", False)
+                            self.machine.set_left_blade_inhibit(True)   # SX inibita
+                        setattr(self.machine, "right_blade_inhibit", False)  # DX abilitata
                     except Exception: pass
                     try:
                         if hasattr(self.machine, "set_head_angles"):
@@ -916,13 +936,15 @@ class AutomaticoPage(QWidget):
                             setattr(self.machine, "right_head_angle", 0.0)
                     except Exception: pass
                     self._show_banner("EXTRA‑CORTO: Posizionare per intestatura a DX (0°)", "warn")
-                    self._position_machine_exact(self._extshort_safe_mm, 0.0, 0.0, profile, element)
+                    # Per intest0, consenti movimento anche con pressore SX eventualmente chiuso (battuta)
+                    self._position_machine_exact(self._extshort_safe_mm, 0.0, 0.0, profile, element, allow_pressers_locked=True)
                     try:
                         setattr(self.machine, "semi_auto_target_pieces", 1)
                         setattr(self.machine, "semi_auto_count_done", 0)
                     except Exception: pass
                     return
 
+            # Due fasi standard (angoli != 0)
             self._fq_state = {
                 "active": True, "mode": "fq", "phase": "intest", "sub": "",
                 "final_target": float(min_with_offset),
@@ -941,8 +963,9 @@ class AutomaticoPage(QWidget):
                     setattr(self.machine, "left_head_angle", float(ax))
                     setattr(self.machine, "right_head_angle", float(ad))
             except Exception: pass
-
             self._show_banner("Posizionare elemento per intestatura (DX attiva)", "warn")
+            # Pressori aperti per posizionarsi
+            self._set_pressers(left_locked=False, right_locked=False)
             self._position_machine_exact(min_q, ax, ad, profile, element)
             try:
                 setattr(self.machine, "semi_auto_target_pieces", 1)
@@ -950,12 +973,13 @@ class AutomaticoPage(QWidget):
             except Exception: pass
             return
 
+        # Non FQ: posizionamento diretto con pressori APERTI
         self._hide_banner()
         if hasattr(self.machine, "set_left_blade_inhibit"):
             try: self.machine.set_left_blade_inhibit(False)
             except Exception: pass
         setattr(self.machine, "right_blade_inhibit", False)
-        self._set_pressers(left_locked=True, right_locked=True)
+        self._set_pressers(left_locked=False, right_locked=False)
 
         self._position_machine_exact(target_len, ax, ad, profile, element)
         try:
@@ -1077,6 +1101,7 @@ class AutomaticoPage(QWidget):
         return False
 
     def _read_blade_pulse(self) -> bool:
+        # Micropulsante conteggio lama / rientro
         for k in ("blade_cut", "blade_pulse", "cut_pulse", "lama_pulse", "blade_out_pulse", "blade_counter"):
             if self._read_input(k): return True
         return False
@@ -1146,6 +1171,7 @@ class AutomaticoPage(QWidget):
             self._dec_selected_row_qty()
             return
 
+        # Sequenze FQ/extra‑corto condotte a consenso (F7 o impulso rientro lama)
         if self._fq_state.get("active", False):
             mode = self._fq_state.get("mode", "")
             phase = self._fq_state.get("phase", "")
@@ -1163,14 +1189,9 @@ class AutomaticoPage(QWidget):
                     prof = str(self._fq_state.get("profile", ""))
                     elem = str(self._fq_state.get("element", ""))
                     target2 = float(self._fq_state.get("final_target", 0.0))
-                    try:
-                        if hasattr(self.machine, "set_head_angles"):
-                            self.machine.set_head_angles(float(ax), float(ad))
-                        else:
-                            setattr(self.machine, "left_head_angle", float(ax))
-                            setattr(self.machine, "right_head_angle", float(ad))
-                    except Exception: pass
                     self._show_banner("Posizionare elemento in battuta offset Fuori quota", "warn")
+                    # Pressori aperti per posizionarsi
+                    self._set_pressers(left_locked=False, right_locked=False)
                     self._position_machine_exact(target2, ax, ad, prof, elem)
                     try:
                         setattr(self.machine, "semi_auto_target_pieces", 1)
@@ -1193,6 +1214,7 @@ class AutomaticoPage(QWidget):
 
             elif mode == "extshort":
                 if sub == "intest0":
+                    # Battuta speciale: SX chiuso, DX aperto; posiziona a target2 consentendo pressore SX chiuso
                     self._set_pressers(left_locked=True, right_locked=False)
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
@@ -1210,7 +1232,7 @@ class AutomaticoPage(QWidget):
                     elem = str(self._fq_state.get("element", ""))
                     target2 = float(self._fq_state.get("final_target", 0.0))
                     self._show_banner("EXTRA‑CORTO: Posizionare in battuta DX (offset speciale)", "warn")
-                    self._position_machine_exact(target2, 0.0, 0.0, prof, elem)
+                    self._position_machine_exact(target2, 0.0, 0.0, prof, elem, allow_pressers_locked=True)
                     try:
                         setattr(self.machine, "semi_auto_target_pieces", 1)
                         setattr(self.machine, "semi_auto_count_done", 0)
@@ -1219,6 +1241,7 @@ class AutomaticoPage(QWidget):
                     return
 
                 elif sub == "final":
+                    # Prima del taglio finale: chiudi anche DX
                     self._set_pressers(left_locked=True, right_locked=True)
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
@@ -1264,15 +1287,18 @@ class AutomaticoPage(QWidget):
                 setattr(self.machine, "semi_auto_count_done", 0)
             except Exception: pass
 
-            # Attendi apertura pressori prima di sbloccare/riposizionare
-            def _after_pressers_open():
+            # SEQUENZA POST-CUT (rientro lama): 1) apri pressori, 2) sblocca freno, 3) attesa, 4) posiziona
+            self._set_pressers(left_locked=False, right_locked=False)
+            self._unlock_brake()
+
+            def _after_pause_and_continue():
                 if self._mode == "plan":
                     next_piece = self._peek_next_piece_global()
                     same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
                     nxt = self._get_next_indices()
                     across = bool(nxt and (nxt[0] != self._bar_idx))
 
-                    # In ottimizzazione: disabilita auto-continue SOLO se il pezzo era FQ
+                    # In ottimizzazione: disabilita auto-continue SOLO se il pezzo appena tagliato era FQ
                     block_autocont_opt = bool(self._opt_dialog) and self._last_piece_was_fq
 
                     allowed = (self._auto_continue_enabled_fn()
@@ -1291,10 +1317,12 @@ class AutomaticoPage(QWidget):
                             setattr(self.machine, "semi_auto_count_done", 0)
                         except Exception: pass
                         self._lock_on_inpos = False
+                        # Posizionamento sul pezzo successivo (pressori già aperti, freno sbloccato)
                         self._move_and_arm(p2["len"], p2["ax"], p2["ad"], self._plan_profile,
                                            f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
                     else:
-                        self._unlock_brake()
+                        # No auto-continue: resta fermo con freno sbloccato e pressori aperti, attesa comando (F9)
+                        pass
 
                     try:
                         rem_all = self._sum_remaining_for_profile(self._plan_profile)
@@ -1318,12 +1346,12 @@ class AutomaticoPage(QWidget):
                         if q_now <= 0:
                             self._mark_row_finished(self._active_row)
                     self._mode = "idle"
-                    self._unlock_brake()
+                    # resta con freno sbloccato e pressori aperti per la prossima operazione manuale
 
                 self._last_piece_was_fq = False
                 self._update_counters_ui()
 
-            QTimer.singleShot(int(self._pressers_delay_ms), _after_pressers_open)
+            QTimer.singleShot(int(self._after_cut_pause_ms), _after_pause_and_continue)
             return
 
         self._update_counters_ui()
