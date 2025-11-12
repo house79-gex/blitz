@@ -1,25 +1,22 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QLabel, QFrame
+from __future__ import annotations
+from typing import Optional
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QGridLayout
 from PySide6.QtCore import Qt
 
 # Palette
-OK = "#2ecc71"
+OK = "#27ae60"
 WARN = "#f39c12"
-ERR = "#e74c3c"
-INFO = "#2980b9"
-TEXT = "#2c3e50"
-MUTED = "#7f8c8d"
-CARD_BG = "#f7f9fb"
-BORDER = "#dfe6e9"
+ERR = "#c0392b"
+MUTED = "#95a5a6"
+BORDER = "#3b4b5a"
+CARD_BG = "#ecf0f3"
 
-def _pill(text: str, color: str, bold: bool = True) -> QLabel:
-    lbl = QLabel(text)
-    # Riduci leggermente dimensioni e padding per maggiore compattezza
-    lb = "font-weight:800;" if bold else "font-weight:700;"
-    lbl.setStyleSheet(
-        f"{lb} font-size: 11pt; color:white; background:{color}; border-radius:10px; padding:2px 6px;"
-    )
-    lbl.setAlignment(Qt.AlignCenter)
-    return lbl
+def _pill(text: str, bg: str) -> QLabel:
+    w = QLabel(text)
+    w.setAlignment(Qt.AlignCenter)
+    w.setStyleSheet(f"font-weight:800; font-size: 11pt; color:white; background:{bg}; border-radius:10px; padding:2px 6px;")
+    return w
+
 
 class StatusPanel(QWidget):
     """
@@ -28,7 +25,9 @@ class StatusPanel(QWidget):
     - HOMED (verde/giallo)
     - FRENO (BLOCCATO=verde / SBLOCCATO=arancio)
     - FRIZIONE (INSERITA=verde / DISINSERITA=arancio)
-    - QUOTA (mm) se disponibile
+    - QUOTA (mm)
+    - TESTA SX/DX (ABILITATA/DISABILITATA) in base a inibizione lama
+    - PRESSORE SX/DX (CHIUSO/APERTO)
     """
     def __init__(self, machine_state, title="STATO", parent=None):
         super().__init__(parent)
@@ -54,10 +53,10 @@ class StatusPanel(QWidget):
         grid.setVerticalSpacing(8)
 
         def add_row(r, name, value_widget):
-            name_lbl = QLabel(name)
-            name_lbl.setStyleSheet("font-weight:600; font-size: 11pt; color:#2c3e50;")
-            grid.addWidget(name_lbl, r, 0, alignment=Qt.AlignLeft)
-            grid.addWidget(value_widget, r, 1, alignment=Qt.AlignRight)
+            lbl = QLabel(name)
+            lbl.setStyleSheet("font-weight:700; color:#34495e;")
+            grid.addWidget(lbl, r, 0)
+            grid.addWidget(value_widget, r, 1)
 
         self.w_emg = _pill("-", MUTED)
         self.w_homed = _pill("-", MUTED)
@@ -65,12 +64,21 @@ class StatusPanel(QWidget):
         self.w_clutch = _pill("-", MUTED)
         self.w_enc = QLabel("—")
         self.w_enc.setStyleSheet("font-weight:700; font-size: 11pt; color:#2980b9;")
+        # Nuovi indicatori
+        self.w_head_sx = _pill("-", MUTED)
+        self.w_head_dx = _pill("-", MUTED)
+        self.w_press_sx = _pill("-", MUTED)
+        self.w_press_dx = _pill("-", MUTED)
 
         add_row(0, "EMG", self.w_emg)
         add_row(1, "HOMED", self.w_homed)
         add_row(2, "FRENO", self.w_brake)
         add_row(3, "FRIZIONE", self.w_clutch)
         add_row(4, "QUOTA", self.w_enc)
+        add_row(5, "TESTA SX", self.w_head_sx)
+        add_row(6, "TESTA DX", self.w_head_dx)
+        add_row(7, "PRESSORE SX", self.w_press_sx)
+        add_row(8, "PRESSORE DX", self.w_press_dx)
 
         root.addStretch(1)
 
@@ -78,19 +86,18 @@ class StatusPanel(QWidget):
     def _b(self, *names, default=False):
         for n in names:
             if hasattr(self.m, n):
-                try:
-                    return bool(getattr(self.m, n))
-                except Exception:
-                    pass
+                try: return bool(getattr(self.m, n))
+                except Exception: return default
         return default
 
-    def _n(self, *names):
+    def _n(self, *names) -> Optional[float]:
         for n in names:
             if hasattr(self.m, n):
                 try:
-                    return float(getattr(self.m, n))
+                    v = getattr(self.m, n)
+                    return float(v)
                 except Exception:
-                    pass
+                    return None
         return None
 
     def refresh(self):
@@ -100,7 +107,6 @@ class StatusPanel(QWidget):
             f"font-weight:800; font-size: 11pt; color:white; background:{ERR if emg else OK}; border-radius:10px; padding:2px 6px;"
         )
 
-        # Include machine_homed tra gli alias supportati
         homed = self._b("machine_homed", "is_homed", "homed", "is_zeroed", "zeroed", "azzerata", "home_done")
         self.w_homed.setText("HOMED" if homed else "NO")
         self.w_homed.setStyleSheet(
@@ -126,3 +132,29 @@ class StatusPanel(QWidget):
         else:
             self.w_enc.setText("—")
             self.w_enc.setStyleSheet("color:#7f8c8d; font-weight:600; font-size: 11pt;")
+
+        # TESTE: interpreto “inhibit = True” come DISABILITATA
+        inh_sx = self._b("left_blade_inhibit", "lama_sx_inibita", "sx_inhibit", default=False)
+        inh_dx = self._b("right_blade_inhibit", "lama_dx_inibita", "dx_inhibit", default=False)
+
+        self.w_head_sx.setText("ABILITATA" if not inh_sx else "DISABILITATA")
+        self.w_head_sx.setStyleSheet(
+            f"font-weight:800; font-size: 11pt; color:white; background:{OK if not inh_sx else WARN}; border-radius:10px; padding:2px 6px;"
+        )
+        self.w_head_dx.setText("ABILITATA" if not inh_dx else "DISABILITATA")
+        self.w_head_dx.setStyleSheet(
+            f"font-weight:800; font-size: 11pt; color:white; background:{OK if not inh_dx else WARN}; border-radius:10px; padding:2px 6px;"
+        )
+
+        # PRESSORI: True = chiuso (premuto)
+        prs_sx = self._b("left_presser_locked", "pressore_sx_chiuso", "sx_presser_locked", default=True)
+        prs_dx = self._b("right_presser_locked", "pressore_dx_chiuso", "dx_presser_locked", default=True)
+
+        self.w_press_sx.setText("CHIUSO" if prs_sx else "APERTO")
+        self.w_press_sx.setStyleSheet(
+            f"font-weight:800; font-size: 11pt; color:white; background:{OK if prs_sx else WARN}; border-radius:10px; padding:2px 6px;"
+        )
+        self.w_press_dx.setText("CHIUSO" if prs_dx else "APERTO")
+        self.w_press_dx.setStyleSheet(
+            f"font-weight:800; font-size: 11pt; color:white; background:{OK if prs_dx else WARN}; border-radius:10px; padding:2px 6px;"
+        )
