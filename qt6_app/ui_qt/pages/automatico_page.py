@@ -295,9 +295,11 @@ class AutomaticoPage(QWidget):
         vf.addWidget(self.tbl_cut, 1)
         ll.addWidget(viewer_frame, 1)
 
-        # Riga Start + QUOTA (accanto)
+               # Riga Start + QUOTA (accanto)
         start_row = QHBoxLayout()
         start_row.addStretch(1)
+
+        # Pulsante Start
         self.btn_start_row = QPushButton("Start")
         self.btn_start_row.setMinimumHeight(48)
         self.btn_start_row.setStyleSheet(
@@ -307,14 +309,29 @@ class AutomaticoPage(QWidget):
         self.btn_start_row.clicked.connect(self._start_row)
         start_row.addWidget(self.btn_start_row, 0, Qt.AlignCenter)
 
+        # Spazio tra pulsante e card quota
+        start_row.addSpacing(12)
+
+        # Etichetta "Quota"
+        self.lbl_quota_title = QLabel("Quota")
+        self.lbl_quota_title.setAlignment(Qt.AlignCenter)
+        self.lbl_quota_title.setMinimumHeight(48)
+        self.lbl_quota_title.setStyleSheet(
+            "QLabel { background:transparent; color:#2c3e50; font-weight:800; font-size:18px; padding:12px 18px; }"
+        )
+        start_row.addWidget(self.lbl_quota_title, 0, Qt.AlignCenter)
+
+        # Valore Quota (card più lunga e font più grande)
         self.lbl_quota_card = QLabel("— mm")
         self.lbl_quota_card.setAlignment(Qt.AlignCenter)
-        self.lbl_quota_card.setMinimumHeight(48)  # stessa altezza del pulsante Start
+        self.lbl_quota_card.setMinimumHeight(48)   # stessa altezza del pulsante Start
+        self.lbl_quota_card.setMinimumWidth(260)   # aumenta la lunghezza (larghezza minima)
         self.lbl_quota_card.setStyleSheet(
-            "QLabel { background:#ecf0f1; color:#2c3e50; font-weight:800; font-size:18px; padding:12px 32px; border:1px solid #bdc3c7; border-radius:10px; }"
+            "QLabel { background:#ecf0f1; color:#2c3e50; font-weight:900; font-size:24px; "  # font più alto
+            "padding:12px 36px; border:1px solid #bdc3c7; border-radius:10px; }"
         )
-        start_row.addSpacing(12)
         start_row.addWidget(self.lbl_quota_card, 0, Qt.AlignCenter)
+
         start_row.addStretch(1)
         ll.addLayout(start_row)
 
