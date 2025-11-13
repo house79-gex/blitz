@@ -1242,46 +1242,61 @@ class AutomaticoPage(QWidget):
                 setattr(self.machine, "semi_auto_count_done", 0)
             except Exception: pass
 
+            # SEMPRE apri i pressori al rientro lama
             self._set_pressers(left_locked=False, right_locked=False)
+
+            # Calcola subito il prossimo pezzo per decidere se è necessario sbloccare il freno
+            nxt = self._get_next_indices() if self._mode == "plan" else None
+            next_piece = None
+            across = False
+            next_is_fq = False
+            same_next = False
+
+            if nxt is not None:
+                nb, np = nxt
+                across = (nb != self._bar_idx)
+                if 0 <= nb < len(self._bars) and 0 <= np < len(self._bars[nb]):
+                    next_piece = self._bars[nb][np]
+                    next_is_fq = self._requires_fq_for_piece(
+                        float(next_piece["len"]),
+                        float(next_piece["ax"]),
+                        float(next_piece["ad"]),
+                        self._plan_profile
+                    )
+                    if cur_piece and next_piece:
+                        same_next = self._same_job(cur_piece, next_piece)
+
+            allowed = (self._mode == "plan"
+                       and self._auto_continue_enabled_fn()
+                       and next_piece is not None
+                       and (not across or self._auto_continue_across_bars)
+                       and not next_is_fq
+                       and not self._fq_state.get("active", False))
+
+            # Caso "no-move": pezzo normale successivo con stessa misura/angoli -> NON sbloccare il freno, NON riposizionare
+            if allowed and same_next:
+                # Avanza gli indici e prepara un singolo pezzo da tagliare senza movimento testa
+                self._bar_idx, self._piece_idx = nxt
+                p2 = next_piece
+                self._cur_sig = self._sig_key(self._plan_profile, p2["len"], p2["ax"], p2["ad"])
+                try:
+                    setattr(self.machine, "semi_auto_target_pieces", 1)
+                    setattr(self.machine, "semi_auto_count_done", 0)
+                except Exception: pass
+                self._lock_on_inpos = False
+                # Nessun unlock freno, nessun movimento testa
+                self._last_piece_was_fq = False
+                self._update_counters_ui()
+                return
+
+            # Altrimenti: sequenza standard (serve riposizionare oppure non consentito auto-continue)
             self._unlock_brake()
 
             def _after_pause_and_continue():
                 if self._mode == "plan":
-                    nxt = self._get_next_indices()
-                    if nxt is None:
-                        try: rem_all = self._sum_remaining_for_profile(self._plan_profile)
-                        except Exception: rem_all = 0
-                        if rem_all <= 0 and self._opt_dialog:
-                            try: self._opt_dialog.accept()
-                            except Exception:
-                                try: self._opt_dialog.close()
-                                except Exception: pass
-                            self._opt_dialog = None
-                        self._toast("Piano completato", "ok")
-                        self._last_piece_was_fq = False
-                        self._update_counters_ui()
-                        return
-
-                    nb, np = nxt
-                    across = (nb != self._bar_idx)
-                    next_piece = self._bars[nb][np] if 0 <= nb < len(self._bars) and 0 <= np < len(self._bars[nb]) else None
-
-                    next_is_fq = False
-                    if next_piece:
-                        next_is_fq = self._requires_fq_for_piece(
-                            float(next_piece["len"]),
-                            float(next_piece["ax"]),
-                            float(next_piece["ad"]),
-                            self._plan_profile
-                        )
-
-                    allowed = (self._auto_continue_enabled_fn()
-                               and (not across or self._auto_continue_across_bars)
-                               and not next_is_fq
-                               and not self._fq_state.get("active", False))
-
+                    # Ricalcola allowed con i valori già calcolati sopra
                     if allowed and next_piece is not None:
-                        self._bar_idx, self._piece_idx = nb, np
+                        self._bar_idx, self._piece_idx = nxt
                         p2 = next_piece
                         self._cur_sig = self._sig_key(self._plan_profile, p2["len"], p2["ax"], p2["ad"])
                         try:
@@ -1292,7 +1307,8 @@ class AutomaticoPage(QWidget):
                         self._move_and_arm(p2["len"], p2["ax"], p2["ad"], self._plan_profile,
                                            f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
                     else:
-                        pass  # attesa manuale
+                        # attesa manuale (F9)
+                        pass
 
                     try: rem_all = self._sum_remaining_for_profile(self._plan_profile)
                     except Exception: rem_all = 0
