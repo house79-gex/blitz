@@ -292,7 +292,7 @@ class AutomaticoPage(QWidget):
             "QPushButton { background:#2ecc71; color:white; font-weight:900; font-size:20px; padding:12px 32px; border-radius:10px; } "
             "QPushButton:hover { background:#27ae60; } QPushButton:pressed { background:#239b56; }"
         )
-        self.btn_start_row.clicked.connect(self._start_row)
+        self.btn_start_row.clicked.connect(self._handle_start_trigger)
         start_row.addWidget(self.btn_start_row, 0, Qt.AlignCenter)
 
         start_row.addSpacing(12)
@@ -381,7 +381,7 @@ class AutomaticoPage(QWidget):
 
     # ---------------------- HELPERS TESTE ----------------------
     def _set_heads_intestatura(self):
-        # Intestatura: taglio con DX, SX disabilitata
+        # DX attiva, SX disabilitata
         try:
             if hasattr(self.machine, "set_left_blade_inhibit"):
                 self.machine.set_left_blade_inhibit(True)
@@ -392,7 +392,7 @@ class AutomaticoPage(QWidget):
             pass
 
     def _set_heads_taglio_misura(self):
-        # Taglio a misura: taglio con SX, DX disabilitata
+        # SX attiva, DX disabilitata
         try:
             if hasattr(self.machine, "set_left_blade_inhibit"):
                 self.machine.set_left_blade_inhibit(False)
@@ -632,7 +632,6 @@ class AutomaticoPage(QWidget):
         self._move_and_arm(L, ax, ad, prof, elem)
         self._update_counters_ui()
 
-    # ---------------------- PACK / PLAN ----------------------
     def _optimize_profile(self, profile: str):
         prof = (profile or "").strip()
         if not prof:
@@ -751,28 +750,6 @@ class AutomaticoPage(QWidget):
         self._hide_banner()
         self._update_counters_ui()
         self._toast(f"Piano ottimizzato per {prof}. Barre: {len(bars)}.", "info")
-
-    def _pack_bfd(self, pieces: List[Dict[str, float]], stock: float, kerf_base: float,
-                  reversible: bool, thickness_mm: float, angle_tol: float,
-                  max_angle: float, max_factor: float) -> Tuple[List[List[Dict[str, float]]], List[float]]:
-        bars: List[List[Dict[str, float]]] = []
-        for p in pieces:
-            need = p["len"]; placed = False
-            for b in bars:
-                used = bar_used_length(b, kerf_base, self._ripasso_mm,
-                                       reversible, thickness_mm,
-                                       angle_tol, max_angle, max_factor)
-                extra = joint_consumption(b[-1], kerf_base, self._ripasso_mm,
-                                          reversible, thickness_mm,
-                                          angle_tol, max_angle, max_factor)[0] if b else 0.0
-                if used + need + (extra if b else 0.0) <= stock + 1e-6:
-                    b.append(p); placed = True; break
-            if not placed:
-                bars.append([p])
-        rem = residuals(bars, stock, kerf_base, self._ripasso_mm,
-                        reversible, thickness_mm,
-                        angle_tol, max_angle, max_factor)
-        return bars, rem
 
     # ---------------------- FUORI QUOTA & POSIZIONAMENTO ----------------------
     def _get_profile_thickness(self, profile_name: str) -> float:
@@ -904,7 +881,6 @@ class AutomaticoPage(QWidget):
                         "ax": float(ax), "ad": float(ad),
                         "profile": profile, "element": element, "min_q": float(min_q)
                     }
-                    # Taglio a misura (offset): SX attiva, DX disabilitata
                     self._set_heads_taglio_misura()
                     self._show_banner("Posizionare elemento in battuta offset Fuori quota", "warn")
                     self._set_pressers(left_locked=False, right_locked=False)
@@ -922,7 +898,6 @@ class AutomaticoPage(QWidget):
                         "ax": float(ax), "ad": float(ad),
                         "profile": profile, "element": element, "min_q": float(min_q)
                     }
-                    # Intestatura extra corto: DX attiva, SX disabilitata
                     self._set_heads_intestatura()
                     self._show_banner("EXTRA‑CORTO: Posizionare per intestatura a DX (0°)", "warn")
                     self._set_pressers(left_locked=False, right_locked=False)
@@ -939,7 +914,6 @@ class AutomaticoPage(QWidget):
                 "ax": float(ax), "ad": float(ad),
                 "profile": profile, "element": element, "min_q": float(min_q)
             }
-            # Intestatura: DX attiva, SX disabilitata
             self._set_heads_intestatura()
             self._show_banner("Posizionare elemento per intestatura (DX attiva)", "warn")
             self._set_pressers(left_locked=False, right_locked=False)
@@ -1144,7 +1118,6 @@ class AutomaticoPage(QWidget):
         _, ok, min_q, _ = self._enforce_length_limits(eff_len)
         return (not ok) and (eff_len < float(min_q) - 1e-6)
 
-    # ---------------------- SIMULAZIONE TAGLIO ----------------------
     def _simulate_cut_once(self):
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
@@ -1161,7 +1134,6 @@ class AutomaticoPage(QWidget):
 
             if mode == "fq":
                 if phase == "intest":
-                    # Passaggio a taglio a misura (offset)
                     self._set_heads_taglio_misura()
                     ax = float(self._fq_state.get("ax", 0.0))
                     ad = float(self._fq_state.get("ad", 0.0))
@@ -1177,7 +1149,6 @@ class AutomaticoPage(QWidget):
                     self._fq_state["phase"] = "offset"
                     return
                 elif phase == "offset":
-                    # Fine FQ
                     self._enable_both_heads()
                     self._hide_banner()
                     self._fq_state = {"active": False, "mode": "", "phase": "", "sub": "", "final_target": 0.0,
@@ -1187,8 +1158,8 @@ class AutomaticoPage(QWidget):
 
             elif mode == "extshort":
                 if sub == "intest0":
-                    # Passaggio a taglio finale a misura
-                    self._set_heads_taglio_misura()
+                    # Extra corto: intestatura con DX (SX disabilitata) e poi taglio finale sempre con DX
+                    self._set_heads_intestatura()
                     prof = str(self._fq_state.get("profile", ""))
                     elem = str(self._fq_state.get("element", ""))
                     target2 = float(self._fq_state.get("final_target", 0.0))
@@ -1201,8 +1172,8 @@ class AutomaticoPage(QWidget):
                     self._fq_state["sub"] = "final"
                     return
                 elif sub == "final":
-                    # Fine extra‑corto
-                    self._set_heads_taglio_misura()  # taglio con SX
+                    # Taglio finale ancora con DX
+                    self._set_heads_intestatura()
                     self._hide_banner()
                     self._fq_state = {"active": False, "mode": "", "phase": "", "sub": "",
                                       "final_target": 0.0, "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
@@ -1242,10 +1213,9 @@ class AutomaticoPage(QWidget):
                 setattr(self.machine, "semi_auto_count_done", 0)
             except Exception: pass
 
-            # SEMPRE apri i pressori al rientro lama
+            # Apri sempre i pressori
             self._set_pressers(left_locked=False, right_locked=False)
 
-            # Calcola subito il prossimo pezzo per decidere se è necessario sbloccare il freno
             nxt = self._get_next_indices() if self._mode == "plan" else None
             next_piece = None
             across = False
@@ -1273,9 +1243,8 @@ class AutomaticoPage(QWidget):
                        and not next_is_fq
                        and not self._fq_state.get("active", False))
 
-            # Caso "no-move": pezzo normale successivo con stessa misura/angoli -> NON sbloccare il freno, NON riposizionare
+            # Se prossimo è identico (same_next) e consentito: NON sbloccare freno, procedi senza movimento
             if allowed and same_next:
-                # Avanza gli indici e prepara un singolo pezzo da tagliare senza movimento testa
                 self._bar_idx, self._piece_idx = nxt
                 p2 = next_piece
                 self._cur_sig = self._sig_key(self._plan_profile, p2["len"], p2["ax"], p2["ad"])
@@ -1284,17 +1253,15 @@ class AutomaticoPage(QWidget):
                     setattr(self.machine, "semi_auto_count_done", 0)
                 except Exception: pass
                 self._lock_on_inpos = False
-                # Nessun unlock freno, nessun movimento testa
                 self._last_piece_was_fq = False
                 self._update_counters_ui()
                 return
 
-            # Altrimenti: sequenza standard (serve riposizionare oppure non consentito auto-continue)
+            # Altrimenti sblocca freno e riposiziona (se necessario)
             self._unlock_brake()
 
             def _after_pause_and_continue():
                 if self._mode == "plan":
-                    # Ricalcola allowed con i valori già calcolati sopra
                     if allowed and next_piece is not None:
                         self._bar_idx, self._piece_idx = nxt
                         p2 = next_piece
@@ -1307,8 +1274,7 @@ class AutomaticoPage(QWidget):
                         self._move_and_arm(p2["len"], p2["ax"], p2["ad"], self._plan_profile,
                                            f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
                     else:
-                        # attesa manuale (F9)
-                        pass
+                        pass  # attesa manuale
 
                     try: rem_all = self._sum_remaining_for_profile(self._plan_profile)
                     except Exception: rem_all = 0
@@ -1337,7 +1303,6 @@ class AutomaticoPage(QWidget):
 
         self._update_counters_ui()
 
-    # ---------------------- DECREMENTI QUANTITA' ----------------------
     def _dec_selected_row_qty(self):
         try:
             r = self.tbl_cut.currentRow()
@@ -1409,7 +1374,6 @@ class AutomaticoPage(QWidget):
                 return True
         return False
 
-    # ---------------------- COUNTERS / QUOTA ----------------------
     def _update_counters_ui(self):
         if self._mode == "plan" and self._cur_sig:
             total = int(self._sig_total_counts.get(self._cur_sig, 0))
@@ -1438,7 +1402,6 @@ class AutomaticoPage(QWidget):
         except Exception:
             self.lbl_quota_card.setText("— mm")
 
-    # ---------------------- MOUSE / EDIT ----------------------
     def _on_cell_entered(self, row: int, col: int):
         if row < 0 or self._row_is_header(row) or col != 5:
             return
@@ -1482,7 +1445,6 @@ class AutomaticoPage(QWidget):
         finally:
             self._in_item_change = False
 
-    # ---------------------- KEY / SHOW / TICK ----------------------
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_F7:
             self._simulate_cut_once(); event.accept(); return
@@ -1531,7 +1493,6 @@ class AutomaticoPage(QWidget):
         self._hide_banner()
         super().hideEvent(ev)
 
-    # ---------------------- SEQUENCER CALLBACKS (PLACEHOLDER) ----------------------
     def _on_step_started(self, idx: int, step: dict): pass
     def _on_step_finished(self, idx: int, step: dict): pass
     def _on_seq_done(self): self._toast("Automatico: completato", "ok")
