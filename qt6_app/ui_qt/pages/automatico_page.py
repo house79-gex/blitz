@@ -751,6 +751,28 @@ class AutomaticoPage(QWidget):
         self._update_counters_ui()
         self._toast(f"Piano ottimizzato per {prof}. Barre: {len(bars)}.", "info")
 
+    def _pack_bfd(self, pieces: List[Dict[str, float]], stock: float, kerf_base: float,
+                  reversible: bool, thickness_mm: float, angle_tol: float,
+                  max_angle: float, max_factor: float) -> Tuple[List[List[Dict[str, float]]], List[float]]:
+        bars: List[List[Dict[str, float]]] = []
+        for p in pieces:
+            need = p["len"]; placed = False
+            for b in bars:
+                used = bar_used_length(b, kerf_base, self._ripasso_mm,
+                                       reversible, thickness_mm,
+                                       angle_tol, max_angle, max_factor)
+                extra = joint_consumption(b[-1], kerf_base, self._ripasso_mm,
+                                          reversible, thickness_mm,
+                                          angle_tol, max_angle, max_factor)[0] if b else 0.0
+                if used + need + (extra if b else 0.0) <= stock + 1e-6:
+                    b.append(p); placed = True; break
+            if not placed:
+                bars.append([p])
+        rem = residuals(bars, stock, kerf_base, self._ripasso_mm,
+                        reversible, thickness_mm,
+                        angle_tol, max_angle, max_factor)
+        return bars, rem
+
     # ---------------------- FUORI QUOTA & POSIZIONAMENTO ----------------------
     def _get_profile_thickness(self, profile_name: str) -> float:
         name = (profile_name or "").strip()
@@ -1158,8 +1180,7 @@ class AutomaticoPage(QWidget):
 
             elif mode == "extshort":
                 if sub == "intest0":
-                    # Extra corto: intestatura con DX (SX disabilitata) e poi taglio finale sempre con DX
-                    self._set_heads_intestatura()
+                    self._set_heads_intestatura()  # DX attiva
                     prof = str(self._fq_state.get("profile", ""))
                     elem = str(self._fq_state.get("element", ""))
                     target2 = float(self._fq_state.get("final_target", 0.0))
@@ -1172,8 +1193,7 @@ class AutomaticoPage(QWidget):
                     self._fq_state["sub"] = "final"
                     return
                 elif sub == "final":
-                    # Taglio finale ancora con DX
-                    self._set_heads_intestatura()
+                    self._set_heads_intestatura()  # Taglio finale ancora con DX
                     self._hide_banner()
                     self._fq_state = {"active": False, "mode": "", "phase": "", "sub": "",
                                       "final_target": 0.0, "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
@@ -1213,7 +1233,6 @@ class AutomaticoPage(QWidget):
                 setattr(self.machine, "semi_auto_count_done", 0)
             except Exception: pass
 
-            # Apri sempre i pressori
             self._set_pressers(left_locked=False, right_locked=False)
 
             nxt = self._get_next_indices() if self._mode == "plan" else None
@@ -1243,7 +1262,6 @@ class AutomaticoPage(QWidget):
                        and not next_is_fq
                        and not self._fq_state.get("active", False))
 
-            # Se prossimo è identico (same_next) e consentito: NON sbloccare freno, procedi senza movimento
             if allowed and same_next:
                 self._bar_idx, self._piece_idx = nxt
                 p2 = next_piece
@@ -1257,7 +1275,6 @@ class AutomaticoPage(QWidget):
                 self._update_counters_ui()
                 return
 
-            # Altrimenti sblocca freno e riposiziona (se necessario)
             self._unlock_brake()
 
             def _after_pause_and_continue():
@@ -1274,7 +1291,7 @@ class AutomaticoPage(QWidget):
                         self._move_and_arm(p2["len"], p2["ax"], p2["ad"], self._plan_profile,
                                            f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
                     else:
-                        pass  # attesa manuale
+                        pass
 
                     try: rem_all = self._sum_remaining_for_profile(self._plan_profile)
                     except Exception: rem_all = 0
