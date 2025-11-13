@@ -225,13 +225,13 @@ class OptimizationRunDialog(QDialog):
         self._apply_geometry()
         self._resize_graph_area()
 
-        # Scorciatoie tastiera per lavorare dal dialog
+        # Scorciatoie tastiera
         self._sc_f7 = QShortcut(QKeySequence("F7"), self)
         self._sc_f7.activated.connect(lambda: self.simulationRequested.emit())
         self._sc_f9 = QShortcut(QKeySequence("F9"), self)
         self._sc_f9.activated.connect(lambda: self.startRequested.emit())
 
-    # Banner grande in dialog
+    # Banner (opzionale, visibilità)
     def show_banner(self, msg: str, level: str = "info"):
         styles = {
             "info": "background:#ffe7ba; color:#1b1b1b; border:1px solid #c49a28;",
@@ -260,7 +260,6 @@ class OptimizationRunDialog(QDialog):
     def _build(self):
         root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
 
-        # Banner
         self._banner = QLabel("")
         self._banner.setVisible(False)
         self._banner.setAlignment(Qt.AlignCenter)
@@ -374,7 +373,6 @@ class OptimizationRunDialog(QDialog):
         except Exception:
             pass
 
-        # Overflow → ricollocazione semplice
         fixed_bars: List[List[Dict[str, float]]] = []
         overflow: List[Dict[str, float]] = []
         for bar in bars:
@@ -474,9 +472,6 @@ class OptimizationRunDialog(QDialog):
 
     # ---------------- Mark done after cut ----------------
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        """
-        Colora nel grafico e decrementa tabella. Chiamato da AutomaticoPage al taglio finale del pezzo.
-        """
         try:
             self._graph.mark_done_by_signature(length_mm, ang_sx, ang_dx)
         except Exception:
