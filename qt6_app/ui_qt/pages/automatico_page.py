@@ -762,9 +762,9 @@ class AutomaticoPage(QWidget):
         th = max(0.0, float(thickness_mm))
         if th <= 0.0:
             return max(0.0, L)
-        try: c_sx = th * tan(radians(abs(float(ang_sx)))))
+        try: c_sx = th * tan(radians(abs(float(ang_sx))))
         except Exception: c_sx = 0.0
-        try: c_dx = th * tan(radians(abs(float(ang_dx)))))
+        try: c_dx = th * tan(radians(abs(float(ang_dx))))
         except Exception: c_dx = 0.0
         return max(0.0, L - max(0.0, c_sx) - max(0.0, c_dx))
 
