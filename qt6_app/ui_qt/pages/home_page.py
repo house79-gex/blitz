@@ -101,13 +101,16 @@ class HomePage(QWidget):
             btn.clicked.connect(lambda: self.appwin.show_page(key))
             return btn
 
+        # Ordine desiderato:
+        # - Colonna sinistra: Tipologie, Quote Vani Luce, Utility
+        # - Colonna destra: Automatico, Semi-Automatico, Manuale
         tiles = [
-            ("Automatico", "automatico"),
-            ("Semi-Automatico", "semi"),
-            ("Manuale", "manuale"),
             ("Tipologie", "tipologie"),
-            ("Quote Vani", "quotevani"),
+            ("Automatico", "automatico"),
+            ("Quote Vani Luce", "quotevani"),
+            ("Semi-Automatico", "semi"),
             ("Utility", "utility"),
+            ("Manuale", "manuale"),
         ]
 
         r, c = 0, 0
