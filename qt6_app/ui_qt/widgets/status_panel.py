@@ -26,7 +26,8 @@ class StatusPanel(QWidget):
     - FRENO (BLOCCATO=verde / SBLOCCATO=arancio)
     - FRIZIONE (INSERITA=verde / DISINSERITA=arancio)
     - TESTA SX/DX (ABILITATA/DISABILITATA) in base a inibizione lama
-    (NOTA: QUOTA e PRESSORI sono stati rimossi su richiesta)
+
+    Nota: QUOTA e PRESSORI rimossi su richiesta.
     """
     def __init__(self, machine_state, title="STATO", parent=None):
         super().__init__(parent)
@@ -52,10 +53,10 @@ class StatusPanel(QWidget):
         grid.setVerticalSpacing(8)
 
         def add_row(r, name, value_widget):
-            lbl = QLabel(name)
-            lbl.setStyleSheet("font-weight:700; color:#34495e;")
-            grid.addWidget(lbl, r, 0)
-            grid.addWidget(value_widget, r, 1)
+            name_lbl = QLabel(name)
+            name_lbl.setStyleSheet("font-weight:600; font-size: 11pt; color:#2c3e50;")
+            grid.addWidget(name_lbl, r, 0, alignment=Qt.AlignLeft)
+            grid.addWidget(value_widget, r, 1, alignment=Qt.AlignRight)
 
         self.w_emg = _pill("-", MUTED)
         self.w_homed = _pill("-", MUTED)
@@ -73,12 +74,13 @@ class StatusPanel(QWidget):
 
         root.addStretch(1)
 
-    # Helpers
     def _b(self, *names, default=False):
         for n in names:
             if hasattr(self.m, n):
-                try: return bool(getattr(self.m, n))
-                except Exception: return default
+                try:
+                    return bool(getattr(self.m, n))
+                except Exception:
+                    pass
         return default
 
     def refresh(self):
@@ -106,7 +108,6 @@ class StatusPanel(QWidget):
             f"font-weight:800; font-size: 11pt; color:white; background:{OK if clutch else WARN}; border-radius:10px; padding:2px 6px;"
         )
 
-        # TESTE: interpreto “inhibit = True” come DISABILITATA
         inh_sx = self._b("left_blade_inhibit", "lama_sx_inibita", "sx_inhibit", default=False)
         inh_dx = self._b("right_blade_inhibit", "lama_dx_inibita", "dx_inhibit", default=False)
 
