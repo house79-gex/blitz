@@ -205,28 +205,19 @@ class AutomaticoPage(QWidget):
         self._in_item_change: bool = False
         self._qty_editing_row: int = -1
 
-        # Fuori Quota: offset (mm)
-        try:
-            self._fq_offset_mm = float(read_settings().get("semi_offset_mm", 120.0))
-        except Exception:
-            self._fq_offset_mm = 120.0
-        # Extra-corto: posizione sicura (mm) e kerf base (mm)
-        try:
-            self._extshort_safe_mm = float(read_settings().get("auto_extshort_safe_pos_mm", 400.0))
-        except Exception:
-            self._extshort_safe_mm = 400.0
-        try:
-            self._kerf_base_mm = float(read_settings().get("opt_kerf_mm", 3.0))
-        except Exception:
-            self._kerf_base_mm = 3.0
+        # Fuori Quota offset e parametri extra-corto
+        try: self._fq_offset_mm = float(read_settings().get("semi_offset_mm", 120.0))
+        except Exception: self._fq_offset_mm = 120.0
+        try: self._extshort_safe_mm = float(read_settings().get("auto_extshort_safe_pos_mm", 400.0))
+        except Exception: self._extshort_safe_mm = 400.0
+        try: self._kerf_base_mm = float(read_settings().get("opt_kerf_mm", 3.0))
+        except Exception: self._kerf_base_mm = 3.0
 
-        # Pausa dopo rientro lama (ms)
-        try:
-            self._after_cut_pause_ms = int(float(read_settings().get("auto_after_cut_pause_ms", 300)))
-        except Exception:
-            self._after_cut_pause_ms = 300
+        # Pausa dopo rientro lama (ms) prima del nuovo posizionamento
+        try: self._after_cut_pause_ms = int(float(read_settings().get("auto_after_cut_pause_ms", 300)))
+        except Exception: self._after_cut_pause_ms = 300
 
-        # Stato sequenze fuori quota / extra-corto
+        # Stato sequenze FQ/extra-corto
         self._fq_state: Dict[str, Any] = {
             "active": False, "mode": "", "phase": "", "sub": "",
             "final_target": 0.0,
@@ -250,7 +241,7 @@ class AutomaticoPage(QWidget):
         root.addWidget(Header(self.appwin, "AUTOMATICO", mode="default",
                               on_home=self._nav_home, on_reset=self._reset_and_home))
 
-        # Banner grande
+        # Banner (usato solo per messaggi operativi, non per freno/pressori)
         self.banner = QLabel("")
         self.banner.setVisible(False)
         self.banner.setAlignment(Qt.AlignCenter)
@@ -296,7 +287,7 @@ class AutomaticoPage(QWidget):
         vf.addWidget(self.tbl_cut, 1)
         ll.addWidget(viewer_frame, 1)
 
-        # Riga Start + QUOTA (cornice azzurra)
+        # Start + QUOTA (cornici azzurre)
         start_row = QHBoxLayout()
         start_row.addStretch(1)
 
@@ -771,14 +762,10 @@ class AutomaticoPage(QWidget):
         th = max(0.0, float(thickness_mm))
         if th <= 0.0:
             return max(0.0, L)
-        try:
-            c_sx = th * tan(radians(abs(float(ang_sx))))
-        except Exception:
-            c_sx = 0.0
-        try:
-            c_dx = th * tan(radians(abs(float(ang_dx))))
-        except Exception:
-            c_dx = 0.0
+        try: c_sx = th * tan(radians(abs(float(ang_sx)))))
+        except Exception: c_sx = 0.0
+        try: c_dx = th * tan(radians(abs(float(ang_dx)))))
+        except Exception: c_dx = 0.0
         return max(0.0, L - max(0.0, c_sx) - max(0.0, c_dx))
 
     def _enforce_length_limits(self, length_mm: float) -> tuple[float, bool, float, float]:
@@ -807,9 +794,8 @@ class AutomaticoPage(QWidget):
 
     def _position_machine_exact(self, target_mm: float, ax: float, ad: float, profile: str, element: str, allow_pressers_locked: bool = False):
         """
-        Posiziona a target_mm con angoli ax/ad.
-        Sicurezza: NON muovere se freno bloccato o pressori chiusi (salvo allow_pressers_locked=True).
-        Nessun banner: ci affidiamo allo StatusPanel.
+        Posiziona se e solo se: freno sbloccato e (pressori aperti o consentiti).
+        Nessun banner: indicatori sullo Status Panel sono sufficienti.
         """
         if bool(getattr(self.machine, "brake_active", False)):
             return
@@ -856,7 +842,7 @@ class AutomaticoPage(QWidget):
 
     def _post_cut_reposition(self, target_mm: float, ax: float, ad: float, profile: str, element: str, allow_pressers_locked: bool = False):
         """
-        Sequenza post-taglio: 1) apri pressori, 2) sblocca freno, 3) attesa, 4) posiziona.
+        Al consenso: 1) apri pressori, 2) sblocca freno, 3) attesa, 4) posiziona.
         """
         self._set_pressers(left_locked=False, right_locked=False)
         self._unlock_brake()
@@ -865,7 +851,7 @@ class AutomaticoPage(QWidget):
 
     def _move_and_arm(self, length: float, ax: float, ad: float, profile: str, element: str):
         """
-        Sequenze FQ/extra-corto a consenso. Prima del movimento: pressori aperti.
+        Pre-posizionamento: pressori aperti. Sequenze FQ/extra-corto a consenso.
         """
         thickness_mm = self._get_profile_thickness(profile)
         if thickness_mm <= 0.0 and self._current_profile_thickness > 0.0:
@@ -933,7 +919,6 @@ class AutomaticoPage(QWidget):
                             setattr(self.machine, "right_head_angle", 0.0)
                     except Exception: pass
                     self._show_banner("EXTRA‑CORTO: Posizionare per intestatura a DX (0°)", "warn")
-                    # Consenti movimento a intest0; pressori comunque aperti qui
                     self._set_pressers(left_locked=False, right_locked=False)
                     self._position_machine_exact(self._extshort_safe_mm, 0.0, 0.0, profile, element)
                     try:
@@ -969,14 +954,13 @@ class AutomaticoPage(QWidget):
             except Exception: pass
             return
 
-        # Non FQ: pressori aperti e posizionamento
+        # Non FQ
         self._hide_banner()
         if hasattr(self.machine, "set_left_blade_inhibit"):
             try: self.machine.set_left_blade_inhibit(False)
             except Exception: pass
         setattr(self.machine, "right_blade_inhibit", False)
         self._set_pressers(left_locked=False, right_locked=False)
-
         self._position_machine_exact(target_len, ax, ad, profile, element)
         try:
             setattr(self.machine, "semi_auto_target_pieces", 1)
@@ -1157,6 +1141,17 @@ class AutomaticoPage(QWidget):
     def simulate_cut_from_dialog(self):
         self._simulate_cut_once()
 
+    def _requires_fq_for_piece(self, length_mm: float, ax: float, ad: float, profile: str) -> bool:
+        try:
+            th = self._get_profile_thickness(profile)
+            if th <= 0.0 and self._current_profile_thickness > 0.0:
+                th = float(self._current_profile_thickness)
+        except Exception:
+            th = 0.0
+        eff_len = self._effective_position_length(float(length_mm), float(ax), float(ad), float(th))
+        _, ok, min_q, _ = self._enforce_length_limits(eff_len)
+        return (not ok) and (eff_len < float(min_q) - 1e-6)
+
     def _simulate_cut_once(self):
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
@@ -1166,7 +1161,7 @@ class AutomaticoPage(QWidget):
             self._dec_selected_row_qty()
             return
 
-        # Sequenze FQ/extra‑corto a consenso (da impulso rientro lama o F7)
+        # Sequenze FQ/extra‑corto a consenso
         if self._fq_state.get("active", False):
             mode = self._fq_state.get("mode", "")
             phase = self._fq_state.get("phase", "")
@@ -1185,7 +1180,6 @@ class AutomaticoPage(QWidget):
                     elem = str(self._fq_state.get("element", ""))
                     target2 = float(self._fq_state.get("final_target", 0.0))
                     self._show_banner("Posizionare elemento in battuta offset Fuori quota", "warn")
-                    # Sequenza corretta: apri pressori, sblocca freno, pausa, poi posiziona
                     self._post_cut_reposition(target2, ax, ad, prof, elem)
                     try:
                         setattr(self.machine, "semi_auto_target_pieces", 1)
@@ -1210,7 +1204,7 @@ class AutomaticoPage(QWidget):
                 if sub == "intest0":
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
-                            self.machine.set_left_blade_inhibit(False)  # prepariamo SX per taglio finale
+                            self.machine.set_left_blade_inhibit(False)
                         setattr(self.machine, "right_blade_inhibit", True)
                     except Exception: pass
                     try:
@@ -1233,7 +1227,6 @@ class AutomaticoPage(QWidget):
                     return
 
                 elif sub == "final":
-                    # Prepara al taglio: chiudi pressori
                     self._set_pressers(left_locked=True, right_locked=True)
                     try:
                         if hasattr(self.machine, "set_left_blade_inhibit"):
@@ -1279,30 +1272,48 @@ class AutomaticoPage(QWidget):
                 setattr(self.machine, "semi_auto_count_done", 0)
             except Exception: pass
 
-            # Sequenza post-taglio "normale": apri pressori, sblocca freno, pausa, poi (eventuale) auto-continue
+            # Sequenza post-taglio: apri pressori, sblocca freno, pausa, poi auto-continue dinamico
             self._set_pressers(left_locked=False, right_locked=False)
             self._unlock_brake()
 
             def _after_pause_and_continue():
                 if self._mode == "plan":
-                    next_piece = self._peek_next_piece_global()
-                    same_next = bool(cur_piece and next_piece and self._same_job(cur_piece, next_piece))
                     nxt = self._get_next_indices()
-                    across = bool(nxt and (nxt[0] != self._bar_idx))
+                    if nxt is None:
+                        try: rem_all = self._sum_remaining_for_profile(self._plan_profile)
+                        except Exception: rem_all = 0
+                        if rem_all <= 0 and self._opt_dialog:
+                            try: self._opt_dialog.accept()
+                            except Exception:
+                                try: self._opt_dialog.close()
+                                except Exception: pass
+                            self._opt_dialog = None
+                        self._toast("Piano completato", "ok")
+                        self._last_piece_was_fq = False
+                        self._update_counters_ui()
+                        return
 
-                    # In ottimizzazione: disabilita auto-continue SOLO se il pezzo appena tagliato era FQ
-                    block_autocont_opt = bool(self._opt_dialog) and self._last_piece_was_fq
+                    nb, np = nxt
+                    across = (nb != self._bar_idx)
+                    next_piece = self._bars[nb][np] if 0 <= nb < len(self._bars) and 0 <= np < len(self._bars[nb]) else None
+
+                    next_is_fq = False
+                    if next_piece:
+                        next_is_fq = self._requires_fq_for_piece(
+                            float(next_piece["len"]),
+                            float(next_piece["ax"]),
+                            float(next_piece["ad"]),
+                            self._plan_profile
+                        )
 
                     allowed = (self._auto_continue_enabled_fn()
-                               and same_next
                                and (not across or self._auto_continue_across_bars)
-                               and not block_autocont_opt
+                               and not next_is_fq
                                and not self._fq_state.get("active", False))
 
-                    if allowed and nxt is not None:
-                        nb, np = nxt
+                    if allowed and next_piece is not None:
                         self._bar_idx, self._piece_idx = nb, np
-                        p2 = self._bars[self._bar_idx][self._piece_idx]
+                        p2 = next_piece
                         self._cur_sig = self._sig_key(self._plan_profile, p2["len"], p2["ax"], p2["ad"])
                         try:
                             setattr(self.machine, "semi_auto_target_pieces", 1)
@@ -1312,13 +1323,11 @@ class AutomaticoPage(QWidget):
                         self._move_and_arm(p2["len"], p2["ax"], p2["ad"], self._plan_profile,
                                            f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
                     else:
-                        # nessun auto-continue: resta in attesa di comando (F9)
+                        # attesa manuale F9
                         pass
 
-                    try:
-                        rem_all = self._sum_remaining_for_profile(self._plan_profile)
-                    except Exception:
-                        rem_all = 0
+                    try: rem_all = self._sum_remaining_for_profile(self._plan_profile)
+                    except Exception: rem_all = 0
                     if rem_all <= 0:
                         if self._opt_dialog:
                             try: self._opt_dialog.accept()
@@ -1330,10 +1339,8 @@ class AutomaticoPage(QWidget):
 
                 elif self._mode == "manual":
                     if self._active_row is not None:
-                        try:
-                            q_now = int(self.tbl_cut.item(self._active_row, 5).text())
-                        except Exception:
-                            q_now = 0
+                        try: q_now = int(self.tbl_cut.item(self._active_row, 5).text())
+                        except Exception: q_now = 0
                         if q_now <= 0:
                             self._mark_row_finished(self._active_row)
                     self._mode = "idle"
