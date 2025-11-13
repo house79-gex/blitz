@@ -217,6 +217,78 @@ class TypologiesStore:
         self._conn.execute("DELETE FROM typology WHERE id=?", (int(typology_id),))
         self._conn.commit()
 
+    def duplicate_typology(self, typology_id: int, new_name: str) -> int:
+        """
+        Duplica una tipologia completa (record principale + variabili + componenti + formule multiple + regole variabili).
+        Ritorna l'ID della nuova tipologia.
+        """
+        # 1) Carica i dati base della tipologia sorgente
+        src = self._conn.execute(
+            "SELECT name, category, material, ref_quota, extra_detrazione, pezzi_totali, note FROM typology WHERE id=?",
+            (int(typology_id),)
+        ).fetchone()
+        if not src:
+            raise ValueError(f"Tipologia id={typology_id} non trovata")
+
+        # 2) Determina un nome univoco
+        base_proposed = (new_name or "").strip()
+        if not base_proposed:
+            base_proposed = f"{src[0]} (copia)"
+        final_name = base_proposed
+        # se esiste già, aggiunge suffisso incrementale
+        n = 2
+        while self._conn.execute("SELECT 1 FROM typology WHERE name=?", (final_name,)).fetchone():
+            # evita loop infiniti (limite ragionevole)
+            final_name = f"{base_proposed} {n}"
+            n += 1
+            if n > 99:
+                raise ValueError("Impossibile generare un nome univoco per la copia (troppi duplicati)")
+
+        ts = _now_ts()
+
+        # 3) Inserisci il nuovo record principale
+        cur = self._conn.execute(
+            "INSERT INTO typology(name, category, material, ref_quota, extra_detrazione, pezzi_totali, note, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,?, ?, ?)",
+            (final_name, src[1] or "", src[2] or "", src[3] or "esterna",
+             float(src[4] or 0.0), int(src[5] or 1), src[6] or "", ts, ts)
+        )
+        new_id = int(cur.lastrowid)
+
+        # 4) Copia variabili
+        self._conn.execute(
+            "INSERT INTO typology_var(typology_id, name, value) "
+            "SELECT ?, name, value FROM typology_var WHERE typology_id=?",
+            (new_id, int(typology_id))
+        )
+
+        # 5) Copia componenti (mantiene 'ord')
+        self._conn.execute(
+            "INSERT INTO typology_component(typology_id, ord, row_id, name, profile_name, quantity, ang_sx, ang_dx, formula, offset, note) "
+            "SELECT ?, ord, row_id, name, profile_name, quantity, ang_sx, ang_dx, formula, offset, note "
+            "FROM typology_component WHERE typology_id=?",
+            (new_id, int(typology_id))
+        )
+
+        # 6) Copia formule multiple
+        self._conn.execute(
+            "INSERT INTO typology_multi_formula(typology_id, group_name, label, formula, profile_name, qty, ang_sx, ang_dx, offset, note) "
+            "SELECT ?, group_name, label, formula, profile_name, qty, ang_sx, ang_dx, offset, note "
+            "FROM typology_multi_formula WHERE typology_id=?",
+            (new_id, int(typology_id))
+        )
+
+        # 7) Copia regole variabili
+        self._conn.execute(
+            "INSERT INTO typology_multi_var_rule(typology_id, group_name, var_name, l_min, l_max, value, variant) "
+            "SELECT ?, group_name, var_name, l_min, l_max, value, variant "
+            "FROM typology_multi_var_rule WHERE typology_id=?",
+            (new_id, int(typology_id))
+        )
+
+        self._conn.commit()
+        return new_id
+
     # -------- Formule multiple (gruppi) --------
     def list_multi_formula_groups(self, typology_id: int) -> List[str]:
         cur = self._conn.execute("SELECT DISTINCT group_name FROM typology_multi_formula WHERE typology_id=? ORDER BY group_name", (int(typology_id),))
