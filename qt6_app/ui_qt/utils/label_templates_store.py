@@ -41,18 +41,15 @@ def _write_raw(data: Dict[str, Any]):
 def list_templates() -> List[Dict[str, Any]]:
     data = _read_raw()
     templates = data.get("templates", {}) or {}
-    # assicurarsi che DEFAULT esista
     if "DEFAULT" not in templates:
         templates["DEFAULT"] = _DEFAULT_TEMPLATES["DEFAULT"]
     return sorted([dict(v) for v in templates.values()], key=lambda x: x.get("name","").lower())
 
 def get_template(name: str) -> Optional[Dict[str, Any]]:
-    tmpl = None
     for t in list_templates():
         if t.get("name") == name:
-            tmpl = t
-            break
-    return tmpl
+            return t
+    return None
 
 def upsert_template(name: str, paper: str, rotate: int, font_size: int, cut: bool, lines: List[str]):
     data = _read_raw()
@@ -76,13 +73,12 @@ def delete_template(name: str) -> bool:
     templates = data.get("templates", {}) or {}
     if name in templates:
         del templates[name]
-        data["templates"] = templates
-        # Rimuovi eventuali associazioni
         assoc = data.get("associations", {}) or {}
-        to_remove = [k for k,v in assoc.items() if v == name]
-        for k in to_remove:
-            del assoc[k]
+        for k in list(assoc.keys()):
+            if assoc[k] == name:
+                del assoc[k]
         data["associations"] = assoc
+        data["templates"] = templates
         _write_raw(data)
         return True
     return False
@@ -128,5 +124,4 @@ def resolve_template_for_profile(profile_name: str) -> Dict[str, Any]:
         t = get_template(tmpl_name)
         if t:
             return t
-    # fallback default
     return get_template("DEFAULT") or _DEFAULT_TEMPLATES["DEFAULT"]
