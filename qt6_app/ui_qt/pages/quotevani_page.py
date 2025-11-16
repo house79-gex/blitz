@@ -127,7 +127,7 @@ class QuoteVaniPage(QFrame):
     # Viewer: sola visualizzazione
     def _open_viewer(self):
         if not self._last_cuts:
-            QMessageBox.information(self, "Lista", "Calcola prima la lista di taglio."); return
+            QMessageBox.information(self, "Lista", "Calcola prima la lista di taglio oppure apri una lista salvata (Apri commessa…)."); return
         CutlistViewerDialog(self, self._last_cuts).exec()
 
     # ----- Orders DB -----
@@ -168,6 +168,27 @@ class QuoteVaniPage(QFrame):
             if not ord_item:
                 QMessageBox.critical(self, "Apri", "Commessa non trovata."); return
             data = ord_item.get("data") or {}
+
+            # NOVITÀ: se è una cutlist salvata, carico direttamente i 'cuts' e abilito 'Visualizza lista…'
+            if (data.get("type") or "").strip().lower() == "cutlist":
+                cuts = data.get("cuts") or []
+                if not cuts:
+                    QMessageBox.information(self, "Lista", "La lista di taglio salvata è vuota."); 
+                    self._rows = []; self._last_cuts = []; self.btn_view.setEnabled(False)
+                    self._refresh_rows_table()
+                    return
+                self._rows = []              # la tabella righe commessa non c'entra con una cutlist già pronta
+                self._last_cuts = list(cuts) # memorizzo per viewer
+                self._current_order_id = oid
+                self.btn_view.setEnabled(True)
+                self.ed_customer.setText(str(ord_item.get("customer") or ""))
+                self._refresh_rows_table()
+                QMessageBox.information(self, "Apri", f"Aperta lista di taglio salvata: {ord_item.get('name')} (id={oid}).")
+                # Apri direttamente il viewer per comodità
+                self._open_viewer()
+                return
+
+            # Caso “commessa” classica
             rows = data.get("rows") or []
             self._rows = rows
             self._current_order_id = oid
