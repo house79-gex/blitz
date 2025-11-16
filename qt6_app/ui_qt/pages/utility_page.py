@@ -7,7 +7,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QListWidget, QListWidgetItem,
     QLineEdit, QPushButton, QGridLayout, QSizePolicy, QAbstractItemView, QStackedWidget,
-    QFileDialog, QToolButton, QStyle, QComboBox
+    QFileDialog, QToolButton, QStyle, QComboBox, QCheckBox, QSpinBox
 )
 
 from ui_qt.widgets.header import Header
@@ -41,6 +41,36 @@ except Exception:
     def parse_export_json(path: str): return (None, {})
     def compute_dxf_bbox(path: str): return None
 
+# Temi (store + applicazione runtime)
+try:
+    from ui_qt.utils.theme_store import read_themes, get_active_theme, set_current_theme_name, save_theme_combo, get_current_theme_name
+except Exception:
+    def read_themes(): return {"Dark": {"palette": {}, "icons": {}}, "Light": {"palette": {}, "icons": {}}}
+    def get_active_theme(): return {"palette": {}, "icons": {}}
+    def set_current_theme_name(_n: str): pass
+    def save_theme_combo(_n: str, _p: Dict[str, str], _i: Dict[str, str] | None = None): pass
+    def get_current_theme_name(): return "Dark"
+
+try:
+    from ui_qt.theme import set_palette_from_dict, apply_global_stylesheet
+except Exception:
+    def set_palette_from_dict(_p: dict): pass
+    def apply_global_stylesheet(_app): pass
+
+# Settings
+try:
+    from ui_qt.utils.settings import read_settings, write_settings
+except Exception:
+    def read_settings() -> Dict[str, Any]: return {}
+    def write_settings(d: Dict[str, Any]) -> None: pass
+
+# RS485 Manager (opzionale, robusto a dipendenze mancanti)
+try:
+    from ui_qt.services.rs485_manager import RS485Manager, list_serial_ports_safe
+except Exception:
+    RS485Manager = None  # type: ignore
+    def list_serial_ports_safe() -> List[str]: return ["COM3", "COM4", "/dev/ttyUSB0"]
+
 STATUS_W = 260
 
 
@@ -66,7 +96,7 @@ class UtilityPage(QWidget):
         main.setContentsMargins(0, 0, 0, 0)
         root.addLayout(main, 1)
 
-        # Menu sinistro (senza Tipologie)
+        # Menu sinistro
         menu = QFrame()
         menu.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         menu.setFixedWidth(200)
@@ -620,7 +650,6 @@ class QcadSubPage(QFrame):
         dxf, _ = QFileDialog.getOpenFileName(self, "Seleziona DXF", "", "DXF Files (*.dxf);;Tutti i file (*)")
         if not dxf:
             return
-        # Prompt semplice per nome profilo
         name, ok = QFileDialog.getSaveFileName(self, "Nome profilo (salva per confermare)", "", "Profilo (*)")
         if not ok or not name:
             return
@@ -654,7 +683,7 @@ class QcadSubPage(QFrame):
                     pass
         if hasattr(self.profiles, "upsert_profile"):
             try:
-                getattr(self.profiles, "upsert_profile")(name, float(0.0), shape)  # se supporta meta
+                getattr(self.profiles, "upsert_profile")(name, float(0.0), shape)
             except Exception:
                 pass
 
@@ -685,10 +714,21 @@ class BackupSubPage(QFrame):
 
 
 class ConfigSubPage(QFrame):
+    """
+    Configurazione tecnica macchina:
+      - Porta RS485 (USB<->RS485 Waveshare)
+      - Baudrate, Parità, Stopbit
+      - Indirizzo modulo A/B (Waveshare 8 IN ciascuno, Modbus RTU)
+      - Test lettura IN
+    Salva in settings:
+      io.rs485.port, io.rs485.baud, io.rs485.parity, io.rs485.stopbits, io.modA.addr, io.modB.addr
+    """
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
+        self._mgr = RS485Manager() if RS485Manager else None
         self._build()
+        self._load_from_settings()
 
     def _build(self):
         self.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
@@ -697,22 +737,190 @@ class ConfigSubPage(QFrame):
         root.setHorizontalSpacing(8)
         root.setVerticalSpacing(6)
         row = 0
-        root.addWidget(QLabel("Configurazione"), row, 0, 1, 2, alignment=Qt.AlignLeft)
+        root.addWidget(QLabel("Configurazione I/O RS485 (Waveshare)"), row, 0, 1, 4, alignment=Qt.AlignLeft)
         row += 1
-        root.addWidget(QLabel("Opzione A:"), row, 0)
-        root.addWidget(QLineEdit(), row, 1)
+
+        root.addWidget(QLabel("Porta seriale:"), row, 0)
+        self.cmb_port = QComboBox()
+        self._refresh_ports()
+        root.addWidget(self.cmb_port, row, 1)
+        btn_ref = QToolButton(); btn_ref.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        btn_ref.clicked.connect(self._refresh_ports)
+        root.addWidget(btn_ref, row, 2)
         row += 1
-        root.addWidget(QLabel("Opzione B:"), row, 0)
-        root.addWidget(QLineEdit(), row, 1)
+
+        root.addWidget(QLabel("Baud:"), row, 0)
+        self.cmb_baud = QComboBox(); self.cmb_baud.addItems([str(b) for b in (9600, 19200, 38400, 57600, 115200)])
+        self.cmb_baud.setCurrentText("115200")
+        root.addWidget(self.cmb_baud, row, 1)
         row += 1
-        root.addWidget(QLabel("Opzione C:"), row, 0)
-        root.addWidget(QLineEdit(), row, 1)
+
+        root.addWidget(QLabel("Parità:"), row, 0)
+        self.cmb_par = QComboBox(); self.cmb_par.addItems(["N", "E", "O"])
+        root.addWidget(self.cmb_par, row, 1)
         row += 1
-        buttons = QHBoxLayout()
-        btn_save = QPushButton("Salva configurazione")
-        buttons.addWidget(btn_save)
-        buttons.addStretch(1)
-        root.addLayout(buttons, row, 0, 1, 2)
+
+        root.addWidget(QLabel("Stop bits:"), row, 0)
+        self.cmb_stop = QComboBox(); self.cmb_stop.addItems(["1", "2"])
+        root.addWidget(self.cmb_stop, row, 1)
+        row += 1
+
+        root.addWidget(QLabel("Modulo A addr:"), row, 0)
+        self.spin_addr_a = QSpinBox(); self.spin_addr_a.setRange(1, 247); self.spin_addr_a.setValue(1)
+        root.addWidget(self.spin_addr_a, row, 1)
+        row += 1
+
+        root.addWidget(QLabel("Modulo B addr:"), row, 0)
+        self.spin_addr_b = QSpinBox(); self.spin_addr_b.setRange(1, 247); self.spin_addr_b.setValue(2)
+        root.addWidget(self.spin_addr_b, row, 1)
+        row += 1
+
+        self.chk_autoconnect = QCheckBox("Autoconnetti all'avvio Utility"); self.chk_autoconnect.setChecked(True)
+        root.addWidget(self.chk_autoconnect, row, 0, 1, 2)
+        row += 1
+
+        # Pulsantiera connessione
+        btns = QHBoxLayout()
+        self.btn_connect = QPushButton("Connetti")
+        self.btn_connect.clicked.connect(self._connect_now)
+        btns.addWidget(self.btn_connect)
+        self.btn_disconnect = QPushButton("Disconnetti")
+        self.btn_disconnect.clicked.connect(self._disconnect_now)
+        btns.addWidget(self.btn_disconnect)
+        self.btn_save = QPushButton("Salva impostazioni")
+        self.btn_save.clicked.connect(self._save_to_settings)
+        btns.addWidget(self.btn_save)
+        btns.addStretch(1)
+        root.addLayout(btns, row, 0, 1, 4)
+        row += 1
+
+        # Pannello test IN (16 ingressi)
+        self.lbl_state: List[QLabel] = []
+        test = QGridLayout()
+        test.setHorizontalSpacing(8); test.setVerticalSpacing(6)
+        test.addWidget(QLabel("Test ingressi digitali (A: IN1..IN8, B: IN1..IN8)"), 0, 0, 1, 4)
+        for i in range(8):
+            lab = QLabel(f"A IN{i+1}: —"); lab.setStyleSheet("color:#7f8c8d;")
+            self.lbl_state.append(lab)
+            test.addWidget(lab, 1 + i // 4, (i % 4))
+        for i in range(8):
+            lab = QLabel(f"B IN{i+1}: —"); lab.setStyleSheet("color:#7f8c8d;")
+            self.lbl_state.append(lab)
+            test.addWidget(lab, 3 + i // 4, (i % 4))
+        row += 1
+        root.addLayout(test, row, 0, 1, 4)
+        row += 1
+
+        read_row = QHBoxLayout()
+        self.btn_read = QPushButton("Leggi ingressi")
+        self.btn_read.clicked.connect(self._read_inputs_once)
+        read_row.addWidget(self.btn_read)
+        read_row.addStretch(1)
+        root.addLayout(read_row, row, 0, 1, 4)
+
+    def _refresh_ports(self):
+        self.cmb_port.clear()
+        for p in list_serial_ports_safe():
+            self.cmb_port.addItem(p)
+
+    def _cfg(self) -> Dict[str, Any]:
+        return {
+            "port": (self.cmb_port.currentText() or "").strip(),
+            "baud": int(self.cmb_baud.currentText()),
+            "par": (self.cmb_par.currentText() or "N").strip()[:1],
+            "stop": int(self.cmb_stop.currentText()),
+            "addr_a": int(self.spin_addr_a.value()),
+            "addr_b": int(self.spin_addr_b.value()),
+            "autoconn": bool(self.chk_autoconnect.isChecked()),
+        }
+
+    def _save_to_settings(self):
+        cfg = dict(read_settings())
+        io = dict(cfg.get("io", {}))
+        io["rs485"] = {
+            "port": self._cfg()["port"],
+            "baud": self._cfg()["baud"],
+            "parity": self._cfg()["par"],
+            "stopbits": self._cfg()["stop"],
+        }
+        io["modA"] = {"addr": self._cfg()["addr_a"]}
+        io["modB"] = {"addr": self._cfg()["addr_b"]}
+        io["autoconnect"] = self._cfg()["autoconn"]
+        cfg["io"] = io
+        write_settings(cfg)
+
+    def _load_from_settings(self):
+        cfg = read_settings()
+        io = cfg.get("io", {}) or {}
+        rs = io.get("rs485", {}) or {}
+        if rs.get("port"):
+            # Assicura che la porta sia elencata
+            ports = [self.cmb_port.itemText(i) for i in range(self.cmb_port.count())]
+            if rs["port"] not in ports:
+                self.cmb_port.addItem(rs["port"])
+            self.cmb_port.setCurrentText(rs["port"])
+        if rs.get("baud"):
+            self.cmb_baud.setCurrentText(str(rs.get("baud")))
+        if rs.get("parity"):
+            self.cmb_par.setCurrentText(str(rs.get("parity")).upper()[:1])
+        if rs.get("stopbits"):
+            self.cmb_stop.setCurrentText(str(int(rs.get("stopbits"))))
+        self.spin_addr_a.setValue(int((io.get("modA", {}) or {}).get("addr", 1)))
+        self.spin_addr_b.setValue(int((io.get("modB", {}) or {}).get("addr", 2)))
+        self.chk_autoconnect.setChecked(bool(io.get("autoconnect", True)))
+
+        if self.chk_autoconnect.isChecked():
+            self._connect_now(silent=True)
+
+    def _connect_now(self, silent: bool = False):
+        if not self._mgr:
+            if not silent:
+                try: self._toast("RS485 non disponibile (manca libreria).", "warn")
+                except Exception: pass
+            return
+        ok = self._mgr.connect(
+            port=self._cfg()["port"],
+            baudrate=self._cfg()["baud"],
+            parity=self._cfg()["par"],
+            stopbits=self._cfg()["stop"],
+            timeout=0.5,
+        )
+        if not silent:
+            try: self._toast("Connesso RS485" if ok else "Connessione RS485 fallita", "ok" if ok else "warn")
+            except Exception: pass
+
+    def _disconnect_now(self):
+        if not self._mgr:
+            return
+        self._mgr.disconnect()
+        try: self._toast("RS485 disconnesso", "ok")
+        except Exception: pass
+
+    def _read_inputs_once(self):
+        if not self._mgr or not self._mgr.is_connected():
+            try: self._toast("Non connesso RS485", "warn")
+            except Exception: pass
+            return
+        addr_a = self._cfg()["addr_a"]
+        addr_b = self._cfg()["addr_b"]
+        a = self._mgr.read_discrete_inputs(unit=addr_a, address=0, count=8)
+        b = self._mgr.read_discrete_inputs(unit=addr_b, address=0, count=8)
+        # Aggiorna 16 label
+        for i in range(8):
+            self._set_state_label(i, "A", i + 1, bool(a[i] if i < len(a) else False))
+        for i in range(8):
+            self._set_state_label(8 + i, "B", i + 1, bool(b[i] if i < len(b) else False))
+
+    def _set_state_label(self, idx: int, mod: str, ch: int, val: bool):
+        if 0 <= idx < len(self.lbl_state):
+            lab = self.lbl_state[idx]
+            lab.setText(f"{mod} IN{ch}: {'ON' if val else 'OFF'}")
+            lab.setStyleSheet(f"color:{('#2ecc71' if val else '#7f8c8d')};")
+
+    def _toast(self, msg: str, level: str = "info"):
+        if hasattr(self.appwin, "toast"):
+            try: self.appwin.toast.show(msg, level, 2200)
+            except Exception: pass
 
 
 class ThemesSubPage(QFrame):
@@ -727,15 +935,80 @@ class ThemesSubPage(QFrame):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
         root.addWidget(QLabel("Temi"), 0)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Seleziona tema:"))
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Seleziona preset:"))
+        self.cmb_theme = QComboBox()
+        self._reload_theme_list()
+        row1.addWidget(self.cmb_theme, 1)
+        btn_apply = QPushButton("Applica")
+        btn_apply.clicked.connect(self._apply_selected)
+        row1.addWidget(btn_apply)
+        btn_set = QPushButton("Imposta come predefinito")
+        btn_set.clicked.connect(self._set_default_selected)
+        row1.addWidget(btn_set)
+        row1.addStretch(1)
+        root.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Rapidi:"))
         btn_light = QPushButton("Chiaro")
         btn_dark = QPushButton("Scuro")
-        row.addWidget(btn_light)
-        row.addWidget(btn_dark)
-        row.addStretch(1)
-        root.addLayout(row)
-        tip = QLabel("Qui puoi applicare temi globali all'interfaccia.")
+        btn_light.clicked.connect(lambda: self._quick_apply("Light"))
+        btn_dark.clicked.connect(lambda: self._quick_apply("Dark"))
+        row2.addWidget(btn_light)
+        row2.addWidget(btn_dark)
+        row2.addStretch(1)
+        root.addLayout(row2)
+
+        tip = QLabel("Seleziona un tema e premi Applica per vedere l'effetto. 'Imposta come predefinito' lo manterrà ai prossimi avvii.")
         tip.setStyleSheet("color:#7f8c8d;")
         root.addWidget(tip, 0)
         root.addStretch(1)
+
+    def _reload_theme_list(self):
+        combos = read_themes()
+        names = sorted(combos.keys())
+        cur = get_current_theme_name() if callable(get_current_theme_name) else None
+        self.cmb_theme.clear()
+        for n in names:
+            self.cmb_theme.addItem(n)
+        if cur and cur in names:
+            self.cmb_theme.setCurrentText(cur)
+
+    def _apply_theme_by_name(self, name: str, persist: bool = False):
+        combos = read_themes()
+        combo = combos.get(name) or {}
+        pal = combo.get("palette") or {}
+        try:
+            set_palette_from_dict(pal)
+            # Applica globalmente
+            from PySide6.QtWidgets import QApplication
+            apply_global_stylesheet(QApplication.instance())
+        except Exception:
+            pass
+        if persist:
+            try:
+                set_current_theme_name(name)
+            except Exception:
+                pass
+
+    def _apply_selected(self):
+        name = (self.cmb_theme.currentText() or "").strip()
+        if not name:
+            return
+        self._apply_theme_by_name(name, persist=False)
+
+    def _set_default_selected(self):
+        name = (self.cmb_theme.currentText() or "").strip()
+        if not name:
+            return
+        self._apply_theme_by_name(name, persist=True)
+
+    def _quick_apply(self, name: str):
+        # Se non esiste ancora, salva un combo minimo (usa preset interni del theme_store)
+        combos = read_themes()
+        if name not in combos:
+            save_theme_combo(name, palette={}, icons={})
+        # Applica e persisti
+        self._apply_theme_by_name(name, persist=True)
