@@ -7,11 +7,20 @@ from ui_qt.theme import THEME
 from ui_qt.widgets.header import Header
 from ui_qt.logic.homing import start_homing  # simulazione homing
 
-# Import “tollerante” del theme_store (icone tema)
+# Import “tollerante” del theme_store (icone tema + tema attivo)
 try:
     from ui_qt.utils.theme_store import get_active_theme
 except Exception:
     def get_active_theme(): return {}
+
+# Applica stylesheet globale se possibile
+try:
+    from ui_qt.theme import set_palette_from_dict, apply_global_stylesheet
+    from PySide6.QtWidgets import QApplication
+except Exception:
+    def set_palette_from_dict(_p: dict): pass
+    def apply_global_stylesheet(_app): pass
+    QApplication = None  # type: ignore
 
 BANNER_BG = "#fff3cd"
 BANNER_TX = "#856404"
@@ -29,6 +38,16 @@ class HomePage(QWidget):
         self._build()
 
     def _build(self):
+        # Applica tema attivo (palette + stylesheet globale)
+        try:
+            active = get_active_theme() or {}
+            pal = active.get("palette") or {}
+            set_palette_from_dict(pal)
+            if QApplication:
+                apply_global_stylesheet(QApplication.instance())
+        except Exception:
+            pass
+
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(14)
@@ -58,7 +77,7 @@ class HomePage(QWidget):
         root.addWidget(self._banner_slot)
         self._banner.hide()
 
-        # Griglia 2x3 con margini e spaziature più ampie
+        # Griglia 2x3 sinistra/destra (ordine richiesto)
         grid = QGridLayout()
         grid.setContentsMargins(8, 8, 8, 8)
         grid.setHorizontalSpacing(18)
@@ -68,12 +87,15 @@ class HomePage(QWidget):
         root.addLayout(grid, 1)
 
         # Icone tema attive (facoltative)
-        active = get_active_theme()
-        icons_map = (active.get("icons") if isinstance(active, dict) else {}) or {}
+        try:
+            from ui_qt.utils.theme_store import get_active_theme as _gat
+            active = _gat()
+            icons_map = (active.get("icons") if isinstance(active, dict) else {}) or {}
+        except Exception:
+            icons_map = {}
 
         def make_tile(text, key):
             btn = QPushButton(text)
-            # dimensioni più compatte per evitare accavallamenti
             btn.setMinimumSize(240, 140)
             btn.setMaximumWidth(520)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -101,9 +123,8 @@ class HomePage(QWidget):
             btn.clicked.connect(lambda: self.appwin.show_page(key))
             return btn
 
-        # Ordine desiderato:
-        # - Colonna sinistra: Tipologie, Quote Vani Luce, Utility
-        # - Colonna destra: Automatico, Semi-Automatico, Manuale
+        # Colonna sinistra: Tipologie, Quote Vani Luce, Utility
+        # Colonna destra: Automatico, Semi-Automatico, Manuale
         tiles = [
             ("Tipologie", "tipologie"),
             ("Automatico", "automatico"),
@@ -121,7 +142,6 @@ class HomePage(QWidget):
                 c = 0
                 r += 1
 
-        # piccolo spazio in fondo
         spacer = QFrame(); spacer.setMinimumHeight(10)
         root.addWidget(spacer)
 
