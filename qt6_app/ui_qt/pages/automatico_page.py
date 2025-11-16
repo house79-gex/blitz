@@ -1,4 +1,4 @@
-# v3 — sequenza indicizzata, auto-continue opzionale, stampa etichette con template
+# v3 — sequenza indicizzata, auto-continue opzionale, stampa etichette con template (FIX parentesi _effective_position_length)
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
@@ -236,6 +236,7 @@ class AutomaticoPage(QWidget):
 
         self.tbl_cut: Optional[QTableWidget] = None
         self.lbl_target: Optional[QLabel] = None
+        thead
         self.lbl_done: Optional[QLabel] = None
         self.lbl_remaining: Optional[QLabel] = None
         self.status: Optional[StatusPanel] = None
@@ -448,7 +449,6 @@ class AutomaticoPage(QWidget):
         self._auto_continue_enabled = bool(cfg.get("opt_auto_continue_enabled", False))
         self._auto_continue_across_bars = bool(cfg.get("opt_auto_continue_across_bars", True))
 
-    # Banner / toast
     def _show_banner(self, msg: str, level: str = "info"):
         styles = {"info":"background:#ffe7ba; color:#1b1b1b; border:1px solid #c49a28;",
                   "ok":"background:#d4efdf; color:#145a32; border:1px solid #27ae60;",
@@ -467,7 +467,6 @@ class AutomaticoPage(QWidget):
             with contextlib.suppress(Exception):
                 self.appwin.toast.show(msg, level, 2500)
 
-    # Etichette
     def _on_label_toggle(self, on: bool):
         self._label_enabled = bool(on)
         cfg = dict(read_settings()); cfg["label_enabled"] = self._label_enabled; write_settings(cfg)
@@ -499,7 +498,6 @@ class AutomaticoPage(QWidget):
         ok = self._label_printer.print_label(lines)
         if ok: self._toast("Etichetta stampata", "ok")
 
-    # Import cutlist / header
     def _import_cutlist(self):
         dlg = OrdersManagerDialog(self, self._orders)
         if dlg.exec() and getattr(dlg, "selected_order_id", None):
@@ -556,7 +554,6 @@ class AutomaticoPage(QWidget):
         self._hide_banner()
         self._update_counters_ui()
 
-    # Optimize / open dialog
     def _on_optimize_clicked(self):
         prof = None
         r = self.tbl_cut.currentRow()
@@ -745,7 +742,6 @@ class AutomaticoPage(QWidget):
                 abs(p1["ax"] - p2["ax"]) <= self._same_ang_tol and
                 abs(p1["ad"] - p2["ad"]) <= self._same_ang_tol)
 
-    # Fuori quota / posizionamento
     def _get_profile_thickness(self, profile_name: str) -> float:
         name = (profile_name or "").strip()
         with contextlib.suppress(Exception):
@@ -760,9 +756,12 @@ class AutomaticoPage(QWidget):
     def _effective_position_length(self, external_len_mm: float, ang_sx: float, ang_dx: float, thickness_mm: float) -> float:
         L = float(external_len_mm); th = max(0.0, float(thickness_mm))
         if th <= 0.0: return max(0.0, L)
-        with contextlib.suppress(Exception): c_sx = th * tan(radians(abs(float(ang_sx)))))
+        # FIX: rimosse parentesi extra su c_sx/c_dx
+        with contextlib.suppress(Exception):
+            c_sx = th * tan(radians(abs(float(ang_sx))))
         if 'c_sx' not in locals(): c_sx = 0.0
-        with contextlib.suppress(Exception): c_dx = th * tan(radians(abs(float(ang_dx)))))
+        with contextlib.suppress(Exception):
+            c_dx = th * tan(radians(abs(float(ang_dx))))
         if 'c_dx' not in locals(): c_dx = 0.0
         return max(0.0, L - max(0.0, c_sx) - max(0.0, c_dx))
 
@@ -840,7 +839,6 @@ class AutomaticoPage(QWidget):
         with contextlib.suppress(Exception):
             setattr(self.machine, "semi_auto_target_pieces", 1); setattr(self.machine, "semi_auto_count_done", 0)
 
-    # Lock / brake
     def _try_lock_on_inpos(self):
         if not self._lock_on_inpos: return
         tol = float(read_settings().get("inpos_tol_mm", 0.20))
@@ -869,7 +867,6 @@ class AutomaticoPage(QWidget):
             else: setattr(self.machine, "brake_active", False)
             self._brake_locked = False
 
-    # Start
     def _handle_start_trigger(self):
         if self._mode != "plan" or not self._seq_plan: return
         if self._fq_state.get("active", False): return
@@ -890,7 +887,6 @@ class AutomaticoPage(QWidget):
         _, ok, min_q, _ = self._enforce_length_limits(eff_len)
         return (not ok) and (eff_len < float(min_q) - 1e-6)
 
-    # Simulazione taglio
     def _simulate_cut_once(self):
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
@@ -986,7 +982,6 @@ class AutomaticoPage(QWidget):
 
         self._update_counters_ui()
 
-    # Decrementi / contatori
     def _dec_selected_row_qty(self):
         try:
             r = self.tbl_cut.currentRow()
@@ -1063,7 +1058,6 @@ class AutomaticoPage(QWidget):
         self.lbl_done.setText(str(done_m))
         self.lbl_remaining.setText(str(rem_m))
 
-    # Tabella / eventi
     def _row_is_header(self, row: int) -> bool:
         it = self.tbl_cut.item(row, 1)
         return bool(it) and not bool(it.flags() & Qt.ItemIsSelectable)
@@ -1130,7 +1124,6 @@ class AutomaticoPage(QWidget):
             self._handle_start_trigger(); event.accept(); return
         super().keyPressEvent(event)
 
-    # Ciclo
     def on_show(self):
         with contextlib.suppress(Exception):
             if hasattr(self.machine,"set_active_mode"):
@@ -1172,7 +1165,6 @@ class AutomaticoPage(QWidget):
         except Exception:
             self.lbl_quota_card.setText("— mm")
 
-    # IO
     def _read_input(self, key: str) -> bool:
         try:
             if hasattr(self.machine, "read_input") and callable(getattr(self.machine, "read_input")):
@@ -1193,7 +1185,6 @@ class AutomaticoPage(QWidget):
             if self._read_input(k): return True
         return False
 
-    # Nav / reset
     def _nav_home(self) -> bool:
         if hasattr(self.appwin,"show_page"):
             with contextlib.suppress(Exception): self.appwin.show_page("home"); return True
