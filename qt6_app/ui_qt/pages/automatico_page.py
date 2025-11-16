@@ -1,4 +1,5 @@
-# v3 — sequenza indicizzata, auto-continue opzionale, stampa etichette con template (fix NameError/SyntaxError)
+# v4 — Sequenza fedele alla grafica barre, “sequenza stretta per barra”, meta propagati fino alle etichette,
+# più etichette per elemento (multi-template), placeholder dinamici, QR code opzionale sulle etichette.
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
@@ -38,13 +39,15 @@ except Exception:
     def read_settings() -> Dict[str, Any]: return {}
     def write_settings(d: Dict[str, Any]) -> None: pass
 
-# Store template per stampa etichette
+# Template store etichette (multi-template, QR, ecc.)
 try:
-    from ui_qt.utils.label_templates_store import resolve_template_for_profile
+    from ui_qt.utils.label_templates_store import resolve_templates_for_profile
 except Exception:
-    def resolve_template_for_profile(_p: str) -> Dict[str, Any]:
-        return {"name":"DEFAULT","paper":"DK-11201","rotate":0,"font_size":32,"cut":True,
-                "lines":["{profile}","{element}","L={length_mm:.2f} AX={ang_sx:.1f} AD={ang_dx:.1f}","SEQ:{seq_id}"]}
+    def resolve_templates_for_profile(_p: str) -> List[Dict[str, Any]]:
+        return [{
+            "name":"DEFAULT","paper":"DK-11201","rotate":0,"font_size":32,"cut":True,
+            "lines":["{profile}","{element}","L={length_mm:.2f} AX={ang_sx:.1f} AD={ang_dx:.1f}","SEQ:{seq_id}"]
+        }]
 
 try:
     POL_EXP = QSizePolicy.Policy.Expanding
@@ -75,7 +78,8 @@ class OptimizationConfigDialog(QDialog):
         angle_tol = str(cfg.get("opt_reversible_angle_tol_deg", 0.5))
         warn_over = str(cfg.get("opt_warn_overflow_mm", 0.5))
         auto_cont = bool(cfg.get("opt_auto_continue_enabled", False))
-        auto_across = bool(cfg.get("opt_auto_continue_across_bars", True))
+        auto_across = bool(cfg.get("opt_auto_continue_across_bars", False))
+        strict_seq = bool(cfg.get("opt_strict_bar_sequence", True))
 
         form = QFormLayout(self)
         self.ed_stock = QLineEdit(stock)
@@ -94,8 +98,9 @@ class OptimizationConfigDialog(QDialog):
         self.ed_thickness = QLineEdit(thickness)
         self.ed_angle_tol = QLineEdit(angle_tol)
         self.ed_warn_over = QLineEdit(warn_over)
-        self.chk_auto_cont = QCheckBox("Auto-continue pezzi identici"); self.chk_auto_cont.setChecked(auto_cont)
+        self.chk_auto_cont = QCheckBox("Auto-continue pezzi identici (stessa barra)"); self.chk_auto_cont.setChecked(auto_cont)
         self.chk_auto_across = QCheckBox("Consenti auto-continue su barra successiva"); self.chk_auto_across.setChecked(auto_across)
+        self.chk_strict_seq = QCheckBox("Sequenza stretta per barra (rispetta grafica)"); self.chk_strict_seq.setChecked(strict_seq)
 
         form.addRow("Stock nominale (mm):", self.ed_stock)
         form.addRow("Stock max utilizzabile (mm):", self.ed_stock_use)
@@ -114,12 +119,13 @@ class OptimizationConfigDialog(QDialog):
         form.addRow("Warn overflow soglia (mm):", self.ed_warn_over)
         form.addRow(self.chk_auto_cont)
         form.addRow(self.chk_auto_across)
+        form.addRow(self.chk_strict_seq)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
         btns.accepted.connect(self._save_and_close)
         btns.rejected.connect(self.reject)
         form.addRow(btns)
-        self.resize(560, 640)
+        self.resize(560, 700)
 
     def _save_and_close(self):
         cfg = dict(read_settings())
@@ -145,6 +151,7 @@ class OptimizationConfigDialog(QDialog):
         cfg["opt_warn_overflow_mm"] = f(self.ed_warn_over.text(), 0.5)
         cfg["opt_auto_continue_enabled"] = bool(self.chk_auto_cont.isChecked())
         cfg["opt_auto_continue_across_bars"] = bool(self.chk_auto_across.isChecked())
+        cfg["opt_strict_bar_sequence"] = bool(self.chk_strict_seq.isChecked())
         write_settings(cfg)
         self.accept()
 
@@ -167,6 +174,8 @@ class LabelPrinter:
             from PIL import Image, ImageDraw, ImageFont  # noqa
             self._ql = {"BrotherQLRaster": BrotherQLRaster, "backend_factory": backend_factory}
             self._pil = {"Image": Image, "ImageDraw": ImageDraw, "ImageFont": ImageFont}
+        with contextlib.suppress(Exception):
+            import qrcode  # noqa
 
     def update_settings(self, s: Dict[str, Any]):
         self.enabled = bool(s.get("label_enabled", False))
@@ -176,7 +185,13 @@ class LabelPrinter:
         self.paper = str(s.get("label_paper", "DK-11201"))
         self.rotate = int(s.get("label_rotate", 0))
 
-    def print_label(self, lines: List[str]) -> bool:
+    def print_label(self, lines: List[str],
+                    paper: Optional[str] = None,
+                    rotate: Optional[int] = None,
+                    font_size: Optional[int] = None,
+                    cut: Optional[bool] = None,
+                    qrcode_data: Optional[str] = None,
+                    qrcode_module_size: int = 4) -> bool:
         if not self.enabled:
             return False
         if self._ql is None or self._pil is None:
@@ -190,29 +205,53 @@ class LabelPrinter:
             backend_factory = self._ql["backend_factory"]
             Image = self._pil["Image"]; ImageDraw = self._pil["ImageDraw"]; ImageFont = self._pil["ImageFont"]
 
+            use_paper = paper or self.paper
+            use_rotate = int(rotate if rotate is not None else self.rotate)
             paper_map = {"DK-11201": (29.0, 90.0), "DK-11202": (62.0, 100.0), "DK-11209": (62.0, 29.0), "DK-22205": (62.0, 100.0)}
-            w_mm, h_mm = paper_map.get(self.paper, (29.0, 90.0))
+            w_mm, h_mm = paper_map.get(use_paper, (29.0, 90.0))
             width_dots = int(round((w_mm/25.4)*300))
             height_dots = int(round((h_mm/25.4)*300))
 
             img = Image.new("1", (width_dots, height_dots), 1)
             draw = ImageDraw.Draw(img)
+            # font
+            fs = int(font_size or 32)
             with contextlib.suppress(Exception):
-                font = ImageFont.truetype("arial.ttf", 32)
+                font = ImageFont.truetype("arial.ttf", fs)
             if 'font' not in locals():
                 font = ImageFont.load_default()
+
+            x_offset = 8
             y = 8
+
+            # QR opzionale
+            if qrcode_data:
+                try:
+                    import qrcode
+                    qr = qrcode.QRCode(border=0, box_size=max(2, int(qrcode_module_size)))
+                    qr.add_data(qrcode_data)
+                    qr.make(fit=True)
+                    qrim = qr.make_image(fill_color="black", back_color="white").convert("1")
+                    qrw, qrh = qrim.size
+                    # posiziona a sinistra, lascia margine testo
+                    img.paste(qrim, (8, 8))
+                    x_offset = 8 + qrw + 8
+                    y = 8
+                except Exception:
+                    pass
+
             for line in lines:
-                draw.text((8, y), str(line), fill=0, font=font)
-                y += 36
-            if self.rotate in (90,180,270):
+                draw.text((x_offset, y), str(line), fill=0, font=font)
+                y += int(fs * 1.2)
+
+            if use_rotate in (90,180,270):
                 with contextlib.suppress(Exception):
-                    img = img.rotate(self.rotate, expand=True)
+                    img = img.rotate(use_rotate, expand=True)
 
             from brother_ql.conversion import convert
             qlr = BrotherQLRaster(self.model); qlr.exception_on_warning = False
-            instr = convert(qlr=qlr, images=[img], label=self.paper, threshold=70, dither=False,
-                            compress=True, red=False, rotate='0', dpi_600=False, hq=True, cut=True)
+            instr = convert(qlr=qlr, images=[img], label=use_paper, threshold=70, dither=False,
+                            compress=True, red=False, rotate='0', dpi_600=False, hq=True, cut=bool(cut if cut is not None else True))
             backend = backend_factory(self.backend)
             be = backend(printer_identifier=self.printer)
             be.write(instr)
@@ -253,7 +292,7 @@ class AutomaticoPage(QWidget):
         self._finished_rows: set[int] = set()
 
         self._plan_profile: str = ""
-        self._bars: List[List[Dict[str, float]]] = []
+        self._bars: List[List[Dict[str, Any]]] = []
         self._bar_idx: int = -1
         self._piece_idx: int = -1
 
@@ -279,8 +318,10 @@ class AutomaticoPage(QWidget):
         self._knap_cons_angle_deg = self._cfg_float(cfg, "opt_knap_conservative_angle_deg", 45.0)
         self._ripasso_mm = self._cfg_float(cfg, "opt_ripasso_mm", 0.0)
         self._warn_overflow_mm = self._cfg_float(cfg, "opt_warn_overflow_mm", 0.5)
+
         self._auto_continue_enabled = bool(cfg.get("opt_auto_continue_enabled", False))
-        self._auto_continue_across_bars = bool(cfg.get("opt_auto_continue_across_bars", True))
+        self._auto_continue_across_bars = bool(cfg.get("opt_auto_continue_across_bars", False))
+        self._strict_bar_sequence = bool(cfg.get("opt_strict_bar_sequence", True))
 
         self._sig_total_counts: Dict[Tuple[str, float, float, float], int] = {}
         self._cur_sig: Optional[Tuple[str, float, float, float]] = None
@@ -446,8 +487,10 @@ class AutomaticoPage(QWidget):
         self._ripasso_mm = self._cfg_float(cfg, "opt_ripasso_mm", 0.0)
         self._warn_overflow_mm = self._cfg_float(cfg, "opt_warn_overflow_mm", 0.5)
         self._auto_continue_enabled = bool(cfg.get("opt_auto_continue_enabled", False))
-        self._auto_continue_across_bars = bool(cfg.get("opt_auto_continue_across_bars", True))
+        self._auto_continue_across_bars = bool(cfg.get("opt_auto_continue_across_bars", False))
+        self._strict_bar_sequence = bool(cfg.get("opt_strict_bar_sequence", True))
 
+    # Banner/Toast
     def _show_banner(self, msg: str, level: str = "info"):
         styles = {"info":"background:#ffe7ba; color:#1b1b1b; border:1px solid #c49a28;",
                   "ok":"background:#d4efdf; color:#145a32; border:1px solid #27ae60;",
@@ -466,37 +509,69 @@ class AutomaticoPage(QWidget):
             with contextlib.suppress(Exception):
                 self.appwin.toast.show(msg, level, 2500)
 
+    # Etichette
     def _on_label_toggle(self, on: bool):
         self._label_enabled = bool(on)
         cfg = dict(read_settings()); cfg["label_enabled"] = self._label_enabled; write_settings(cfg)
         self._label_printer.update_settings(cfg)
 
     def _test_label(self):
-        piece = {"seq_id":999,"profile":"DEMO","element":"BAR 1 #1","len":1234.5,"ax":45.0,"ad":0.0}
+        piece = {"seq_id":999,"profile":"DEMO","element":"BAR 1 #1","len":1234.5,"ax":45.0,"ad":0.0,
+                 "meta":{"commessa":"ORD-42","element_id":"E-001","infisso_id":"INF-01","misura_elem":1234.5}}
         self._emit_label(piece)
 
     def _emit_label(self, piece: Dict[str, Any]):
         if not self._label_enabled: return
-        tmpl = resolve_template_for_profile(piece.get("profile",""))
-        lines = []
-        for raw in tmpl.get("lines", []):
-            try:
-                line = raw.format(
-                    profile=piece.get("profile",""),
-                    element=piece.get("element",""),
-                    length_mm=piece.get("len", piece.get("length",0.0)),
-                    ang_sx=piece.get("ax", piece.get("ang_sx",0.0)),
-                    ang_dx=piece.get("ad", piece.get("ang_dx",0.0)),
-                    seq_id=piece.get("seq_id",0),
-                    timestamp=time.strftime("%H:%M:%S"),
-                    qty_remaining=self._sig_remaining_from_table(self._cur_sig) if self._cur_sig else 0
-                )
-            except Exception:
-                line = raw
-            lines.append(line)
-        ok = self._label_printer.print_label(lines)
-        if ok: self._toast("Etichetta stampata", "ok")
+        # Costruisci dizionario placeholder unendo campi base + meta
+        fmt: Dict[str, Any] = {
+            "profile": piece.get("profile",""),
+            "element": piece.get("element",""),
+            "length_mm": piece.get("len", piece.get("length",0.0)),
+            "ang_sx": piece.get("ax", piece.get("ang_sx",0.0)),
+            "ang_dx": piece.get("ad", piece.get("ang_dx",0.0)),
+            "seq_id": piece.get("seq_id", 0),
+            "timestamp": time.strftime("%H:%M:%S"),
+            "qty_remaining": 0
+        }
+        if self._cur_sig:
+            fmt["qty_remaining"] = self._sig_remaining_from_table(self._cur_sig)
+        meta = piece.get("meta") or {}
+        if isinstance(meta, dict):
+            for k, v in meta.items():
+                if k not in fmt:
+                    fmt[k] = v
 
+        # Risolvi templates (multi-stampa per elemento)
+        templates = resolve_templates_for_profile(piece.get("profile",""))
+        for tmpl in templates:
+            lines = []
+            for raw in tmpl.get("lines", []):
+                try:
+                    line = raw.format(**fmt)
+                except Exception:
+                    line = str(raw)
+                lines.append(line)
+            # QR opzionale
+            qr_conf = tmpl.get("qrcode") or {}
+            qr_data = None
+            if isinstance(qr_conf, dict) and qr_conf.get("data"):
+                try:
+                    qr_data = str(qr_conf["data"]).format(**fmt)
+                except Exception:
+                    qr_data = str(qr_conf["data"])
+            qr_mod = int(qr_conf.get("module_size", 4)) if isinstance(qr_conf, dict) else 4
+
+            self._label_printer.print_label(
+                lines,
+                paper=tmpl.get("paper"),
+                rotate=int(tmpl.get("rotate", 0)),
+                font_size=int(tmpl.get("font_size", 32)),
+                cut=bool(tmpl.get("cut", True)),
+                qrcode_data=qr_data,
+                qrcode_module_size=qr_mod
+            )
+
+    # Import cutlist: preserva meta riga
     def _import_cutlist(self):
         dlg = OrdersManagerDialog(self, self._orders)
         if dlg.exec() and getattr(dlg, "selected_order_id", None):
@@ -530,29 +605,41 @@ class AutomaticoPage(QWidget):
             groups[p].append(c)
         seq_counter = 1
         for prof in order:
+            # Riga header profilo
             r = self.tbl_cut.rowCount(); self.tbl_cut.insertRow(r)
             for col, it in enumerate(self._header_items(prof)): self.tbl_cut.setItem(r, col, it)
+            # Righe pezzi
             for c in groups[prof]:
                 r = self.tbl_cut.rowCount(); self.tbl_cut.insertRow(r)
+                Lmm = float(c.get('length_mm', 0.0))
+                ax = float(c.get('ang_sx', 0.0))
+                ad = float(c.get('ang_dx', 0.0))
+                qty = int(c.get("qty", 0))
                 cells = [
                     QTableWidgetItem(str(seq_counter)),
                     QTableWidgetItem(str(c.get("profile",""))),
                     QTableWidgetItem(str(c.get("element",""))),
-                    QTableWidgetItem(f"{float(c.get('length_mm',0.0)):.2f}"),
-                    QTableWidgetItem(f"{float(c.get('ang_sx',0.0)):.1f}"),
-                    QTableWidgetItem(f"{float(c.get('ang_dx',0.0)):.1f}"),
-                    QTableWidgetItem(str(int(c.get("qty",0)))),
+                    QTableWidgetItem(f"{Lmm:.2f}"),
+                    QTableWidgetItem(f"{ax:.1f}"),
+                    QTableWidgetItem(f"{ad:.1f}"),
+                    QTableWidgetItem(str(qty)),
                     QTableWidgetItem(str(c.get("note","")))
                 ]
+                # Salva meta originali sulla prima cella (UserRole)
+                cells[0].setData(Qt.UserRole, dict(c))  # conserva tutti i campi passati
                 seq_counter += 1
                 for it in cells: it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                 for col, it in enumerate(cells): self.tbl_cut.setItem(r, col, it)
+
+        # reset stato
         self._mode = "idle"; self._active_row = None; self._manual_job = None
         self._finished_rows.clear(); self._sig_total_counts.clear(); self._cur_sig = None
         self._seq_plan.clear(); self._seq_pos = -1
         self._hide_banner()
         self._update_counters_ui()
 
+    # Ottimizza: ora non si aggregano più i pezzi per (L,AX,AD) perdendo meta;
+    # si espandono le righe per qty, mantenendo meta, elemento e profilo.
     def _on_optimize_clicked(self):
         prof = None
         r = self.tbl_cut.currentRow()
@@ -566,6 +653,7 @@ class AutomaticoPage(QWidget):
         self._open_opt_dialog(prof)
 
     def _open_opt_dialog(self, profile: str):
+        # invariato (grafica dialog)
         prof = (profile or "").strip()
         if not prof: return
         rows: List[Dict[str, Any]] = []
@@ -584,7 +672,7 @@ class AutomaticoPage(QWidget):
         if not rows: return
         th = self._get_profile_thickness(prof)
         self._current_profile_thickness = th
-        if self._opt_dialog and self._opt_dialog.profile == prof:
+        if self._opt_dialog and getattr(self._opt_dialog, "profile", None) == prof:
             with contextlib.suppress(Exception): self._opt_dialog.raise_(); self._opt_dialog.activateWindow()
             return
         self._opt_dialog = OptimizationRunDialog(self, prof, rows, overlay_target=self.viewer_frame)
@@ -605,7 +693,11 @@ class AutomaticoPage(QWidget):
         prof = (profile or "").strip()
         if not prof:
             QMessageBox.information(self, "Ottimizza", "Seleziona un profilo."); return
-        items: Dict[Tuple[float, float, float], int] = defaultdict(int)
+
+        # Crea lista pezzi "atomici" mantenendo meta/element
+        pieces: List[Dict[str, Any]] = []
+        sig_totals: Dict[Tuple[str, float, float, float], int] = defaultdict(int)
+
         for r in range(self.tbl_cut.rowCount()):
             if self._row_is_header(r): continue
             if self.tbl_cut.item(r, 1) and self.tbl_cut.item(r, 1).text().strip() == prof:
@@ -614,10 +706,18 @@ class AutomaticoPage(QWidget):
                     ax = float(self.tbl_cut.item(r, 4).text())
                     ad = float(self.tbl_cut.item(r, 5).text())
                     q = int(self.tbl_cut.item(r, 6).text())
+                    element_name = str(self.tbl_cut.item(r, 2).text() or "")
+                    meta = self.tbl_cut.item(r, 0).data(Qt.UserRole) or {}
                 except Exception:
                     continue
-                if q > 0: items[(L, ax, ad)] += q
-        if not items:
+                for _ in range(max(0, q)):
+                    pieces.append({
+                        "len": float(L), "ax": float(ax), "ad": float(ad),
+                        "profile": prof, "element": element_name, "meta": dict(meta)
+                    })
+                sig_totals[(prof, L, round(ax,1), round(ad,1))] += max(0, q)
+
+        if not pieces:
             QMessageBox.information(self, "Ottimizza", f"Nessun pezzo per '{prof}'."); return
 
         cfg = read_settings()
@@ -635,11 +735,8 @@ class AutomaticoPage(QWidget):
         max_angle = self._kerf_max_angle_deg
         max_factor = self._kerf_max_factor
 
-        pieces: List[Dict[str, float]] = []
-        for (L, ax, ad), q in items.items():
-            for _ in range(q):
-                pieces.append({"len": float(L), "ax": float(ax), "ad": float(ad)})
-        pieces.sort(key=lambda x: x["len"], reverse=True)
+        # Ordinamento iniziale per stabilità (non determina sequenza finale, solo pack)
+        pieces.sort(key=lambda x: (-x["len"], x["ax"], x["ad"]))
 
         if solver in ("ILP_KNAP", "ILP"):
             bars, rem = pack_bars_knapsack_ilp(
@@ -664,21 +761,25 @@ class AutomaticoPage(QWidget):
                                         angle_tol, tail_bars=tail_n, time_limit_s=tail_t,
                                         max_angle=max_angle, max_factor=max_factor)
 
+        # Salva totals per firma
+        self._sig_total_counts.clear()
+        for (p, L, ax, ad), qty in sig_totals.items():
+            self._sig_total_counts[(p, float(L), float(ax), float(ad))] = int(qty)
+
         self._plan_profile = prof
-        self._bars = bars
+        self._bars = bars  # bars = List[List[piece]] mantenendo ordine dei pezzi nella barra
         self._bar_idx = 0
         self._piece_idx = -1
         self._mode = "plan"
         self._cur_sig = None
-        self._sig_total_counts.clear()
-        for (L, ax, ad), qty in items.items():
-            self._sig_total_counts[self._sig_key(prof, L, ax, ad)] = int(qty)
+
         self._build_sequential_plan()
         self._hide_banner()
         self._update_counters_ui()
         self._toast(f"Piano ottimizzato per {prof}. Barre: {len(bars)}. Pezzi: {len(self._seq_plan)}.", "info")
 
     def _build_sequential_plan(self):
+        # Indicizza in modo fedele alla grafica barre: barra 0..N, per ogni barra pezzi nell’ordine in cui sono in bars[bi]
         self._seq_plan.clear()
         seq_id = 1
         for bi, bar in enumerate(self._bars):
@@ -686,15 +787,17 @@ class AutomaticoPage(QWidget):
                 self._seq_plan.append({
                     "seq_id": seq_id, "bar": bi, "idx": pi,
                     "len": float(p["len"]), "ax": float(p["ax"]), "ad": float(p["ad"]),
-                    "profile": self._plan_profile, "element": f"BAR {bi+1} #{pi+1}"
+                    "profile": p.get("profile", self._plan_profile),
+                    "element": p.get("element", f"BAR {bi+1} #{pi+1}"),
+                    "meta": dict(p.get("meta") or {})
                 })
                 seq_id += 1
         self._seq_pos = -1
 
-    def _pack_bfd(self, pieces: List[Dict[str, float]], stock: float, kerf_base: float,
+    def _pack_bfd(self, pieces: List[Dict[str, Any]], stock: float, kerf_base: float,
                   reversible: bool, thickness_mm: float, angle_tol: float,
-                  max_angle: float, max_factor: float) -> Tuple[List[List[Dict[str, float]]], List[float]]:
-        bars: List[List[Dict[str, float]]] = []
+                  max_angle: float, max_factor: float) -> Tuple[List[List[Dict[str, Any]]], List[float]]:
+        bars: List[List[Dict[str, Any]]] = []
         for p in pieces:
             need = p["len"]; placed = False
             for b in bars:
@@ -741,6 +844,7 @@ class AutomaticoPage(QWidget):
                 abs(p1["ax"] - p2["ax"]) <= self._same_ang_tol and
                 abs(p1["ad"] - p2["ad"]) <= self._same_ang_tol)
 
+    # Fuori quota e posizionamento (come prima, con fix parentesi)
     def _get_profile_thickness(self, profile_name: str) -> float:
         name = (profile_name or "").strip()
         with contextlib.suppress(Exception):
@@ -837,6 +941,7 @@ class AutomaticoPage(QWidget):
         with contextlib.suppress(Exception):
             setattr(self.machine, "semi_auto_target_pieces", 1); setattr(self.machine, "semi_auto_count_done", 0)
 
+    # Ciclo / avanzamento
     def _try_lock_on_inpos(self):
         if not self._lock_on_inpos: return
         tol = float(read_settings().get("inpos_tol_mm", 0.20))
@@ -900,11 +1005,13 @@ class AutomaticoPage(QWidget):
                     "len": float(self._manual_job.get("length", 0.0)),
                     "ax": float(self._manual_job.get("ax", 0.0)),
                     "ad": float(self._manual_job.get("ad", 0.0)),
+                    "meta": dict(self._manual_job.get("meta") or {})
                 })
             else:
                 self._dec_selected_row_qty()
             return
 
+        # Gestione Fuori Quota (come prima)
         if self._fq_state.get("active", False):
             mode = self._fq_state.get("mode", ""); phase = self._fq_state.get("phase", "")
             if mode == "fq":
@@ -955,13 +1062,13 @@ class AutomaticoPage(QWidget):
                     nxt_piece = self._next_seq_piece()
                     if nxt_piece and current_piece:
                         can_auto = self._auto_continue_enabled
-                        if can_auto:
-                            same = self._same_job(current_piece, nxt_piece)
-                            across = (nxt_piece["bar"] != current_piece["bar"])
-                            needs_fq = self._requires_fq_for_piece(nxt_piece["len"], nxt_piece["ax"], nxt_piece["ad"], nxt_piece["profile"])
-                            if same and (self._auto_continue_across_bars or not across) and not needs_fq:
-                                self._advance_to_next_piece()
-                                self._unlock_brake(silent=True)
+                        across = (nxt_piece["bar"] != current_piece["bar"])
+                        needs_fq = self._requires_fq_for_piece(nxt_piece["len"], nxt_piece["ax"], nxt_piece["ad"], nxt_piece["profile"])
+                        same = self._same_job(current_piece, nxt_piece)
+                        # Non attraversare barre se sequenza stretta
+                        if can_auto and same and (not self._strict_bar_sequence and (self._auto_continue_across_bars or not across) or (not across)) and not needs_fq:
+                            self._advance_to_next_piece()
+                            self._unlock_brake(silent=True)
                     else:
                         if self._opt_dialog:
                             with contextlib.suppress(Exception): self._opt_dialog.accept()
@@ -980,6 +1087,7 @@ class AutomaticoPage(QWidget):
 
         self._update_counters_ui()
 
+    # Decrementi / contatori (come prima)
     def _dec_selected_row_qty(self):
         try:
             r = self.tbl_cut.currentRow()
@@ -1163,6 +1271,7 @@ class AutomaticoPage(QWidget):
         except Exception:
             self.lbl_quota_card.setText("— mm")
 
+    # IO helpers
     def _read_input(self, key: str) -> bool:
         try:
             if hasattr(self.machine, "read_input") and callable(getattr(self.machine, "read_input")):
