@@ -1,11 +1,17 @@
-# v6.3.1 — Ripristinato _open_opt_config, aggiunta diagnostica sequenza (dump console),
-# sequenza decrescente lunghezze per barra, chiusura dialog ottimizzazione su HOME.
+# v6.4 — Fix robusto:
+# - Sequenza taglio realmente decrescente per lunghezza, barra per barra (nessun salto).
+# - Ripristinato decremento quantità per ogni taglio, con evidenziazione (highlight) riga completata.
+# - Aggiornamento contatori firma (target, fatti, rimanenti) coerente con tabella.
+# - Evidenziazione riga finita (sfondo verde) + mantenimento selezione corrente.
+# - Stampa etichette invariata.
+# - Chiusura dialog ottimizzazione su HOME / RESET.
+# - Log diagnostico della sequenza in console (logger automatico_page).
+# NOTE: Assicura che strict_bar_sequence sia TRUE per impedire auto-salti; se FALSE rimane la logica di auto-continue.
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
-import time, contextlib
+import time, contextlib, logging
 from math import tan, radians
-import logging
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
@@ -95,35 +101,35 @@ class OptimizationConfigDialog(QDialog):
         strict_seq = bool(cfg.get("opt_strict_bar_sequence", True))
 
         form = QFormLayout(self)
-        self.ed_stock = QLineEdit(stock);             form.addRow("Stock nominale (mm):", self.ed_stock)
-        self.ed_stock_use = QLineEdit(stock_use);     form.addRow("Stock max utilizzabile (mm):", self.ed_stock_use)
-        self.ed_kerf = QLineEdit(kerf);               form.addRow("Kerf base (mm):", self.ed_kerf)
-        self.ed_ripasso = QLineEdit(ripasso);         form.addRow("Ripasso (mm):", self.ed_ripasso)
-        self.cmb_solver = QComboBox(); self.cmb_solver.addItems(["ILP_KNAP", "ILP", "BFD"])
-        self.cmb_solver.setCurrentText("ILP_KNAP" if solver not in ("ILP","BFD") else solver); form.addRow("Solver:", self.cmb_solver)
-        self.ed_time = QLineEdit(tlimit);             form.addRow("Time limit solver (s):", self.ed_time)
-        self.ed_tail_b = QLineEdit(tail_b);           form.addRow("Refine ultime barre (N):", self.ed_tail_b)
-        self.ed_tail_t = QLineEdit(tail_t);           form.addRow("Refine time (s):", self.ed_tail_t)
-        self.ed_max_ang = QLineEdit(max_ang);         form.addRow("Kerf max angolo (°):", self.ed_max_ang)
-        self.ed_max_factor = QLineEdit(max_factor);   form.addRow("Kerf max fattore:", self.ed_max_factor)
-        self.ed_cons_ang = QLineEdit(cons_ang);       form.addRow("Angolo conservativo knapsack (°):", self.ed_cons_ang)
+        def add(label, w): form.addRow(label, w); return w
+        self.ed_stock = add("Stock nominale (mm):", QLineEdit(stock))
+        self.ed_stock_use = add("Stock max utilizzabile (mm):", QLineEdit(stock_use))
+        self.ed_kerf = add("Kerf base (mm):", QLineEdit(kerf))
+        self.ed_ripasso = add("Ripasso (mm):", QLineEdit(ripasso))
+        self.cmb_solver = QComboBox(); self.cmb_solver.addItems(["ILP_KNAP","ILP","BFD"])
+        self.cmb_solver.setCurrentText("ILP_KNAP" if solver not in ("ILP","BFD") else solver)
+        add("Solver:", self.cmb_solver)
+        self.ed_time = add("Time limit solver (s):", QLineEdit(tlimit))
+        self.ed_tail_b = add("Refine ultime barre (N):", QLineEdit(tail_b))
+        self.ed_tail_t = add("Refine time (s):", QLineEdit(tail_t))
+        self.ed_max_ang = add("Kerf max angolo (°):", QLineEdit(max_ang))
+        self.ed_max_factor = add("Kerf max fattore:", QLineEdit(max_factor))
+        self.ed_cons_ang = add("Angolo conservativo knapsack (°):", QLineEdit(cons_ang))
         self.chk_reversible = QCheckBox("Profilo reversibile"); self.chk_reversible.setChecked(reversible_now); form.addRow(self.chk_reversible)
-        self.ed_thickness = QLineEdit(thickness);     form.addRow("Spessore profilo (mm):", self.ed_thickness)
-        self.ed_angle_tol = QLineEdit(angle_tol);     form.addRow("Tolleranza angolo reversibile (°):", self.ed_angle_tol)
-        self.ed_warn_over = QLineEdit(warn_over);     form.addRow("Warn overflow soglia (mm):", self.ed_warn_over)
+        self.ed_thickness = add("Spessore profilo (mm):", QLineEdit(thickness))
+        self.ed_angle_tol = add("Tolleranza angolo reversibile (°):", QLineEdit(angle_tol))
+        self.ed_warn_over = add("Warn overflow soglia (mm):", QLineEdit(warn_over))
         self.chk_auto_cont = QCheckBox("Auto-continue pezzi identici (stessa barra)"); self.chk_auto_cont.setChecked(auto_cont); form.addRow(self.chk_auto_cont)
         self.chk_auto_across = QCheckBox("Consenti auto-continue su barra successiva"); self.chk_auto_across.setChecked(auto_across); form.addRow(self.chk_auto_across)
         self.chk_strict_seq = QCheckBox("Sequenza stretta per barra (rispetta grafica)"); self.chk_strict_seq.setChecked(strict_seq); form.addRow(self.chk_strict_seq)
-
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
-        btns.accepted.connect(self._save_and_close)
-        btns.rejected.connect(self.reject)
+        btns.accepted.connect(self._save_and_close); btns.rejected.connect(self.reject)
         form.addRow(btns)
         self.resize(560, 700)
 
     def _save_and_close(self):
         cfg = dict(read_settings())
-        def f(txt, d): 
+        def f(txt, d):
             try: return float((txt or "").replace(",", "."))
             except Exception: return d
         def i(txt, d):
@@ -217,18 +223,18 @@ class LabelPrinter:
                 draw.text((x_offset, y), str(line), fill=0, font=font)
                 y += int(fs * 1.2)
             if use_rotate in (90,180,270):
-                with contextlib.suppress(Exception): img = img.rotate(use_rotate, expand=True)
-
+                with contextlib.suppress(Exception):
+                    img = img.rotate(use_rotate, expand=True)
             if (not self.enabled) or (self._ql is None) or (not self.printer):
                 if self.preview_if_no_printer and self.toast:
                     self.toast("Simulazione etichetta (stampante non configurata).", "info")
                 return True
-
             BrotherQLRaster = self._ql["BrotherQLRaster"]; backend_factory = self._ql["backend_factory"]
             from brother_ql.conversion import convert
             qlr = BrotherQLRaster(self.model); qlr.exception_on_warning = False
             instr = convert(qlr=qlr, images=[img], label=use_paper, threshold=70, dither=False,
-                            compress=True, red=False, rotate='0', dpi_600=False, hq=True, cut=bool(cut if cut is not None else True))
+                            compress=True, red=False, rotate='0', dpi_600=False, hq=True,
+                            cut=bool(cut if cut is not None else True))
             backend = backend_factory(self.backend)
             be = backend(printer_identifier=self.printer)
             be.write(instr)
@@ -249,6 +255,7 @@ class AutomaticoPage(QWidget):
         self.seq.step_finished.connect(self._on_step_finished)
         self.seq.finished.connect(self._on_seq_done)
 
+        # UI
         self.tbl_cut: Optional[QTableWidget] = None
         self.lbl_target: Optional[QLabel] = None
         self.lbl_done: Optional[QLabel] = None
@@ -259,6 +266,7 @@ class AutomaticoPage(QWidget):
         self.lbl_quota_card: Optional[QLabel] = None
         self.banner: Optional[QLabel] = None
 
+        # Stores / stato
         self._orders = OrdersStore()
         self._profiles_store = ProfilesStore()
         self._current_profile_thickness: float = 0.0
@@ -270,6 +278,11 @@ class AutomaticoPage(QWidget):
         self._seq_pos: int = -1
         self._opt_dialog: Optional[OptimizationRunDialog] = None
 
+        # Sequenza / contatori per firma
+        self._sig_total_counts: Dict[Tuple[str,float,float,float], int] = {}
+        self._cur_sig: Optional[Tuple[str,float,float,float]] = None
+
+        # IO state
         self._brake_locked: bool = False
         self._blade_prev: bool = False
         self._start_prev: bool = False
@@ -278,6 +291,7 @@ class AutomaticoPage(QWidget):
         self._lock_on_inpos: bool = False
         self._poll: Optional[QTimer] = None
 
+        # Config
         cfg = read_settings()
         self._same_len_tol = self._cfg_float(cfg, "auto_same_len_tol_mm", 0.10)
         self._same_ang_tol = self._cfg_float(cfg, "auto_same_ang_tol_deg", 0.10)
@@ -289,21 +303,23 @@ class AutomaticoPage(QWidget):
         self._auto_continue_enabled = bool(cfg.get("opt_auto_continue_enabled", False))
         self._auto_continue_across_bars = bool(cfg.get("opt_auto_continue_across_bars", False))
         self._strict_bar_sequence = bool(cfg.get("opt_strict_bar_sequence", True))
-        self._sig_total_counts: Dict[Tuple[str,float,float,float], int] = {}
-        self._cur_sig: Optional[Tuple[str,float,float,float]] = None
 
-        try: self._fq_offset_mm = float(read_settings().get("semi_offset_mm", 120.0))
+        try: self._fq_offset_mm = float(cfg.get("semi_offset_mm", 120.0))
         except Exception: self._fq_offset_mm = 120.0
-        try: self._extshort_safe_mm = float(read_settings().get("auto_extshort_safe_pos_mm", 400.0))
+        try: self._extshort_safe_mm = float(cfg.get("auto_extshort_safe_pos_mm", 400.0))
         except Exception: self._extshort_safe_mm = 400.0
-        try: self._kerf_base_mm = float(read_settings().get("opt_kerf_mm", 3.0))
+        try: self._kerf_base_mm = float(cfg.get("opt_kerf_mm", 3.0))
         except Exception: self._kerf_base_mm = 3.0
-        try: self._after_cut_pause_ms = int(float(read_settings().get("auto_after_cut_pause_ms", 300)))
+        try: self._after_cut_pause_ms = int(float(cfg.get("auto_after_cut_pause_ms", 300)))
         except Exception: self._after_cut_pause_ms = 300
 
-        self._fq_state: Dict[str, Any] = {"active": False, "phase": "", "final_target": 0.0,
-                                          "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
+        self._fq_state: Dict[str, Any] = {
+            "active": False, "phase": "", "final_target": 0.0,
+            "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0
+        }
+        self._piece_fq_pending: bool = False
 
+        # Etichette
         self._label_enabled: bool = bool(cfg.get("label_enabled", False))
         self._label_printer = LabelPrinter({
             "label_enabled": self._label_enabled,
@@ -322,7 +338,7 @@ class AutomaticoPage(QWidget):
         try: return float(cfg.get(key, dflt))
         except Exception: return dflt
 
-    # AGGIUNTO: metodo ripristinato per configurazione
+    # ---------------- Build UI ----------------
     def _open_opt_config(self):
         dlg = OptimizationConfigDialog(self)
         if dlg.exec():
@@ -341,20 +357,19 @@ class AutomaticoPage(QWidget):
         root = QVBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(6)
         root.addWidget(Header(self.appwin, "AUTOMATICO", mode="default",
                               on_home=self._nav_home, on_reset=self._reset_and_home))
-
         self.banner = QLabel(""); self.banner.setVisible(False)
         self.banner.setAlignment(Qt.AlignCenter)
         self.banner.setStyleSheet("QLabel { background:#ffe7ba; color:#1b1b1b; font-size:18px; font-weight:800; padding:8px 12px; border:1px solid #c49a28; border-radius:6px; }")
         root.addWidget(self.banner)
 
         top = QHBoxLayout()
-        b_import = QPushButton("Importa…"); b_import.clicked.connect(self._import_cutlist); top.addWidget(b_import)
-        b_opt = QPushButton("Ottimizza"); b_opt.clicked.connect(self._on_optimize_clicked); top.addWidget(b_opt)
-        b_cfg = QPushButton("Config. ottimizzazione…"); b_cfg.clicked.connect(self._open_opt_config); top.addWidget(b_cfg)
-        top.addStretch(1)
-        root.addLayout(top)
+        btn_import = QPushButton("Importa…"); btn_import.clicked.connect(self._import_cutlist); top.addWidget(btn_import)
+        btn_opt = QPushButton("Ottimizza"); btn_opt.clicked.connect(self._on_optimize_clicked); top.addWidget(btn_opt)
+        btn_cfg = QPushButton("Config. ottimizzazione…"); btn_cfg.clicked.connect(self._open_opt_config); top.addWidget(btn_cfg)
+        top.addStretch(1); root.addLayout(top)
 
         body = QHBoxLayout(); body.setSpacing(8); root.addLayout(body,1)
+
         left = QFrame(); left.setSizePolicy(POL_EXP, POL_EXP)
         ll = QVBoxLayout(left); ll.setContentsMargins(0,0,0,0); ll.setSpacing(8)
         viewer = QFrame(); viewer.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
@@ -364,10 +379,10 @@ class AutomaticoPage(QWidget):
         self.tbl_cut = QTableWidget(0,8)
         self.tbl_cut.setHorizontalHeaderLabels(["SeqID","Profilo","Elemento","Lunghezza (mm)","Ang SX","Ang DX","Q.tà","Note"])
         hdr = self.tbl_cut.horizontalHeader()
-        for i,mode in enumerate([QHeaderView.ResizeToContents,QHeaderView.Stretch,QHeaderView.Stretch,
-                                 QHeaderView.ResizeToContents,QHeaderView.ResizeToContents,QHeaderView.ResizeToContents,
-                                 QHeaderView.ResizeToContents,QHeaderView.Stretch]):
-            hdr.setSectionResizeMode(i, mode)
+        for i,m in enumerate([QHeaderView.ResizeToContents,QHeaderView.Stretch,QHeaderView.Stretch,
+                              QHeaderView.ResizeToContents,QHeaderView.ResizeToContents,QHeaderView.ResizeToContents,
+                              QHeaderView.ResizeToContents,QHeaderView.Stretch]):
+            hdr.setSectionResizeMode(i,m)
         self.tbl_cut.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_cut.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_cut.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -383,18 +398,17 @@ class AutomaticoPage(QWidget):
         self.btn_start_row = QPushButton("Start"); self.btn_start_row.setMinimumHeight(56)
         self.btn_start_row.setStyleSheet(
             "QPushButton { background:#2ecc71; color:white; font-weight:900; font-size:20px; padding:12px 32px; border-radius:10px; } "
-            "QPushButton:hover { background:#27ae60; } QPushButton:pressed { background:#239b56; }"
-        )
+            "QPushButton:hover { background:#27ae60; } QPushButton:pressed { background:#239b56; }")
         self.btn_start_row.clicked.connect(self._handle_start_trigger)
         start_row.addWidget(self.btn_start_row)
         start_row.addSpacing(12)
-        quota_title = QLabel("Quota")
-        quota_title.setAlignment(Qt.AlignCenter); quota_title.setMinimumHeight(56)
+        quota_title = QLabel("Quota"); quota_title.setAlignment(Qt.AlignCenter); quota_title.setMinimumHeight(56)
         quota_title.setStyleSheet("QLabel { background:#f0f8ff; color:#2c3e50; font-weight:900; font-size:20px; padding:12px 24px; border:2px solid #3498db; border-radius:10px; }")
         start_row.addWidget(quota_title)
         self.lbl_quota_card = QLabel("— mm"); self.lbl_quota_card.setAlignment(Qt.AlignCenter)
         self.lbl_quota_card.setMinimumHeight(56); self.lbl_quota_card.setMinimumWidth(320)
-        self.lbl_quota_card.setStyleSheet("QLabel { background:#e8f4ff; color:#1f2d3d; font-weight:900; font-size:28px; padding:12px 40px; border:2px solid #3498db; border-radius:10px; }")
+        self.lbl_quota_card.setStyleSheet(
+            "QLabel { background:#e8f4ff; color:#1f2d3d; font-weight:900; font-size:28px; padding:12px 40px; border:2px solid #3498db; border-radius:10px; }")
         start_row.addWidget(self.lbl_quota_card)
         start_row.addStretch(1)
         ll.addLayout(start_row)
@@ -402,14 +416,15 @@ class AutomaticoPage(QWidget):
 
         right = QFrame(); right.setFixedWidth(PANEL_W)
         rl = QVBoxLayout(right); rl.setContentsMargins(0,0,0,0); rl.setSpacing(8)
+
         cnt_box = QFrame(); cnt_box.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         cnl = QVBoxLayout(cnt_box); cnl.setContentsMargins(12,12,12,12)
-        cnl.addWidget(QLabel("NUMERO PEZZI", alignment=Qt.AlignLeft))
+        cnl.addWidget(QLabel("NUMERO PEZZI"))
         big = "font-size:24px; font-weight:800;"
-        r1 = QHBoxLayout(); r1.addWidget(QLabel("Target:")); self.lbl_target = QLabel("0"); self.lbl_target.setStyleSheet(big); r1.addWidget(self.lbl_target); r1.addStretch(1)
-        r2 = QHBoxLayout(); r2.addWidget(QLabel("Tagliati:")); self.lbl_done = QLabel("0"); self.lbl_done.setStyleSheet(big+"color:#2ecc71;"); r2.addWidget(self.lbl_done); r2.addStretch(1)
-        r3 = QHBoxLayout(); r3.addWidget(QLabel("Rimanenti:")); self.lbl_remaining = QLabel("-"); self.lbl_remaining.setStyleSheet(big+"color:#f39c12;"); r3.addWidget(self.lbl_remaining); r3.addStretch(1)
-        cnl.addLayout(r1); cnl.addLayout(r2); cnl.addLayout(r3)
+        row1 = QHBoxLayout(); row1.addWidget(QLabel("Target:")); self.lbl_target = QLabel("0"); self.lbl_target.setStyleSheet(big); row1.addWidget(self.lbl_target); row1.addStretch(1)
+        row2 = QHBoxLayout(); row2.addWidget(QLabel("Tagliati:")); self.lbl_done = QLabel("0"); self.lbl_done.setStyleSheet(big+"color:#2ecc71;"); row2.addWidget(self.lbl_done); row2.addStretch(1)
+        row3 = QHBoxLayout(); row3.addWidget(QLabel("Rimanenti:")); self.lbl_remaining = QLabel("-"); self.lbl_remaining.setStyleSheet(big+"color:#f39c12;"); row3.addWidget(self.lbl_remaining); row3.addStretch(1)
+        cnl.addLayout(row1); cnl.addLayout(row2); cnl.addLayout(row3)
         rl.addWidget(cnt_box,0)
 
         st_wrap = QFrame(); st_wrap.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
@@ -420,10 +435,13 @@ class AutomaticoPage(QWidget):
         lab_box = QFrame(); lab_box.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
         lb = QVBoxLayout(lab_box); lb.setContentsMargins(10,10,10,10); lb.setSpacing(6)
         lb.addWidget(QLabel("Etichette"))
-        self.chk_label = QCheckBox("Stampa etichetta dopo taglio"); self.chk_label.setChecked(self._label_enabled)
-        self.chk_label.toggled.connect(self._on_label_toggle); lb.addWidget(self.chk_label)
-        btn_test = QPushButton("Test etichetta"); btn_test.clicked.connect(self._test_label); lb.addWidget(btn_test)
+        self.chk_label = QCheckBox("Stampa etichetta dopo taglio")
+        self.chk_label.setChecked(self._label_enabled)
+        self.chk_label.toggled.connect(self._on_label_toggle)
+        lb.addWidget(self.chk_label)
+        btn_label_test = QPushButton("Test etichetta"); btn_label_test.clicked.connect(self._test_label); lb.addWidget(btn_label_test)
         rl.addWidget(lab_box,0)
+
         rl.addStretch(1)
         body.addWidget(right,0)
 
@@ -444,15 +462,16 @@ class AutomaticoPage(QWidget):
 
     def _toast(self, msg: str, level: str = "info"):
         if hasattr(self.appwin, "toast"):
-            with contextlib.suppress(Exception): self.appwin.toast.show(msg, level, 2500)
+            with contextlib.suppress(Exception):
+                self.appwin.toast.show(msg, level, 2500)
         else:
             logger.info("%s: %s", level.upper(), msg)
 
     # ---------------- Etichette ----------------
     def _on_label_toggle(self, on: bool):
         self._label_enabled = bool(on)
-        cfg = dict(read_settings()); cfg["label_enabled"] = self._label_enabled; write_settings(cfg)
-        self._label_printer.update_settings(cfg)
+        cfg = dict(read_settings()); cfg["label_enabled"] = self._label_enabled
+        write_settings(cfg); self._label_printer.update_settings(cfg)
 
     def _test_label(self):
         piece = {"seq_id":999,"profile":"DEMO","element":"Montante #1",
@@ -496,7 +515,7 @@ class AutomaticoPage(QWidget):
                                             qrcode_data=qr_data,
                                             qrcode_module_size=qr_mod)
 
-    # ---------------- Import Cutlist ----------------
+    # ---------------- Import cutlist ----------------
     def _import_cutlist(self):
         dlg = OrdersManagerDialog(self, self._orders)
         if dlg.exec() and getattr(dlg,"selected_order_id",None):
@@ -531,7 +550,7 @@ class AutomaticoPage(QWidget):
         seq_counter = 1
         for prof in order:
             r = self.tbl_cut.rowCount(); self.tbl_cut.insertRow(r)
-            for col, it in enumerate(self._header_items(prof)): self.tbl_cut.setItem(r, col, it)
+            for col,it in enumerate(self._header_items(prof)): self.tbl_cut.setItem(r,col,it)
             for c in groups[prof]:
                 r = self.tbl_cut.rowCount(); self.tbl_cut.insertRow(r)
                 Lmm = float(c.get("length_mm", 0.0)); ax = float(c.get("ang_sx", 0.0)); ad = float(c.get("ang_dx", 0.0)); qty = int(c.get("qty", 0))
@@ -548,7 +567,7 @@ class AutomaticoPage(QWidget):
                 cells[0].setData(Qt.UserRole, dict(c))
                 seq_counter += 1
                 for it in cells: it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                for col, it in enumerate(cells): self.tbl_cut.setItem(r, col, it)
+                for col,it in enumerate(cells): self.tbl_cut.setItem(r,col,it)
         self._mode = "idle"
         self._sig_total_counts.clear()
         self._cur_sig = None
@@ -557,11 +576,11 @@ class AutomaticoPage(QWidget):
         self._hide_banner()
         self._update_counters_ui()
 
-    # ---------------- Ottimizzazione ----------------
+    # ---------------- Ottimizzazione / Sequenza ----------------
     def _on_optimize_clicked(self):
         prof = None
         r = self.tbl_cut.currentRow()
-        if r is not None and r >= 0 and self._row_is_header(r):
+        if r is not None and r >=0 and self._row_is_header(r):
             it = self.tbl_cut.item(r,1); prof = it.text().strip() if it else None
         if not prof: prof = self._find_first_header_profile()
         if not prof:
@@ -643,7 +662,7 @@ class AutomaticoPage(QWidget):
         max_angle = self._kerf_max_angle_deg
         max_factor = self._kerf_max_factor
 
-        pieces.sort(key=lambda x:(-x["len"], x["ax"], x["ad"]))  # ordine iniziale per packing
+        pieces.sort(key=lambda x:(-x["len"], x["ax"], x["ad"]))
 
         if solver in ("ILP_KNAP","ILP"):
             bars, rem = pack_bars_knapsack_ilp(
@@ -664,8 +683,7 @@ class AutomaticoPage(QWidget):
                                         angle_tol, tail_bars=tail_n, time_limit_s=tail_t,
                                         max_angle=max_angle, max_factor=max_factor)
 
-        # Ordinamento interno barre (decrescente lunghezza)
-        for b in bars:
+        for b in bars:  # sort decrescente lunghezze
             try: b.sort(key=lambda p:(-float(p["len"]), float(p["ax"]), float(p["ad"])))
             except Exception: pass
 
@@ -679,8 +697,7 @@ class AutomaticoPage(QWidget):
         issues = self._verify_sequence_order()
         if issues:
             self._toast(f"Avviso sequenza ({len(issues)} problemi).", "warn")
-            for line in issues[:10]:
-                logger.warning("SEQ ISSUE: %s", line)
+            for line in issues[:10]: logger.warning("SEQ ISSUE: %s", line)
         else:
             self._toast("Sequenza OK (decrescente per barra).", "ok")
         self._debug_dump_sequence()
@@ -851,7 +868,7 @@ class AutomaticoPage(QWidget):
         with contextlib.suppress(Exception):
             setattr(self.machine,"semi_auto_target_pieces",1); setattr(self.machine,"semi_auto_count_done",0)
 
-    # ---------------- Ciclo / avanzamento ----------------
+    # ---------------- Ciclo / avanzamento taglio ----------------
     def _try_lock_on_inpos(self):
         if not self._lock_on_inpos: return
         tol = float(read_settings().get("inpos_tol_mm",0.20))
@@ -927,6 +944,11 @@ class AutomaticoPage(QWidget):
 
         current_piece = self._seq_plan[self._seq_pos] if (0 <= self._seq_pos < len(self._seq_plan)) else None
         if current_piece:
+            # Decremento quantità tabella (match per profilo+lunghezza+angoli)
+            self._dec_row_qty_match_str(current_piece["profile"],
+                                        f"{current_piece['len']:.2f}",
+                                        f"{current_piece['ax']:.1f}",
+                                        f"{current_piece['ad']:.1f}")
             self._emit_label(current_piece)
 
         if new_done >= tgt:
@@ -959,7 +981,49 @@ class AutomaticoPage(QWidget):
             return
         self._update_counters_ui()
 
-    # ---------------- Contatori ----------------
+    # ---------------- Decremento quantità / highlight ----------------
+    def _dec_row_qty_match_str(self, profile: str, Ls: str, Axs: str, Ads: str) -> bool:
+        """Trova la prima riga (non header) con profilo, lunghezza, angoli corrispondenti e decrementa la quantità."""
+        n = self.tbl_cut.rowCount()
+        for r in range(n):
+            if self._row_is_header(r): continue
+            try:
+                p = (self.tbl_cut.item(r,1).text() or "").strip()
+                Ltxt = (self.tbl_cut.item(r,3).text() or "").strip()
+                Axtxt = (self.tbl_cut.item(r,4).text() or "").strip()
+                Adtxt = (self.tbl_cut.item(r,5).text() or "").strip()
+                itq = self.tbl_cut.item(r,6)
+                if not itq: continue
+                q = int((itq.text() or "0").strip())
+            except Exception:
+                continue
+            if p==profile and Ltxt==Ls and Axtxt==Axs and Adtxt==Ads and q>0:
+                new_q = q - 1
+                self.tbl_cut.setItem(r,6,QTableWidgetItem(str(new_q)))
+                self.tbl_cut.item(r,6).setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                if new_q == 0:
+                    self._highlight_row_finished(r)
+                else:
+                    self._normal_row_style(r)
+                self.tbl_cut.selectRow(r)
+                return True
+        return False
+
+    def _highlight_row_finished(self, row: int):
+        for c in range(self.tbl_cut.columnCount()):
+            it = self.tbl_cut.item(row,c)
+            if it:
+                it.setBackground(QBrush(QColor("#2ecc71")))
+                it.setForeground(QBrush(Qt.black))
+
+    def _normal_row_style(self, row: int):
+        # Ripristino stile alternato (usa palette standard)
+        for c in range(self.tbl_cut.columnCount()):
+            it = self.tbl_cut.item(row,c)
+            if it:
+                it.setBackground(QBrush(Qt.white))
+                it.setForeground(QBrush(Qt.black))
+
     def _sig_remaining_from_table(self, sig: Tuple[str,float,float,float]) -> int:
         prof,L2,ax1,ad1 = sig
         rem = 0
@@ -975,9 +1039,7 @@ class AutomaticoPage(QWidget):
                 continue
             if p==prof and L==L2 and ax==ax1 and ad==ad1:
                 rem += max(0,q)
-        total = self._sig_total_counts.get(sig,0)
-        done = total - rem
-        return max(total - done,0)
+        return rem
 
     def _update_counters_ui(self):
         if self._mode=="plan" and self._cur_sig:
@@ -988,6 +1050,7 @@ class AutomaticoPage(QWidget):
             self.lbl_done.setText(str(done))
             self.lbl_remaining.setText(str(remaining))
             return
+        # Fallback (modalità non plan)
         done_m = int(getattr(self.machine,"semi_auto_count_done",0) or 0)
         target_m = int(getattr(self.machine,"semi_auto_target_pieces",0) or 0)
         rem_m = max(target_m - done_m, 0)
@@ -995,7 +1058,7 @@ class AutomaticoPage(QWidget):
         self.lbl_done.setText(str(done_m))
         self.lbl_remaining.setText(str(rem_m))
 
-    # ---------------- Tabella / eventi ----------------
+    # ---------------- Tabella eventi ----------------
     def _row_is_header(self, row: int) -> bool:
         it = self.tbl_cut.item(row,1)
         return bool(it) and not bool(it.flags() & Qt.ItemIsSelectable)
@@ -1004,7 +1067,8 @@ class AutomaticoPage(QWidget):
         if self._row_is_header(row):
             profile = self.tbl_cut.item(row,1).text().strip()
             if profile:
-                self._optimize_profile(profile); self._open_opt_dialog(profile)
+                self._optimize_profile(profile)
+                self._open_opt_dialog(profile)
             return
 
     def _on_cell_entered(self, row: int, col: int):
@@ -1014,7 +1078,7 @@ class AutomaticoPage(QWidget):
         try: q = int((it.text() or "0").strip())
         except Exception: q = 0
         if q==0:
-            QToolTip.showText(QCursor.pos(),"Quantità a zero (info).", self.tbl_cut)
+            QToolTip.showText(QCursor.pos(),"Riga completata (Q=0).", self.tbl_cut)
 
     def _on_current_cell_changed(self, cur_row: int, _cur_col: int, _prev_row: int, _prev_col: int):
         try:
@@ -1070,7 +1134,8 @@ class AutomaticoPage(QWidget):
         enc = getattr(self.machine,"encoder_position", None)
         if enc is None: enc = getattr(self.machine,"position_current", None)
         try: val = float(enc); self.lbl_quota_card.setText(f"{val:.2f} mm")
-        except Exception: self.lbl_quota_card.setText("— mm")
+        except Exception:
+            self.lbl_quota_card.setText("— mm")
 
     # ---------------- IO helpers ----------------
     def _read_input(self, key: str) -> bool:
