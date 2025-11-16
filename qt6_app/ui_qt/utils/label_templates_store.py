@@ -28,12 +28,20 @@ def _ensure_dir():
 
 def _read_raw() -> Dict[str, Any]:
     if not os.path.exists(_STORE_FILE):
-        return {"templates": _DEFAULT_TEMPLATES.copy(), "associations": {}}
+        return {"templates": _DEFAULT_TEMPLATES.copy(), "associations": {"by_profile": {}, "by_element": {}}}
     try:
         with open(_STORE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception:
-        return {"templates": _DEFAULT_TEMPLATES.copy(), "associations": {}}
+        data = {"templates": _DEFAULT_TEMPLATES.copy(), "associations": {}}
+    # Normalizza struttura associazioni
+    assoc = data.get("associations") or {}
+    if not isinstance(assoc, dict):
+        assoc = {}
+    assoc.setdefault("by_profile", {})
+    assoc.setdefault("by_element", {})
+    data["associations"] = assoc
+    return data
 
 def _write_raw(data: Dict[str, Any]):
     _ensure_dir()
@@ -65,8 +73,8 @@ def upsert_template(name: str, paper: str, rotate: int, font_size: int, cut: boo
         "lines": list(lines),
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     }
-    if qrcode:
-        item["qrcode"] = dict(qrcode)
+    if qrcode and isinstance(qrcode, dict) and (qrcode.get("data") or "").strip():
+        item["qrcode"] = {"data": str(qrcode.get("data")), "module_size": int(qrcode.get("module_size", 4))}
     templates[name] = item
     data["templates"] = templates
     _write_raw(data)
@@ -79,14 +87,32 @@ def delete_template(name: str) -> bool:
     if name in templates:
         del templates[name]
         assoc = data.get("associations", {}) or {}
-        for k in list(assoc.keys()):
-            v = assoc[k]
+        # Pulisci in by_profile
+        bp = assoc.get("by_profile", {}) or {}
+        for k in list(bp.keys()):
+            v = bp[k]
             if isinstance(v, list):
-                assoc[k] = [t for t in v if t != name]
-                if not assoc[k]:
-                    del assoc[k]
+                bp[k] = [t for t in v if t != name]
+                if not bp[k]:
+                    del bp[k]
             elif v == name:
-                del assoc[k]
+                del bp[k]
+        assoc["by_profile"] = bp
+        # Pulisci in by_element
+        be = assoc.get("by_element", {}) or {}
+        for prof, emap in list(be.items()):
+            if not isinstance(emap, dict):
+                del be[prof]; continue
+            for el, lst in list(emap.items()):
+                if isinstance(lst, list):
+                    new = [t for t in lst if t != name]
+                    if new:
+                        emap[el] = new
+                    else:
+                        del emap[el]
+            if not emap:
+                del be[prof]
+        assoc["by_element"] = be
         data["associations"] = assoc
         data["templates"] = templates
         _write_raw(data)
@@ -106,75 +132,152 @@ def duplicate_template(src_name: str, new_name: str) -> bool:
                     qrcode=src.get("qrcode"))
     return True
 
-def list_associations() -> Dict[str, Union[str, List[str]]]:
+def list_associations() -> Dict[str, Any]:
     data = _read_raw()
-    return dict(data.get("associations", {}) or {})
+    return dict(data.get("associations", {}) or {"by_profile": {}, "by_element": {}})
 
-def set_association(profile_name: str, template_name: str):
-    """
-    Aggiunge (accumula) il template all'associazione profilo.
-    Il valore in JSON diventa una lista se si associano più template allo stesso profilo.
-    """
+# Associazioni per profilo (multi-template)
+def set_profile_association(profile_name: str, template_name: str):
     data = _read_raw()
     templates = data.get("templates", {}) or {}
     if template_name not in templates:
         raise ValueError("Template non esistente.")
     assoc = data.get("associations", {}) or {}
-    cur = assoc.get(profile_name)
+    bp = assoc.get("by_profile", {}) or {}
+    cur = bp.get(profile_name)
     if cur is None:
-        assoc[profile_name] = [template_name]
+        bp[profile_name] = [template_name]
     elif isinstance(cur, list):
         if template_name not in cur:
             cur.append(template_name)
-            assoc[profile_name] = cur
+            bp[profile_name] = cur
     else:
-        # string → lista
         if cur != template_name:
-            assoc[profile_name] = [cur, template_name]
+            bp[profile_name] = [cur, template_name]
+    assoc["by_profile"] = bp
     data["associations"] = assoc
     _write_raw(data)
 
-def remove_association(profile_name: str, template_name: str):
+def remove_profile_association(profile_name: str, template_name: str):
     data = _read_raw()
     assoc = data.get("associations", {}) or {}
-    cur = assoc.get(profile_name)
+    bp = assoc.get("by_profile", {}) or {}
+    cur = bp.get(profile_name)
     if isinstance(cur, list):
         cur = [t for t in cur if t != template_name]
         if cur:
-            assoc[profile_name] = cur
+            bp[profile_name] = cur
         else:
-            del assoc[profile_name]
+            del bp[profile_name]
     elif cur == template_name:
-        del assoc[profile_name]
+        del bp[profile_name]
+    assoc["by_profile"] = bp
     data["associations"] = assoc
     _write_raw(data)
 
-def clear_association(profile_name: str):
+def clear_profile_association(profile_name: str):
     data = _read_raw()
     assoc = data.get("associations", {}) or {}
-    if profile_name in assoc:
-        del assoc[profile_name]
-        data["associations"] = assoc
-        _write_raw(data)
+    bp = assoc.get("by_profile", {}) or {}
+    if profile_name in bp:
+        del bp[profile_name]
+    assoc["by_profile"] = bp
+    data["associations"] = assoc
+    _write_raw(data)
 
-def resolve_templates_for_profile(profile_name: str) -> List[Dict[str, Any]]:
+# Associazioni per elemento (scopo: profilo + nome elemento) — multi-template
+def set_element_association(profile_name: str, element_name: str, template_name: str):
+    data = _read_raw()
+    templates = data.get("templates", {}) or {}
+    if template_name not in templates:
+        raise ValueError("Template non esistente.")
+    assoc = data.get("associations", {}) or {}
+    be = assoc.get("by_element", {}) or {}
+    emap = be.get(profile_name) or {}
+    lst = emap.get(element_name)
+    if lst is None:
+        emap[element_name] = [template_name]
+    elif isinstance(lst, list):
+        if template_name not in lst:
+            lst.append(template_name)
+            emap[element_name] = lst
+    else:
+        if lst != template_name:
+            emap[element_name] = [lst, template_name]
+    be[profile_name] = emap
+    assoc["by_element"] = be
+    data["associations"] = assoc
+    _write_raw(data)
+
+def remove_element_association(profile_name: str, element_name: str, template_name: str):
+    data = _read_raw()
+    assoc = data.get("associations", {}) or {}
+    be = assoc.get("by_element", {}) or {}
+    emap = be.get(profile_name) or {}
+    lst = emap.get(element_name)
+    if isinstance(lst, list):
+        lst = [t for t in lst if t != template_name]
+        if lst:
+            emap[element_name] = lst
+        else:
+            del emap[element_name]
+    elif lst == template_name:
+        del emap[element_name]
+    if emap:
+        be[profile_name] = emap
+    else:
+        if profile_name in be:
+            del be[profile_name]
+    assoc["by_element"] = be
+    data["associations"] = assoc
+    _write_raw(data)
+
+def clear_element_association(profile_name: str, element_name: str):
+    data = _read_raw()
+    assoc = data.get("associations", {}) or {}
+    be = assoc.get("by_element", {}) or {}
+    emap = be.get(profile_name) or {}
+    if element_name in emap:
+        del emap[element_name]
+    if emap:
+        be[profile_name] = emap
+    else:
+        if profile_name in be:
+            del be[profile_name]
+    assoc["by_element"] = be
+    data["associations"] = assoc
+    _write_raw(data)
+
+# Resolver: per elemento → per profilo → default
+def resolve_templates(profile_name: str, element_name: Optional[str] = None) -> List[Dict[str, Any]]:
     assoc = list_associations()
-    v = assoc.get(profile_name)
-    if isinstance(v, list):
-        out: List[Dict[str, Any]] = []
-        for n in v:
-            t = get_template(n)
-            if t:
-                out.append(t)
-        if out:
-            return out
-    elif isinstance(v, str):
-        t = get_template(v)
-        if t:
-            return [t]
-    # fallback default
-    return [get_template("DEFAULT") or _DEFAULT_TEMPLATES["DEFAULT"]]
+    out: List[Dict[str, Any]] = []
+
+    if element_name:
+        be = assoc.get("by_element", {}) or {}
+        emap = be.get(profile_name) or {}
+        lst = emap.get(element_name)
+        if isinstance(lst, list):
+            for n in lst:
+                t = get_template(n)
+                if t:
+                    out.append(t)
+    if not out:
+        bp = assoc.get("by_profile", {}) or {}
+        lst = bp.get(profile_name)
+        if isinstance(lst, list):
+            for n in lst:
+                t = get_template(n)
+                if t:
+                    out.append(t)
+    if not out:
+        t = get_template("DEFAULT") or _DEFAULT_TEMPLATES["DEFAULT"]
+        out = [t]
+    return out
+
+# Compat vecchie funzioni
+def resolve_templates_for_profile(profile_name: str) -> List[Dict[str, Any]]:
+    return resolve_templates(profile_name, None)
 
 def resolve_template_for_profile(profile_name: str) -> Dict[str, Any]:
-    # compat: primo della lista
-    return resolve_templates_for_profile(profile_name)[0]
+    return resolve_templates(profile_name, None)[0]
