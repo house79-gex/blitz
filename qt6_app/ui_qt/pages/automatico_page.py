@@ -1,10 +1,11 @@
-# v6.3 — Fix SyntaxError (line 230), stampa etichette corretta,
-# sequenza taglio decrescente barra per barra, chiusura ottimizzazione su HOME.
+# v6.3.1 — Ripristinato _open_opt_config, aggiunta diagnostica sequenza (dump console),
+# sequenza decrescente lunghezze per barra, chiusura dialog ottimizzazione su HOME.
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
 import time, contextlib
 from math import tan, radians
+import logging
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
@@ -59,6 +60,8 @@ except Exception:
             ]
         }]
 
+logger = logging.getLogger("automatico_page")
+
 try:
     POL_EXP = QSizePolicy.Policy.Expanding
 except AttributeError:
@@ -97,7 +100,7 @@ class OptimizationConfigDialog(QDialog):
         self.ed_kerf = QLineEdit(kerf);               form.addRow("Kerf base (mm):", self.ed_kerf)
         self.ed_ripasso = QLineEdit(ripasso);         form.addRow("Ripasso (mm):", self.ed_ripasso)
         self.cmb_solver = QComboBox(); self.cmb_solver.addItems(["ILP_KNAP", "ILP", "BFD"])
-        self.cmb_solver.setCurrentText("ILP_KNAP" if solver not in ("ILP", "BFD") else solver); form.addRow("Solver:", self.cmb_solver)
+        self.cmb_solver.setCurrentText("ILP_KNAP" if solver not in ("ILP","BFD") else solver); form.addRow("Solver:", self.cmb_solver)
         self.ed_time = QLineEdit(tlimit);             form.addRow("Time limit solver (s):", self.ed_time)
         self.ed_tail_b = QLineEdit(tail_b);           form.addRow("Refine ultime barre (N):", self.ed_tail_b)
         self.ed_tail_t = QLineEdit(tail_t);           form.addRow("Refine time (s):", self.ed_tail_t)
@@ -120,10 +123,10 @@ class OptimizationConfigDialog(QDialog):
 
     def _save_and_close(self):
         cfg = dict(read_settings())
-        def f(txt, d):  # float helper
+        def f(txt, d): 
             try: return float((txt or "").replace(",", "."))
             except Exception: return d
-        def i(txt, d):  # int helper
+        def i(txt, d):
             try: return int(float((txt or "").replace(",", ".")))
             except Exception: return d
         cfg["opt_stock_mm"] = f(self.ed_stock.text(), 6500.0)
@@ -185,7 +188,7 @@ class LabelPrinter:
                     qrcode_data: Optional[str] = None,
                     qrcode_module_size: int = 4) -> bool:
         if self._pil is None:
-            if self.toast: self.toast("Pillow non disponibile: impossibile generare etichetta.", "warn")
+            if self.toast: self.toast("Pillow non disponibile: etichetta non generata.", "warn")
             return False
         try:
             Image = self._pil["Image"]; ImageDraw = self._pil["ImageDraw"]; ImageFont = self._pil["ImageFont"]
@@ -213,14 +216,14 @@ class LabelPrinter:
             for line in lines:
                 draw.text((x_offset, y), str(line), fill=0, font=font)
                 y += int(fs * 1.2)
-            if use_rotate in (90, 180, 270):
-                with contextlib.suppress(Exception):
-                    img = img.rotate(use_rotate, expand=True)
-            # Anteprima se non configurato
+            if use_rotate in (90,180,270):
+                with contextlib.suppress(Exception): img = img.rotate(use_rotate, expand=True)
+
             if (not self.enabled) or (self._ql is None) or (not self.printer):
                 if self.preview_if_no_printer and self.toast:
                     self.toast("Simulazione etichetta (stampante non configurata).", "info")
                 return True
+
             BrotherQLRaster = self._ql["BrotherQLRaster"]; backend_factory = self._ql["backend_factory"]
             from brother_ql.conversion import convert
             qlr = BrotherQLRaster(self.model); qlr.exception_on_warning = False
@@ -229,8 +232,7 @@ class LabelPrinter:
             backend = backend_factory(self.backend)
             be = backend(printer_identifier=self.printer)
             be.write(instr)
-            with contextlib.suppress(Exception):
-                be.dispose()
+            with contextlib.suppress(Exception): be.dispose()
             return True
         except Exception as e:
             if self.toast: self.toast(f"Errore stampa: {e}", "err")
@@ -287,8 +289,8 @@ class AutomaticoPage(QWidget):
         self._auto_continue_enabled = bool(cfg.get("opt_auto_continue_enabled", False))
         self._auto_continue_across_bars = bool(cfg.get("opt_auto_continue_across_bars", False))
         self._strict_bar_sequence = bool(cfg.get("opt_strict_bar_sequence", True))
-        self._sig_total_counts: Dict[Tuple[str, float, float, float], int] = {}
-        self._cur_sig: Optional[Tuple[str, float, float, float]] = None
+        self._sig_total_counts: Dict[Tuple[str,float,float,float], int] = {}
+        self._cur_sig: Optional[Tuple[str,float,float,float]] = None
 
         try: self._fq_offset_mm = float(read_settings().get("semi_offset_mm", 120.0))
         except Exception: self._fq_offset_mm = 120.0
@@ -320,6 +322,21 @@ class AutomaticoPage(QWidget):
         try: return float(cfg.get(key, dflt))
         except Exception: return dflt
 
+    # AGGIUNTO: metodo ripristinato per configurazione
+    def _open_opt_config(self):
+        dlg = OptimizationConfigDialog(self)
+        if dlg.exec():
+            self._toast("Config ottimizzazione aggiornata.", "ok")
+            cfg = read_settings()
+            self._kerf_max_angle_deg = self._cfg_float(cfg, "opt_kerf_max_angle_deg", 60.0)
+            self._kerf_max_factor = self._cfg_float(cfg, "opt_kerf_max_factor", 2.0)
+            self._knap_cons_angle_deg = self._cfg_float(cfg, "opt_knap_conservative_angle_deg", 45.0)
+            self._ripasso_mm = self._cfg_float(cfg, "opt_ripasso_mm", 0.0)
+            self._warn_overflow_mm = self._cfg_float(cfg, "opt_warn_overflow_mm", 0.5)
+            self._auto_continue_enabled = bool(cfg.get("opt_auto_continue_enabled", False))
+            self._auto_continue_across_bars = bool(cfg.get("opt_auto_continue_across_bars", False))
+            self._strict_bar_sequence = bool(cfg.get("opt_strict_bar_sequence", True))
+
     def _build(self):
         root = QVBoxLayout(self); root.setContentsMargins(8,8,8,8); root.setSpacing(6)
         root.addWidget(Header(self.appwin, "AUTOMATICO", mode="default",
@@ -347,9 +364,9 @@ class AutomaticoPage(QWidget):
         self.tbl_cut = QTableWidget(0,8)
         self.tbl_cut.setHorizontalHeaderLabels(["SeqID","Profilo","Elemento","Lunghezza (mm)","Ang SX","Ang DX","Q.tà","Note"])
         hdr = self.tbl_cut.horizontalHeader()
-        for i, mode in enumerate([QHeaderView.ResizeToContents,QHeaderView.Stretch,QHeaderView.Stretch,
-                                  QHeaderView.ResizeToContents,QHeaderView.ResizeToContents,QHeaderView.ResizeToContents,
-                                  QHeaderView.ResizeToContents,QHeaderView.Stretch]):
+        for i,mode in enumerate([QHeaderView.ResizeToContents,QHeaderView.Stretch,QHeaderView.Stretch,
+                                 QHeaderView.ResizeToContents,QHeaderView.ResizeToContents,QHeaderView.ResizeToContents,
+                                 QHeaderView.ResizeToContents,QHeaderView.Stretch]):
             hdr.setSectionResizeMode(i, mode)
         self.tbl_cut.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_cut.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -427,8 +444,9 @@ class AutomaticoPage(QWidget):
 
     def _toast(self, msg: str, level: str = "info"):
         if hasattr(self.appwin, "toast"):
-            with contextlib.suppress(Exception):
-                self.appwin.toast.show(msg, level, 2500)
+            with contextlib.suppress(Exception): self.appwin.toast.show(msg, level, 2500)
+        else:
+            logger.info("%s: %s", level.upper(), msg)
 
     # ---------------- Etichette ----------------
     def _on_label_toggle(self, on: bool):
@@ -539,7 +557,7 @@ class AutomaticoPage(QWidget):
         self._hide_banner()
         self._update_counters_ui()
 
-    # ---------------- Ottimizzazione & Sequenza ----------------
+    # ---------------- Ottimizzazione ----------------
     def _on_optimize_clicked(self):
         prof = None
         r = self.tbl_cut.currentRow()
@@ -646,7 +664,7 @@ class AutomaticoPage(QWidget):
                                         angle_tol, tail_bars=tail_n, time_limit_s=tail_t,
                                         max_angle=max_angle, max_factor=max_factor)
 
-        # Ordinamento interno barre (decrescente)
+        # Ordinamento interno barre (decrescente lunghezza)
         for b in bars:
             try: b.sort(key=lambda p:(-float(p["len"]), float(p["ax"]), float(p["ad"])))
             except Exception: pass
@@ -660,10 +678,12 @@ class AutomaticoPage(QWidget):
         self._build_sequential_plan()
         issues = self._verify_sequence_order()
         if issues:
-            self._toast(f"Avviso: anomalie sequenza ({len(issues)}).", "warn")
+            self._toast(f"Avviso sequenza ({len(issues)} problemi).", "warn")
+            for line in issues[:10]:
+                logger.warning("SEQ ISSUE: %s", line)
         else:
             self._toast("Sequenza OK (decrescente per barra).", "ok")
-
+        self._debug_dump_sequence()
         self._mode = "plan"
         self._seq_pos = -1
         self._cur_sig = None
@@ -689,7 +709,6 @@ class AutomaticoPage(QWidget):
 
     def _verify_sequence_order(self) -> List[str]:
         issues: List[str] = []
-        # Per-bar lunghezze non crescenti
         for bi, bar in enumerate(self._bars):
             prev = None
             for p in bar:
@@ -697,7 +716,6 @@ class AutomaticoPage(QWidget):
                 if prev is not None and L > prev + 1e-6:
                     issues.append(f"Barra {bi+1}: {L} > {prev}")
                 prev = L
-        # Ordine barre non retrocede
         last_bar = -1
         for item in self._seq_plan:
             b = item["bar"]
@@ -705,6 +723,12 @@ class AutomaticoPage(QWidget):
                 issues.append(f"Retrocesso da barra {last_bar+1} a {b+1}")
             last_bar = b
         return issues
+
+    def _debug_dump_sequence(self):
+        logger.info("=== SEQUENZA TAGLIO (profilo=%s) ===", self._plan_profile)
+        for it in self._seq_plan:
+            logger.info("SEQ %4d | BAR %2d | LEN %.2f | AX %.1f | AD %.1f | ELEM %s",
+                        it["seq_id"], it["bar"]+1, it["len"], it["ax"], it["ad"], it["element"])
 
     def _next_seq_piece(self) -> Optional[Dict[str, Any]]:
         nxt = self._seq_pos + 1
