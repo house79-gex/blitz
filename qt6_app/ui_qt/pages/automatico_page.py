@@ -1,4 +1,4 @@
-# v3 — sequenza indicizzata, auto-continue opzionale, stampa etichette con template (FIX parentesi _effective_position_length)
+# v3 — sequenza indicizzata, auto-continue opzionale, stampa etichette con template (fix NameError/SyntaxError)
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
@@ -236,7 +236,6 @@ class AutomaticoPage(QWidget):
 
         self.tbl_cut: Optional[QTableWidget] = None
         self.lbl_target: Optional[QLabel] = None
-        thead
         self.lbl_done: Optional[QLabel] = None
         self.lbl_remaining: Optional[QLabel] = None
         self.status: Optional[StatusPanel] = None
@@ -756,7 +755,6 @@ class AutomaticoPage(QWidget):
     def _effective_position_length(self, external_len_mm: float, ang_sx: float, ang_dx: float, thickness_mm: float) -> float:
         L = float(external_len_mm); th = max(0.0, float(thickness_mm))
         if th <= 0.0: return max(0.0, L)
-        # FIX: rimosse parentesi extra su c_sx/c_dx
         with contextlib.suppress(Exception):
             c_sx = th * tan(radians(abs(float(ang_sx))))
         if 'c_sx' not in locals(): c_sx = 0.0
