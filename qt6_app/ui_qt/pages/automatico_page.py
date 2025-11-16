@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QToolTip
 )
 from PySide6.QtCore import Qt, QTimer
+    # noqa: E402
 from PySide6.QtGui import QKeySequence, QShortcut, QColor, QBrush, QFont, QKeyEvent, QCursor
 
 from ui_qt.widgets.header import Header
@@ -1140,7 +1141,7 @@ class AutomaticoPage(QWidget):
         _, ok, min_q, _ = self._enforce_length_limits(eff_len)
         return (not ok) and (eff_len < float(min_q) - 1e-6)
 
-        def _simulate_cut_once(self):
+    def _simulate_cut_once(self):
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
         done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
         remaining = max(tgt - done, 0)
@@ -1149,11 +1150,63 @@ class AutomaticoPage(QWidget):
             self._dec_selected_row_qty()
             return
 
-        # Gestione Fuori Quota / Extra-Corto invariata (omessa qui per brevità)
+        # Gestione Fuori Quota / Extra-Corto attiva
         if self._fq_state.get("active", False):
-            # ... (mantieni il blocco già presente nella tua versione aggiornata)
-            pass  # <-- sostituisci con il tuo blocco FQ/EXTRA-CORTO
+            mode = self._fq_state.get("mode", "")
+            phase = self._fq_state.get("phase", "")
+            sub = self._fq_state.get("sub", "")
 
+            if mode == "fq":
+                if phase == "intest":
+                    # Dopo intestatura, riposiziona per offset finale con SX attiva (taglio a misura)
+                    self._set_heads_taglio_misura()
+                    ax = float(self._fq_state.get("ax", 0.0))
+                    ad = float(self._fq_state.get("ad", 0.0))
+                    prof = str(self._fq_state.get("profile", ""))
+                    elem = str(self._fq_state.get("element", ""))
+                    target2 = float(self._fq_state.get("final_target", 0.0))
+                    self._show_banner("Posizionare elemento in battuta offset Fuori quota", "warn")
+                    self._post_cut_reposition(target2, ax, ad, prof, elem)
+                    try:
+                        setattr(self.machine, "semi_auto_target_pieces", 1)
+                        setattr(self.machine, "semi_auto_count_done", 0)
+                    except Exception: pass
+                    self._fq_state["phase"] = "offset"
+                    return
+                elif phase == "offset":
+                    # Completato FQ: reset stato
+                    self._enable_both_heads()
+                    self._hide_banner()
+                    self._fq_state = {"active": False, "mode": "", "phase": "", "sub": "", "final_target": 0.0,
+                                      "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
+                    self._last_piece_was_fq = True
+                    self._piece_fq_pending = False
+
+            elif mode == "extshort":
+                if sub == "intest0":
+                    # Extra corto: intestatura con DX (SX disabilitata), poi reposition per finale
+                    self._set_heads_intestatura()
+                    prof = str(self._fq_state.get("profile", ""))
+                    elem = str(self._fq_state.get("element", ""))
+                    target2 = float(self._fq_state.get("final_target", 0.0))
+                    self._show_banner("EXTRA‑CORTO: Posizionare in battuta DX (offset speciale)", "warn")
+                    self._post_cut_reposition(target2, 0.0, 0.0, prof, elem)
+                    try:
+                        setattr(self.machine, "semi_auto_target_pieces", 1)
+                        setattr(self.machine, "semi_auto_count_done", 0)
+                    except Exception: pass
+                    self._fq_state["sub"] = "final"
+                    return
+                elif sub == "final":
+                    # Finale extra corto: ancora DX attiva (SX disabilitata)
+                    self._set_heads_intestatura()
+                    self._hide_banner()
+                    self._fq_state = {"active": False, "mode": "", "phase": "", "sub": "",
+                                      "final_target": 0.0, "ax": 0.0, "ad": 0.0, "profile": "", "element": "", "min_q": 0.0}
+                    self._last_piece_was_fq = True
+                    self._piece_fq_pending = False
+
+        # Aggiorna contatore tagli
         new_done = done + 1
         try: setattr(self.machine, "semi_auto_count_done", new_done)
         except Exception: pass
@@ -1211,7 +1264,7 @@ class AutomaticoPage(QWidget):
                     if cur_piece and next_piece:
                         same_next = self._same_job(cur_piece, next_piece)
 
-            # Nuova regola: auto-continue SOLO se:
+            # Regola: auto-continue SOLO se:
             # - abilitato
             # - prossimo pezzo esiste
             # - stessa barra (no across)
@@ -1221,7 +1274,7 @@ class AutomaticoPage(QWidget):
                 self._mode == "plan"
                 and self._auto_continue_enabled_fn()
                 and next_piece is not None
-                and (not across)              # blocco salto barra
+                and (not across)
                 and (not next_is_fq)
                 and (not self._fq_state.get("active", False))
                 and same_next
@@ -1246,7 +1299,7 @@ class AutomaticoPage(QWidget):
 
             def _after_pause_and_continue():
                 if self._mode == "plan":
-                    # NON avviare automaticamente se il pezzo è diverso, o se across=True
+                    # NON avviare automaticamente se il pezzo è diverso o se across=True
                     if allowed_same_inline and next_piece is not None:
                         self._bar_idx, self._piece_idx = nxt
                         p2 = next_piece
@@ -1258,14 +1311,16 @@ class AutomaticoPage(QWidget):
                         self._lock_on_inpos = False
                         self._move_and_arm(p2["len"], p2["ax"], p2["ad"], self._plan_profile,
                                            f"BAR {self._bar_idx+1} #{self._piece_idx+1}")
-                    # Se non consentito, resta in attesa (F9/Start)
                     try: rem_all = self._sum_remaining_for_profile(self._plan_profile)
                     except Exception: rem_all = 0
-                    if rem_all <= 0 and self._opt_dialog:
-                        try: self._opt_dialog.accept()
-                        except Exception:
-                            try: self._opt_dialog.close()
-                            except Exception: pass
+                    if rem_all <= 0:
+                        if self._opt_dialog:
+                            try: self._opt_dialog.accept()
+                            except Exception:
+                                try: self._opt_dialog.close()
+                                except Exception: pass
+                            self._opt_dialog = None
+                        self._toast("Piano completato", "ok")
 
                 elif self._mode == "manual":
                     if self._active_row is not None:
@@ -1282,6 +1337,7 @@ class AutomaticoPage(QWidget):
             return
 
         self._update_counters_ui()
+
     def _dec_selected_row_qty(self):
         try:
             r = self.tbl_cut.currentRow()
