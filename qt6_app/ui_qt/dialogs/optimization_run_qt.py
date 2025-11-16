@@ -188,7 +188,7 @@ class OptimizationRunDialog(QDialog):
     GRAPH_BAR_H = 16
     GRAPH_V_GAP = 6
 
-    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
+    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[Widget] = None):  # type: ignore[name-defined]
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
@@ -215,6 +215,9 @@ class OptimizationRunDialog(QDialog):
         self._bars: List[List[Dict[str, float]]] = []
         self._bars_residuals: List[float] = []
         self._done_by_index: Dict[int, List[bool]] = {}
+
+        # Nuovo: collassa barre completate (default ON)
+        self._collapse_done_bars: bool = bool(cfg.get("opt_collapse_done_bars", True))
 
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -272,7 +275,14 @@ class OptimizationRunDialog(QDialog):
         btn_summary = QPushButton("Riepilogo…"); btn_summary.clicked.connect(self._open_summary)
         btn_start = QPushButton("Avanza (F9)"); btn_start.clicked.connect(lambda: self.startRequested.emit())
         btn_cut = QPushButton("Simula taglio (F7)"); btn_cut.clicked.connect(lambda: self.simulationRequested.emit())
-        ol.addWidget(self._chk_graph); ol.addStretch(1); ol.addWidget(btn_summary); ol.addWidget(btn_start); ol.addWidget(btn_cut)
+        # Nuovo: collassa barre completate
+        self._chk_collapse = QCheckBox("Collassa barre completate")
+        self._chk_collapse.setChecked(self._collapse_done_bars)
+        self._chk_collapse.toggled.connect(self._toggle_collapse_done)
+        ol.addWidget(self._chk_graph)
+        ol.addWidget(self._chk_collapse)
+        ol.addStretch(1)
+        ol.addWidget(btn_summary); ol.addWidget(btn_start); ol.addWidget(btn_cut)
         root.addWidget(opts, 0)
 
         self._panel_graph = QFrame()
@@ -305,6 +315,11 @@ class OptimizationRunDialog(QDialog):
         self._show_graph = bool(on); self._apply_toggles()
         if self._overlay_target is None:
             cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
+        self._resize_graph_area()
+
+    def _toggle_collapse_done(self, on: bool):
+        self._collapse_done_bars = bool(on)
+        cfg = dict(read_settings()); cfg["opt_collapse_done_bars"] = self._collapse_done_bars; write_settings(cfg)
         self._resize_graph_area()
 
     def _open_summary(self):
@@ -450,6 +465,15 @@ class OptimizationRunDialog(QDialog):
                 self.resize(max(820, self.width()), int(avail.height() - 32))
                 self.move(avail.x() + 12, avail.y() + 12)
 
+    def _remaining_bars_count(self) -> int:
+        # Conta quante barre NON sono completamente completate
+        rem = 0
+        for i, b in enumerate(self._bars):
+            done_list = self._done_by_index.get(i, [])
+            if not done_list or not all(done_list):
+                rem += 1
+        return rem
+
     def _desired_graph_height(self, n_bars: int) -> int:
         if n_bars <= 0: return 120
         bars_h = n_bars * self.GRAPH_BAR_H + max(0, n_bars - 1) * self.GRAPH_V_GAP
@@ -462,7 +486,9 @@ class OptimizationRunDialog(QDialog):
         table_min = self.TABLE_MIN_H
         margins = 8 + 8 + 6
         avail_for_graph = max(100, total_h - (hdr_h + margins + table_min))
-        desired = self._desired_graph_height(len(self._bars))
+        # Se collasso barre finite, uso solo quelle rimanenti
+        n_for_height = self._remaining_bars_count() if self._collapse_done_bars else len(self._bars)
+        desired = self._desired_graph_height(n_for_height)
         gh = min(desired, avail_for_graph)
         self._graph.setMinimumHeight(int(gh))
         self._graph.setMaximumHeight(int(gh))
@@ -490,4 +516,6 @@ class OptimizationRunDialog(QDialog):
                 self._tbl.setItem(i, 3, QTableWidgetItem(str(max(q - 1, 0))))
                 break
 
+        # Aggiorna anche dimensione grafica se richiesto
         self._graph.update()
+        self._resize_graph_area()
