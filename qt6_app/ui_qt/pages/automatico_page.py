@@ -1,11 +1,4 @@
-# v6.6 — Fix evidenziazione:
-# - Matching pezzo attivo con tolleranza (non solo stringhe formattate).
-# - Evidenziazione attivo (ciano #00bcd4) e pezzi completati (verde) via setData(Qt.BackgroundRole).
-# - Rimosso override selezione che copriva il colore (style sheet aggiornato).
-# - Se nessun pezzo con qty>0 corrisponde (es. ripetizioni già tagliate) evidenzia la riga storica migliore.
-# - Log diagnostico quando non si trova la riga.
-# - Collassamento barre invariato.
-# NOTE: Se una riga è selezionata il colore resta quello impostato (niente blu di selezione).
+# v6.6.1 — Fix SyntaxError (with contextlib dopo punto e virgola) + evidenziazione e collasso barre (come v6.6)
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
@@ -223,7 +216,9 @@ class LabelPrinter:
                           compress=True, red=False, rotate='0', dpi_600=False, hq=True,
                           cut=bool(cut if cut is not None else True))
             backend=backend_factory(self.backend); be=backend(printer_identifier=self.printer)
-            be.write(instr); with contextlib.suppress(Exception): be.dispose()
+            be.write(instr)
+            with contextlib.suppress(Exception):
+                be.dispose()
             return True
         except Exception as e:
             if self.toast: self.toast(f"Errore stampa: {e}","err")
@@ -366,10 +361,8 @@ class AutomaticoPage(QWidget):
         self.tbl_cut.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_cut.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_cut.setSelectionMode(QAbstractItemView.SingleSelection)
-        # Rimuovo colore override della selezione per lasciare i nostri background
-        self.tbl_cut.setStyleSheet("""
-        QTableWidget::item:selected { outline: none; }
-        """)
+        # lasciamo il background dei nostri colori
+        self.tbl_cut.setStyleSheet("QTableWidget::item:selected { outline: none; }")
         self.tbl_cut.cellDoubleClicked.connect(self._on_cell_double_clicked)
         self.tbl_cut.cellEntered.connect(self._on_cell_entered)
         self.tbl_cut.currentCellChanged.connect(self._on_current_cell_changed)
@@ -728,14 +721,12 @@ class AutomaticoPage(QWidget):
                 continue
             if p!=prof: continue
             if abs(L-length)<=0.21 and abs(A-ax)<=0.21 and abs(D-ad)<=0.21:
-                # preferisci pezzo con qty>0
                 if q>0: return r
                 if best is None: best=r
         return best
 
     def _apply_active_row(self,row:Optional[int]):
         if row is None: return
-        # reset precedente
         if self._active_row is not None and self._active_row!=row:
             prev_q=self._safe_qty(self._active_row)
             if prev_q>0: self._style_row_normal(self._active_row)
@@ -786,7 +777,6 @@ class AutomaticoPage(QWidget):
         r=header_row+1
         while r<self.tbl_cut.rowCount() and not self._row_is_header(r):
             self.tbl_cut.setRowHidden(r,True); r+=1
-        # style header
         brush=QBrush(QColor("#bdc3c7"))
         for c in range(self.tbl_cut.columnCount()):
             it=self.tbl_cut.item(header_row,c)
@@ -820,7 +810,7 @@ class AutomaticoPage(QWidget):
                 return r
         return None
 
-    # ---------------- Fuori quota / posizionamento (come prima) ----------------
+    # ---------------- Fuori quota / posizionamento ----------------
     def _get_profile_thickness(self, profile_name: str) -> float:
         name=(profile_name or "").strip()
         with contextlib.suppress(Exception):
