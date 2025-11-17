@@ -265,7 +265,6 @@ class OptimizationRunDialog(QDialog):
         cont_layout = QVBoxLayout(self._graph_container); cont_layout.setContentsMargins(0,0,0,0); cont_layout.setSpacing(0)
 
         self._graph = PlanVisualizerWidget(self._graph_container)
-        # il widget del grafico può catturare la rotellina → installo event filter per inoltrare allo scroll
         self._graph.installEventFilter(self)
 
         cont_layout.addWidget(self._graph)
@@ -377,7 +376,7 @@ class OptimizationRunDialog(QDialog):
         except Exception:
             pass
 
-        # ordina per barra e per lunghezze decrescenti intra-barra
+        # ordina intra-barra per lunghezze decrescenti; barre per max lunghezza
         for b in bars:
             with contextlib.suppress(Exception):
                 b.sort(key=lambda p:(-float(p["len"]),float(p["ax"]),float(p["ad"])))
@@ -397,7 +396,6 @@ class OptimizationRunDialog(QDialog):
     def _effective_bars_for_view(self) -> List[List[Dict[str,float]]]:
         if not self._collapse_done_bars:
             return self._bars
-        # filtra fuori barre completamente completate
         out: List[List[Dict[str,float]]] = []
         for i, b in enumerate(self._bars):
             flags = self._done_by_index.get(i, [])
@@ -408,6 +406,7 @@ class OptimizationRunDialog(QDialog):
     def _refresh_graph_only(self):
         if not self._graph: return
         bars_view = self._effective_bars_for_view()
+        # in modalità 'collassa', passiamo solo le barre rimanenti; evitiamo done_by_index (indici non corrispondono)
         with contextlib.suppress(Exception):
             self._graph.set_data(
                 bars_view, stock_mm=self._stock,
@@ -416,7 +415,8 @@ class OptimizationRunDialog(QDialog):
                 angle_tol=self._angle_tol, max_angle=self._max_angle,
                 max_factor=self._max_factor, warn_threshold_mm=self._warn_thr
             )
-            self._graph.set_done_by_index(self._done_by_index)
+            if not self._collapse_done_bars:
+                self._graph.set_done_by_index(self._done_by_index)
         self._resize_graph_area()
 
     def _refresh_views(self):
@@ -465,7 +465,6 @@ class OptimizationRunDialog(QDialog):
     def _resize_graph_area(self):
         if not (self._graph_container and self._graph): return
         content_h = max(120, self._estimate_content_height())
-        # forzo altezza contenuto per attivare lo scroll
         self._graph_container.setMinimumHeight(int(content_h))
         self._graph_container.setMaximumHeight(int(content_h))
         self._graph.setMinimumHeight(int(content_h))
@@ -496,8 +495,6 @@ class OptimizationRunDialog(QDialog):
         with contextlib.suppress(Exception):
             self._graph.mark_done_by_signature(length_mm, ang_sx, ang_dx)
         self._mark_done_local(length_mm, ang_sx, ang_dx)
-        with contextlib.suppress(Exception):
-            self._graph.set_done_by_index(self._done_by_index)
         self._refresh_graph_only()
 
     # ---------------- Slot esterni (da AutomaticoPage) ----------------
