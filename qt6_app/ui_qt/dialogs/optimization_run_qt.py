@@ -3,12 +3,12 @@ from typing import List, Dict, Any, Optional, Tuple
 import csv, contextlib
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal, QRect, Slot
+from PySide6.QtCore import Qt, Signal, QRect, Slot, QEvent
 from PySide6.QtGui import QKeyEvent, QTextDocument, QColor, QBrush, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
-    QWidget, QFileDialog, QScrollArea
+    QWidget, QFileDialog, QScrollArea, QSizePolicy
 )
 
 try:
@@ -184,7 +184,6 @@ class OptimizationRunDialog(QDialog):
     simulationRequested = Signal()
     startRequested = Signal()
 
-    # fallback metriche altezza per barra (se il widget non fornisce stime)
     GRAPH_BAR_H = 16
     GRAPH_V_GAP = 6
     TABLE_MIN_H = 180
@@ -218,7 +217,9 @@ class OptimizationRunDialog(QDialog):
         self._bars_residuals: List[float] = []
         self._done_by_index: Dict[int, List[bool]] = {}
 
-        # overlay chip (opzionale): mantenuta in altri step se necessario
+        # container per scroll
+        self._scroll: Optional[QScrollArea] = None
+        self._graph_container: Optional[QWidget] = None
 
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -250,15 +251,25 @@ class OptimizationRunDialog(QDialog):
         ol.addWidget(btn_summary); ol.addWidget(btn_start); ol.addWidget(btn_cut)
         root.addWidget(opts, 0)
 
-        # pannello grafico con scrollbar verticale
+        # pannello grafico con scrollbar verticale robusto
         self._panel_graph = QFrame()
         gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(6,6,6,6); gl.setSpacing(4)
         self._scroll = QScrollArea(self._panel_graph)
-        self._scroll.setWidgetResizable(True)
+        self._scroll.setWidgetResizable(False)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._graph = PlanVisualizerWidget(self)
-        self._scroll.setWidget(self._graph)
+
+        # container contenuto scrollabile
+        self._graph_container = QWidget()
+        self._graph_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        cont_layout = QVBoxLayout(self._graph_container); cont_layout.setContentsMargins(0,0,0,0); cont_layout.setSpacing(0)
+
+        self._graph = PlanVisualizerWidget(self._graph_container)
+        # il widget del grafico può catturare la rotellina → installo event filter per inoltrare allo scroll
+        self._graph.installEventFilter(self)
+
+        cont_layout.addWidget(self._graph)
+        self._scroll.setWidget(self._graph_container)
         gl.addWidget(self._scroll, 1)
         root.addWidget(self._panel_graph, 0)
 
@@ -272,6 +283,12 @@ class OptimizationRunDialog(QDialog):
         root.addWidget(self._tbl, 1)
 
         self._apply_toggles()
+
+    def eventFilter(self, obj, e):
+        if obj is self._graph and e.type() == QEvent.Type.Wheel and self._scroll:
+            QApplication.sendEvent(self._scroll.verticalScrollBar(), e)
+            return True
+        return super().eventFilter(obj, e)
 
     def keyPressEvent(self, e: QKeyEvent):
         if e.key() == Qt.Key_F7:
@@ -292,12 +309,7 @@ class OptimizationRunDialog(QDialog):
     def _toggle_collapse_done(self, on: bool):
         self._collapse_done_bars = bool(on)
         cfg = dict(read_settings()); cfg["opt_collapse_done_bars"] = self._collapse_done_bars; write_settings(cfg)
-        # se il widget supporta una modalità “collapse”, attivala
-        for meth in ("set_collapse_done", "setCollapseDone", "show_only_remaining"):
-            with contextlib.suppress(Exception):
-                getattr(self._graph, meth)(self._collapse_done_bars)
-                break
-        self._resize_graph_area()
+        self._refresh_graph_only()
 
     def _open_summary(self):
         dlg = OptimizationSummaryDialog(self, self.profile, self._bars, self._bars_residuals, self._stock)
@@ -365,39 +377,16 @@ class OptimizationRunDialog(QDialog):
         except Exception:
             pass
 
-        fixed_bars: List[List[Dict[str, float]]] = []
-        overflow: List[Dict[str, float]] = []
-        for bar in bars:
-            b = list(bar)
-            while b and bar_used_length(b, self._kerf_base, self._ripasso,
-                                       self._reversible, self._thickness,
-                                       self._angle_tol, self._max_angle, self._max_factor) > self._stock + 1e-6:
-                overflow.append(b.pop())
-            fixed_bars.append(b)
-        if overflow:
-            for piece in sorted(overflow, key=lambda x: x["len"], reverse=True):
-                placed = False
-                for fb in fixed_bars:
-                    used = bar_used_length(fb, self._kerf_base, self._ripasso,
-                                           self._reversible, self._thickness,
-                                           self._angle_tol, self._max_angle, self._max_factor)
-                    extra = joint_consumption(fb[-1], self._kerf_base, self._ripasso,
-                                              self._reversible, self._thickness,
-                                              self._angle_tol, self._max_angle, self._max_factor)[0] if fb else 0.0
-                    if used + piece["len"] + extra <= self._stock + 1e-6:
-                        fb.append(piece); placed = True; break
-                if not placed:
-                    fixed_bars.append([piece])
-
-        bars = fixed_bars
-        rem = residuals(bars, self._stock, self._kerf_base, self._ripasso,
-                        self._reversible, self._thickness,
-                        self._angle_tol, self._max_angle, self._max_factor)
-
-        bars.sort(key=lambda b: max((p["len"] for p in b), default=0.0), reverse=True)
+        # ordina per barra e per lunghezze decrescenti intra-barra
+        for b in bars:
+            with contextlib.suppress(Exception):
+                b.sort(key=lambda p:(-float(p["len"]),float(p["ax"]),float(p["ad"])))
+        bars.sort(key=lambda b: max((float(p["len"]) for p in b), default=0.0), reverse=True)
 
         self._bars = bars
-        self._bars_residuals = rem
+        self._bars_residuals = residuals(bars, self._stock, self._kerf_base, self._ripasso,
+                                         self._reversible, self._thickness,
+                                         self._angle_tol, self._max_angle, self._max_factor)
 
     # ---------------- Views & state ----------------
     def _init_done_state(self):
@@ -405,28 +394,37 @@ class OptimizationRunDialog(QDialog):
         with contextlib.suppress(Exception):
             self._graph.set_done_by_index(self._done_by_index)
 
-    def _refresh_views(self):
+    def _effective_bars_for_view(self) -> List[List[Dict[str,float]]]:
+        if not self._collapse_done_bars:
+            return self._bars
+        # filtra fuori barre completamente completate
+        out: List[List[Dict[str,float]]] = []
+        for i, b in enumerate(self._bars):
+            flags = self._done_by_index.get(i, [])
+            if not flags or not all(flags):
+                out.append(b)
+        return out
+
+    def _refresh_graph_only(self):
+        if not self._graph: return
+        bars_view = self._effective_bars_for_view()
         with contextlib.suppress(Exception):
             self._graph.set_data(
-                self._bars, stock_mm=self._stock,
+                bars_view, stock_mm=self._stock,
                 kerf_base=self._kerf_base, ripasso_mm=self._ripasso,
                 reversible=self._reversible, thickness_mm=self._thickness,
                 angle_tol=self._angle_tol, max_angle=self._max_angle,
                 max_factor=self._max_factor, warn_threshold_mm=self._warn_thr
             )
-        with contextlib.suppress(Exception):
             self._graph.set_done_by_index(self._done_by_index)
-        # se il widget supporta modalità collapse, propaga
-        for meth in ("set_collapse_done", "setCollapseDone", "show_only_remaining"):
-            with contextlib.suppress(Exception):
-                getattr(self._graph, meth)(self._collapse_done_bars)
-                break
-        self._reload_table()
         self._resize_graph_area()
+
+    def _refresh_views(self):
+        self._refresh_graph_only()
+        self._reload_table()
 
     def _reload_table(self):
         self._tbl.setRowCount(0)
-        # raggruppo rows originali (già passate al dialog)
         for r in self._rows:
             q = int(r.get("qty", 0))
             row = self._tbl.rowCount(); self._tbl.insertRow(row)
@@ -461,23 +459,17 @@ class OptimizationRunDialog(QDialog):
 
     def _estimate_content_height(self) -> int:
         n_bars = self._remaining_bars_count() if self._collapse_done_bars else len(self._bars)
-        # Se il widget offre una stima, usala
-        for meth in ("estimated_content_height", "estimateContentHeight"):
-            with contextlib.suppress(Exception):
-                h = int(getattr(self._graph, meth)(n_bars))
-                if h>0: return h
-        # fallback semplice
         if n_bars<=0: return 120
         return n_bars * self.GRAPH_BAR_H + max(0, n_bars - 1) * self.GRAPH_V_GAP + 16
 
     def _resize_graph_area(self):
-        # L'altezza del grafico (contenuto) può superare l'area visibile: lo scroll la mostrerà
+        if not (self._graph_container and self._graph): return
         content_h = max(120, self._estimate_content_height())
-        with contextlib.suppress(Exception):
-            self._graph.setMinimumHeight(int(content_h))
-            # niente setMaximumHeight: lasciamo al contenuto crescere
-        # Altezza visibile: dipende dalla finestra; QScrollArea gestisce la barra
-        # Forziamo update per ridisegno
+        # forzo altezza contenuto per attivare lo scroll
+        self._graph_container.setMinimumHeight(int(content_h))
+        self._graph_container.setMaximumHeight(int(content_h))
+        self._graph.setMinimumHeight(int(content_h))
+        self._graph.setMaximumHeight(int(content_h))
         with contextlib.suppress(Exception):
             self._graph.update()
 
@@ -501,16 +493,12 @@ class OptimizationRunDialog(QDialog):
                     continue
 
     def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        # aggiorna grafica
         with contextlib.suppress(Exception):
             self._graph.mark_done_by_signature(length_mm, ang_sx, ang_dx)
-        # aggiorna stato locale per il "collassa barre finite"
         self._mark_done_local(length_mm, ang_sx, ang_dx)
         with contextlib.suppress(Exception):
             self._graph.set_done_by_index(self._done_by_index)
-            self._graph.update()
-        # ridimensiona in base all'opzione di collasso
-        self._resize_graph_area()
+        self._refresh_graph_only()
 
     # ---------------- Slot esterni (da AutomaticoPage) ----------------
     @Slot(dict)
@@ -518,7 +506,6 @@ class OptimizationRunDialog(QDialog):
         L = float(piece.get("len", piece.get("length", 0.0)))
         ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
         ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
-        # evidenzia firma attiva nel widget se supportato
         for meth in ("set_active_signature","highlight_active_signature","mark_active_by_signature","set_active_piece_by_signature"):
             with contextlib.suppress(Exception):
                 getattr(self._graph, meth)(L, ax, ad)
