@@ -1,17 +1,14 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple
-import csv
+import csv, contextlib
 from datetime import datetime
-import contextlib
 
-from PySide6.QtCore import Qt, Signal, QRect, Slot, QTimer
-from PySide6.QtGui import (
-    QKeyEvent, QTextDocument, QColor, QBrush, QKeySequence, QShortcut
-)
+from PySide6.QtCore import Qt, Signal, QRect, Slot
+from PySide6.QtGui import QKeyEvent, QTextDocument, QColor, QBrush, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
-    QWidget, QFileDialog
+    QWidget, QFileDialog, QScrollArea
 )
 
 try:
@@ -187,9 +184,10 @@ class OptimizationRunDialog(QDialog):
     simulationRequested = Signal()
     startRequested = Signal()
 
-    TABLE_MIN_H = 180
+    # fallback metriche altezza per barra (se il widget non fornisce stime)
     GRAPH_BAR_H = 16
     GRAPH_V_GAP = 6
+    TABLE_MIN_H = 180
 
     def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
         super().__init__(parent)
@@ -214,22 +212,17 @@ class OptimizationRunDialog(QDialog):
 
         self._overlay_target: Optional[QWidget] = overlay_target
         self._show_graph = True if self._overlay_target is not None else bool(cfg.get("opt_show_graph", True))
+        self._collapse_done_bars: bool = bool(cfg.get("opt_collapse_done_bars", True))
 
         self._bars: List[List[Dict[str, float]]] = []
         self._bars_residuals: List[float] = []
         self._done_by_index: Dict[int, List[bool]] = {}
 
-        # Collassa barre completate (default ON)
-        self._collapse_done_bars: bool = bool(cfg.get("opt_collapse_done_bars", True))
-
-        # Overlay chip
-        self._overlay_label: Optional[QLabel] = None
-        self._overlay_timer: Optional[QTimer] = None
+        # overlay chip (opzionale): mantenuta in altri step se necessario
 
         self.setFocusPolicy(Qt.StrongFocus)
 
         self._build()
-        self._init_overlay()
         self._compute_plan_once()
         self._init_done_state()
         self._refresh_views()
@@ -237,70 +230,39 @@ class OptimizationRunDialog(QDialog):
         self._resize_graph_area()
 
         # Scorciatoie tastiera
-        self._sc_f7 = QShortcut(QKeySequence("F7"), self)
-        self._sc_f7.activated.connect(lambda: self.simulationRequested.emit())
-        self._sc_f9 = QShortcut(QKeySequence("F9"), self)
-        self._sc_f9.activated.connect(lambda: self.startRequested.emit())
-        self._sc_space = QShortcut(QKeySequence("Space"), self)
-        self._sc_space.activated.connect(lambda: self.startRequested.emit())
+        self._sc_f7 = QShortcut(QKeySequence("F7"), self); self._sc_f7.activated.connect(self.simulationRequested.emit)
+        self._sc_f9 = QShortcut(QKeySequence("F9"), self); self._sc_f9.activated.connect(self.startRequested.emit)
+        self._sc_space = QShortcut(QKeySequence("Space"), self); self._sc_space.activated.connect(self.startRequested.emit)
 
-    # Banner (opzionale, visibilità)
-    def show_banner(self, msg: str, level: str = "info"):
-        styles = {
-            "info": "background:#ffe7ba; color:#1b1b1b; border:1px solid #c49a28;",
-            "ok":   "background:#d4efdf; color:#145a32; border:1px solid #27ae60;",
-            "warn": "background:#fdecea; color:#7b241c; border:1px solid #c0392b;",
-        }
-        sty = styles.get(level, styles["info"])
-        if not hasattr(self, "_banner"):
-            return
-        self._banner.setText(msg)
-        self._banner.setStyleSheet(f"QLabel {{{sty} font-size:20px; font-weight:900; padding:10px 14px; border-radius:8px;}}")
-        self._banner.setVisible(True)
-        try:
-            self._banner.raise_()
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
-
-    def hide_banner(self):
-        if hasattr(self, "_banner") and self._banner:
-            self._banner.setVisible(False)
-            self._banner.setText("")
-
-    # ---------------- UI build ----------------
+    # ---------------- UI ----------------
     def _build(self):
         root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
-
-        self._banner = QLabel("")
-        self._banner.setVisible(False)
-        self._banner.setAlignment(Qt.AlignCenter)
-        self._banner.setStyleSheet("QLabel { background:#ffe7ba; color:#1b1b1b; font-size:18px; font-weight:800; padding:8px 12px; border:1px solid #c49a28; border-radius:6px; }")
-        root.addWidget(self._banner)
 
         opts = QFrame(); ol = QHBoxLayout(opts); ol.setContentsMargins(0,0,0,0); ol.setSpacing(6)
         self._chk_graph = QCheckBox("Mostra grafica piano"); self._chk_graph.setChecked(self._show_graph)
         self._chk_graph.toggled.connect(self._toggle_graph)
-        btn_summary = QPushButton("Riepilogo…"); btn_summary.clicked.connect(self._open_summary)
-        btn_start = QPushButton("Avanza (F9 / Space)"); btn_start.clicked.connect(lambda: self.startRequested.emit())
-        btn_cut = QPushButton("Simula taglio (F7)"); btn_cut.clicked.connect(lambda: self.simulationRequested.emit())
-        # Collassa barre completate
-        self._chk_collapse = QCheckBox("Collassa barre completate")
-        self._chk_collapse.setChecked(self._collapse_done_bars)
+        self._chk_collapse = QCheckBox("Collassa barre completate"); self._chk_collapse.setChecked(self._collapse_done_bars)
         self._chk_collapse.toggled.connect(self._toggle_collapse_done)
-        ol.addWidget(self._chk_graph)
-        ol.addWidget(self._chk_collapse)
-        ol.addStretch(1)
+        btn_summary = QPushButton("Riepilogo…"); btn_summary.clicked.connect(self._open_summary)
+        btn_start = QPushButton("Avanza (F9 / Space)"); btn_start.clicked.connect(self.startRequested.emit)
+        btn_cut = QPushButton("Simula taglio (F7)"); btn_cut.clicked.connect(self.simulationRequested.emit)
+        ol.addWidget(self._chk_graph); ol.addWidget(self._chk_collapse); ol.addStretch(1)
         ol.addWidget(btn_summary); ol.addWidget(btn_start); ol.addWidget(btn_cut)
         root.addWidget(opts, 0)
 
+        # pannello grafico con scrollbar verticale
         self._panel_graph = QFrame()
         gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(6,6,6,6); gl.setSpacing(4)
+        self._scroll = QScrollArea(self._panel_graph)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._graph = PlanVisualizerWidget(self)
-        gl.addWidget(self._graph, 1)
+        self._scroll.setWidget(self._graph)
+        gl.addWidget(self._scroll, 1)
         root.addWidget(self._panel_graph, 0)
 
+        # tabella firme
         self._tbl = QTableWidget(0, 4)
         self._tbl.setHorizontalHeaderLabels(["Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà"])
         hdr = self._tbl.horizontalHeader()
@@ -314,7 +276,7 @@ class OptimizationRunDialog(QDialog):
     def keyPressEvent(self, e: QKeyEvent):
         if e.key() == Qt.Key_F7:
             self.simulationRequested.emit(); e.accept(); return
-        if e.key() == Qt.Key_F9 or e.key() == Qt.Key_Space:
+        if e.key() in (Qt.Key_F9, Qt.Key_Space):
             self.startRequested.emit(); e.accept(); return
         super().keyPressEvent(e)
 
@@ -330,46 +292,17 @@ class OptimizationRunDialog(QDialog):
     def _toggle_collapse_done(self, on: bool):
         self._collapse_done_bars = bool(on)
         cfg = dict(read_settings()); cfg["opt_collapse_done_bars"] = self._collapse_done_bars; write_settings(cfg)
+        # se il widget supporta una modalità “collapse”, attivala
+        for meth in ("set_collapse_done", "setCollapseDone", "show_only_remaining"):
+            with contextlib.suppress(Exception):
+                getattr(self._graph, meth)(self._collapse_done_bars)
+                break
         self._resize_graph_area()
 
     def _open_summary(self):
         dlg = OptimizationSummaryDialog(self, self.profile, self._bars, self._bars_residuals, self._stock)
         dlg.setAttribute(Qt.WA_DeleteOnClose, True)
         dlg.show()
-
-    # ---------------- Overlay chip helpers ----------------
-    def _init_overlay(self):
-        # Create floating label for visual "chip" on top-left of overlay target/dialog
-        target = self._overlay_target if self._overlay_target is not None else self
-        self._overlay_label = QLabel(target)
-        self._overlay_label.setVisible(False)
-        self._overlay_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._overlay_label.setStyleSheet("QLabel { background: transparent; border: none; }")
-        self._overlay_timer = QTimer(self)
-        self._overlay_timer.setSingleShot(True)
-        self._overlay_timer.timeout.connect(lambda: self._overlay_label.setVisible(False))
-
-    def _show_chip(self, piece: Dict[str, Any], bg_hex: str, ttl_ms: int):
-        if not self._overlay_label:
-            return
-        L = piece.get("len", piece.get("length", 0.0))
-        ax = piece.get("ax", piece.get("ang_sx", 0.0))
-        ad = piece.get("ad", piece.get("ang_dx", 0.0))
-        elem = piece.get("element", "")
-        html = (
-            f'<div style="background:{bg_hex}; border:2px solid rgba(0,0,0,0.25); '
-            f'border-radius:10px; padding:6px 10px; color:#0d0d0d; font-weight:900;">'
-            f'{elem}  L={float(L):.2f}  AX={float(ax):.1f}  AD={float(ad):.1f}'
-            f'</div>'
-        )
-        self._overlay_label.setText(html)
-        self._overlay_label.adjustSize()
-        self._overlay_label.move(12, 12)
-        self._overlay_label.setVisible(True)
-        if ttl_ms > 0:
-            self._overlay_timer.start(ttl_ms)
-        else:
-            self._overlay_timer.stop()
 
     # ---------------- Helpers (data) ----------------
     def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
@@ -483,11 +416,17 @@ class OptimizationRunDialog(QDialog):
             )
         with contextlib.suppress(Exception):
             self._graph.set_done_by_index(self._done_by_index)
+        # se il widget supporta modalità collapse, propaga
+        for meth in ("set_collapse_done", "setCollapseDone", "show_only_remaining"):
+            with contextlib.suppress(Exception):
+                getattr(self._graph, meth)(self._collapse_done_bars)
+                break
         self._reload_table()
         self._resize_graph_area()
 
     def _reload_table(self):
         self._tbl.setRowCount(0)
+        # raggruppo rows originali (già passate al dialog)
         for r in self._rows:
             q = int(r.get("qty", 0))
             row = self._tbl.rowCount(); self._tbl.insertRow(row)
@@ -509,11 +448,10 @@ class OptimizationRunDialog(QDialog):
             screen = QApplication.primaryScreen()
             if screen:
                 avail = screen.availableGeometry()
-                self.resize(max(820, self.width()), int(avail.height() - 32))
+                self.resize(max(980, self.width()), int(avail.height() - 32))
                 self.move(avail.x() + 12, avail.y() + 12)
 
     def _remaining_bars_count(self) -> int:
-        # Conta quante barre NON sono completamente completate
         rem = 0
         for i, b in enumerate(self._bars):
             done_list = self._done_by_index.get(i, [])
@@ -521,76 +459,74 @@ class OptimizationRunDialog(QDialog):
                 rem += 1
         return rem
 
-    def _desired_graph_height(self, n_bars: int) -> int:
-        if n_bars <= 0: return 120
-        bars_h = n_bars * self.GRAPH_BAR_H + max(0, n_bars - 1) * self.GRAPH_V_GAP
-        return max(100, bars_h + 16)
+    def _estimate_content_height(self) -> int:
+        n_bars = self._remaining_bars_count() if self._collapse_done_bars else len(self._bars)
+        # Se il widget offre una stima, usala
+        for meth in ("estimated_content_height", "estimateContentHeight"):
+            with contextlib.suppress(Exception):
+                h = int(getattr(self._graph, meth)(n_bars))
+                if h>0: return h
+        # fallback semplice
+        if n_bars<=0: return 120
+        return n_bars * self.GRAPH_BAR_H + max(0, n_bars - 1) * self.GRAPH_V_GAP + 16
 
     def _resize_graph_area(self):
-        if not (self._panel_graph and self._graph and self._tbl): return
-        total_h = self.height()
-        hdr_h = 40
-        table_min = self.TABLE_MIN_H
-        margins = 8 + 8 + 6
-        avail_for_graph = max(100, total_h - (hdr_h + margins + table_min))
-        # Se collasso barre finite, uso solo quelle rimanenti
-        n_for_height = self._remaining_bars_count() if self._collapse_done_bars else len(self._bars)
-        desired = self._desired_graph_height(n_for_height)
-        gh = min(desired, avail_for_graph)
+        # L'altezza del grafico (contenuto) può superare l'area visibile: lo scroll la mostrerà
+        content_h = max(120, self._estimate_content_height())
         with contextlib.suppress(Exception):
-            self._graph.setMinimumHeight(int(gh))
-            self._graph.setMaximumHeight(int(gh))
+            self._graph.setMinimumHeight(int(content_h))
+            # niente setMaximumHeight: lasciamo al contenuto crescere
+        # Altezza visibile: dipende dalla finestra; QScrollArea gestisce la barra
+        # Forziamo update per ridisegno
+        with contextlib.suppress(Exception):
+            self._graph.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event); self._resize_graph_area()
 
-    # ---------------- Evidenziazione e aggiornamenti da AutomaticoPage ----------------
+    # ---------------- Aggiornamenti dopo taglio ----------------
+    def _mark_done_local(self, length_mm: float, ang_sx: float, ang_dx: float):
+        tol_L = 1e-2; tol_A = 1e-2
+        for i, bar in enumerate(self._bars):
+            for j, p in enumerate(bar):
+                if self._done_by_index.get(i, [])[j]:
+                    continue
+                try:
+                    if abs(float(p.get("len",0.0)) - length_mm) <= tol_L and \
+                       abs(float(p.get("ax",0.0)) - ang_sx) <= tol_A and \
+                       abs(float(p.get("ad",0.0)) - ang_dx) <= tol_A:
+                        self._done_by_index[i][j] = True
+                        return
+                except Exception:
+                    continue
+
+    def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
+        # aggiorna grafica
+        with contextlib.suppress(Exception):
+            self._graph.mark_done_by_signature(length_mm, ang_sx, ang_dx)
+        # aggiorna stato locale per il "collassa barre finite"
+        self._mark_done_local(length_mm, ang_sx, ang_dx)
+        with contextlib.suppress(Exception):
+            self._graph.set_done_by_index(self._done_by_index)
+            self._graph.update()
+        # ridimensiona in base all'opzione di collasso
+        self._resize_graph_area()
+
+    # ---------------- Slot esterni (da AutomaticoPage) ----------------
     @Slot(dict)
-    def onActivePieceChanged(self, piece: Dict[str, Any]):
-        # Mostra chip ciano
-        self._show_chip(piece, "#00bcd4", ttl_ms=0)
-        # Prova ad evidenziare in PlanVisualizerWidget (se implementato)
+    def onActivePieceChanged(self, piece: Dict[str,Any]):
         L = float(piece.get("len", piece.get("length", 0.0)))
         ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
         ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
-        for meth in ("set_active_signature", "highlight_active_signature", "mark_active_by_signature", "set_active_piece_by_signature"):
+        # evidenzia firma attiva nel widget se supportato
+        for meth in ("set_active_signature","highlight_active_signature","mark_active_by_signature","set_active_piece_by_signature"):
             with contextlib.suppress(Exception):
                 getattr(self._graph, meth)(L, ax, ad)
                 break
 
     @Slot(dict)
-    def onPieceCut(self, piece: Dict[str, Any]):
-        # Mostra chip verde
-        self._show_chip(piece, "#2ecc71", ttl_ms=900)
-        # Aggiorna stato grafico e tabella
+    def onPieceCut(self, piece: Dict[str,Any]):
         L = float(piece.get("len", piece.get("length", 0.0)))
         ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
         ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
         self.update_after_cut(L, ax, ad)
-        # Pulisce evidenziazione attiva (se supportata)
-        for meth in ("clear_active_signature", "clear_active_highlight", "clear_active"):
-            with contextlib.suppress(Exception):
-                getattr(self._graph, meth)()
-                break
-
-    # ---------------- Mark done after cut ----------------
-    def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        with contextlib.suppress(Exception):
-            self._graph.mark_done_by_signature(length_mm, ang_sx, ang_dx)
-
-        tol_L = 0.01; tol_A = 0.01
-        for i in range(self._tbl.rowCount()):
-            try:
-                L = float(self._tbl.item(i, 0).text())
-                ax = float(self._tbl.item(i, 1).text())
-                ad = float(self._tbl.item(i, 2).text())
-                q = int(self._tbl.item(i, 3).text())
-            except Exception:
-                continue
-            if abs(L - length_mm) <= tol_L and abs(ax - ang_sx) <= tol_A and abs(ad - ang_dx) <= tol_A:
-                self._tbl.setItem(i, 3, QTableWidgetItem(str(max(q - 1, 0))))
-                break
-
-        with contextlib.suppress(Exception):
-            self._graph.update()
-        self._resize_graph_area()
