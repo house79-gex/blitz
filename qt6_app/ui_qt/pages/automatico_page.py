@@ -210,7 +210,8 @@ class LabelPrinter:
 
     def print_label(self, lines: List[str], paper: Optional[str]=None,
                     rotate: Optional[int]=None, font_size: Optional[int]=None,
-                    cut: Optional[bool]=None) -> bool:
+                    cut: Optional[bool]=None, qrcode_data: Optional[str]=None,
+                    qrcode_module_size: int=4) -> bool:
         if self._pil is None:
             if self.toast: self.toast("Pillow non disponibile per etichette.","warn")
             return False
@@ -328,6 +329,25 @@ class AutomaticoPage(QWidget):
         self._manual_current_piece: Optional[Dict[str,Any]] = None
 
         self._build()
+
+    def _open_opt_config(self):
+        dlg = OptimizationConfigDialog(self)
+        if dlg.exec():
+            self._toast("Config ottimizzazione aggiornata.","ok")
+            cfg = read_settings()
+            try: self._kerf_max_angle_deg = float(cfg.get("opt_kerf_max_angle_deg", 60.0))
+            except Exception: self._kerf_max_angle_deg = 60.0
+            try: self._kerf_max_factor = float(cfg.get("opt_kerf_max_factor", 2.0))
+            except Exception: self._kerf_max_factor = 2.0
+            try: self._knap_cons_angle_deg = float(cfg.get("opt_knap_conservative_angle_deg", 45.0))
+            except Exception: self._knap_cons_angle_deg = 45.0
+            try: self._ripasso_mm = float(cfg.get("opt_ripasso_mm", 0.0))
+            except Exception: self._ripasso_mm = 0.0
+            try: self._warn_overflow_mm = float(cfg.get("opt_warn_overflow_mm", 0.5))
+            except Exception: self._warn_overflow_mm = 0.5
+            self._auto_continue_enabled = bool(cfg.get("opt_auto_continue_enabled", False))
+            self._auto_continue_across_bars = bool(cfg.get("opt_auto_continue_across_bars", False))
+            self._strict_bar_sequence = bool(cfg.get("opt_strict_bar_sequence", True))
 
     # ---------------- Helpers cutlist ----------------
     def _row_is_header(self,row:int)->bool:
@@ -580,7 +600,7 @@ class AutomaticoPage(QWidget):
             prof=self._find_first_header_profile()
         if not prof:
             QMessageBox.information(self,"Ottimizza","Seleziona un profilo."); return
-        # Se c'è già un dialog aperto, disconnetto e chiudo per evitare interferenze
+        # chiudi piano precedente per evitare interferenze
         if self._opt_dialog:
             with contextlib.suppress(Exception): self.activePieceChanged.disconnect(self._opt_dialog.onActivePieceChanged)
             with contextlib.suppress(Exception): self.pieceCut.disconnect(self._opt_dialog.onPieceCut)
@@ -677,11 +697,10 @@ class AutomaticoPage(QWidget):
             bars, rem=refine_tail_ilp(bars,stock,kerf_base,self._ripasso_mm,reversible_now,thickness_mm,
                                       angle_tol,tail_bars=tail_n,time_limit_s=tail_t,
                                       max_angle=max_angle,max_factor=max_factor)
-        # Ordine per barra: lunghezze decrescenti (sinistra->destra)
+        # Ordina intra-barra per lunghezze decrescenti; barre per max lunghezza
         for b in bars:
             with contextlib.suppress(Exception):
                 b.sort(key=lambda p:(-float(p["len"]),float(p["ax"]),float(p["ad"])))
-        # Ordine barre: per lunghezza massima decrescente
         bars.sort(key=lambda b: max((float(p["len"]) for p in b), default=0.0), reverse=True)
 
         self._bars=bars; self._plan_profile=prof
@@ -726,8 +745,8 @@ class AutomaticoPage(QWidget):
         with contextlib.suppress(Exception):
             setattr(self.machine,"semi_auto_target_pieces",1)
             setattr(self.machine,"semi_auto_count_done",0)
-        # Posizionamento e UI
-        self._set_pressers(False,False)  # apri pressori
+        # posizionamento
+        self._set_pressers(False,False)
         self._position_machine_exact(self._effective_position_length(p["len"],p["ax"],p["ad"],self._get_profile_thickness(p["profile"])),
                                      p["ax"],p["ad"],p["profile"],p["element"])
         self._apply_active_row(self._find_row_for_piece_tol(p["profile"],p["len"],p["ax"],p["ad"]))
@@ -739,21 +758,17 @@ class AutomaticoPage(QWidget):
 
     # ---------------- Start trigger ----------------
     def _handle_start_trigger(self):
-        # CUTLIST: posiziona sempre l'elemento selezionato (o il primo pezzo)
         if self._mode in ("manual","idle"):
             self._trigger_manual_cut(); return
-        # PIANO
         if self._mode!="plan" or not self._seq_plan: return
         if self._fq_state.get("active",False): return
         tgt=int(getattr(self.machine,"semi_auto_target_pieces",0) or 0)
         done=int(getattr(self.machine,"semi_auto_count_done",0) or 0)
         if self._brake_locked and tgt>0 and done<tgt: return
-        # Sblocca freno all'inizio di un nuovo pezzo di piano
         self._unlock_brake()
         self._advance_to_next_piece()
 
     def _trigger_manual_cut(self):
-        # Sblocca freno e posiziona sull'elemento selezionato (o primo pezzo)
         self._unlock_brake()
         r=self._current_or_next_piece_row()
         piece=self._get_row_piece(r) if r is not None else None
@@ -767,7 +782,6 @@ class AutomaticoPage(QWidget):
             self._move_and_arm(piece["len"],piece["ax"],piece["ad"],piece["profile"],piece["element"])
             if self._mode=="idle": self._mode="manual"
             return
-        # Nessuna riga → dialog manuale
         dlg=ManualCutDialog(self,preset=None)
         if not dlg.exec(): return
         data=dlg.get_data()
@@ -786,16 +800,13 @@ class AutomaticoPage(QWidget):
         self._simulate_cut_once()
 
     def _simulate_cut_once(self):
-        # CUTLIST: niente auto-continue
         if self._mode in ("manual","idle"):
             self._simulate_manual_cut(); return
-        # PIANO
         tgt=int(getattr(self.machine,"semi_auto_target_pieces",0) or 0)
         done=int(getattr(self.machine,"semi_auto_count_done",0) or 0)
         remaining=max(tgt-done,0)
         if not (self._brake_locked and tgt>0 and remaining>0):
             return
-        # Gestione fuori quota a due fasi
         if self._fq_state.get("active",False):
             phase=self._fq_state.get("phase","")
             if phase=="intest":
@@ -1080,7 +1091,6 @@ class AutomaticoPage(QWidget):
         if self._row_is_header(row):
             profile=self.tbl_cut.item(row,1).text().strip() if self.tbl_cut.item(row,1) else ""
             if profile:
-                # chiudi eventuale piano precedente
                 if self._opt_dialog:
                     with contextlib.suppress(Exception): self.activePieceChanged.disconnect(self._opt_dialog.onActivePieceChanged)
                     with contextlib.suppress(Exception): self.pieceCut.disconnect(self._opt_dialog.onPieceCut)
