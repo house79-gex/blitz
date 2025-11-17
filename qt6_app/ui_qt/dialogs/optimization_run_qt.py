@@ -78,16 +78,16 @@ class OptimizationSummaryDialog(QDialog):
         btns = QHBoxLayout()
         btns.addStretch(1)
         self.btn_csv = QPushButton("Esporta CSV")
-        self.btn_pdf = QPushButton("Esporta PDF")
+        the_pdf = QPushButton("Esporta PDF")
         self.btn_close = QPushButton("Chiudi")
         btns.addWidget(self.btn_csv)
-        btns.addWidget(self.btn_pdf)
+        btns.addWidget(the_pdf)
         btns.addWidget(self.btn_close)
         root.addLayout(btns)
 
         self.btn_close.clicked.connect(self.close)
         self.btn_csv.clicked.connect(self._export_csv)
-        self.btn_pdf.clicked.connect(self._export_pdf)
+        the_pdf.clicked.connect(self._export_pdf)
 
         self._fill_table()
         self.resize(1120, 520)
@@ -188,7 +188,7 @@ class OptimizationRunDialog(QDialog):
     GRAPH_V_GAP = 6
     TABLE_MIN_H = 180
 
-    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
+    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[Widget] = None):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
@@ -209,7 +209,7 @@ class OptimizationRunDialog(QDialog):
         self._max_factor = float(cfg.get("opt_kerf_max_factor", 2.0))
         self._warn_thr = float(cfg.get("opt_warn_overflow_mm", 0.5))
 
-        self._overlay_target: Optional[QWidget] = overlay_target
+        self._overlay_target: Optional[Widget] = overlay_target
         self._show_graph = True if self._overlay_target is not None else bool(cfg.get("opt_show_graph", True))
         self._collapse_done_bars: bool = bool(cfg.get("opt_collapse_done_bars", True))
 
@@ -219,7 +219,7 @@ class OptimizationRunDialog(QDialog):
 
         # container per scroll
         self._scroll: Optional[QScrollArea] = None
-        self._graph_container: Optional[QWidget] = None
+        self._graph_container: Optional[Widget] = None
 
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -406,7 +406,6 @@ class OptimizationRunDialog(QDialog):
     def _refresh_graph_only(self):
         if not self._graph: return
         bars_view = self._effective_bars_for_view()
-        # in modalità 'collassa', passiamo solo le barre rimanenti; evitiamo done_by_index (indici non corrispondono)
         with contextlib.suppress(Exception):
             self._graph.set_data(
                 bars_view, stock_mm=self._stock,
