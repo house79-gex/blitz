@@ -1,13 +1,6 @@
-# v6.8 — Manual cut positioning + row highlight; plan highlight via signals; robust brake fallback
-# - Manual mode:
-#   * Double-click on a row: positions immediately (no dialog) and highlights that row; emits activePieceChanged(mode=manual).
-#   * Start: if a row is selected, positions it; else opens an input dialog.
-#   * Cyan highlight on active row.
-# - Plan mode:
-#   * Emits activePieceChanged (cyan) and pieceCut (green) for the optimization graphic overlay.
-#   * Restored advance logic after cut.
-# - Robust brake: fallback brake lock after positioning if machine doesn’t report in-position (dummy env).
-# - Cutlist row highlight utilities reintroduced.
+# v6.8.1 — Fix AttributeError (_set_pressers missing) + manual/plan highlight/positioning
+# - Reintroduce _set_pressers() used by _move_and_arm().
+# - Keeps v6.8 behavior: manual mode row highlight + positioning; plan signals to dialog; brake fallback.
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
@@ -150,7 +143,7 @@ class OptimizationConfigDialog(QDialog):
         cfg["opt_reversible_angle_tol_deg"] = f(self.ed_angle_tol.text(),0.5)
         cfg["opt_warn_overflow_mm"] = f(self.ed_warn_over.text(),0.5)
         cfg["opt_auto_continue_enabled"] = bool(self.chk_auto_cont.isChecked())
-        cfg["opt_auto_continue_across_bars"] = bool(self.chk_auto_across.isChecked())
+        cfg["opt_auto_continue_across_bars"] = bool(self._chk_auto_across.isChecked()) if hasattr(self, "_chk_auto_across") else bool(cfg.get("opt_auto_continue_across_bars", False))
         cfg["opt_strict_bar_sequence"] = bool(self.chk_strict_seq.isChecked())
         write_settings(cfg); self.accept()
 
@@ -304,10 +297,8 @@ class AutomaticoPage(QWidget):
         self._sig_total_counts: Dict[Tuple[str,float,float,float],int]={}
         self._cur_sig: Optional[Tuple[str,float,float,float]]=None
 
-        # row highlight state
         self._active_row: Optional[int]=None
 
-        # movement
         self._brake_locked=False
         self._blade_prev=False
         self._start_prev=False
@@ -763,9 +754,7 @@ class AutomaticoPage(QWidget):
             setattr(self.machine,"semi_auto_target_pieces",1)
             setattr(self.machine,"semi_auto_count_done",0)
         self._move_and_arm(p["len"],p["ax"],p["ad"],p["profile"],p["element"])
-        # Row highlight (optional visual feedback in table)
         self._apply_active_row(self._find_row_for_piece_tol(p["profile"],p["len"],p["ax"],p["ad"]))
-        # Graphic highlight via signal
         self.activePieceChanged.emit({
             "profile":p["profile"],"len":p["len"],"ax":p["ax"],"ad":p["ad"],
             "element":p["element"],"seq_id":p["seq_id"],"mode":"plan"
@@ -785,7 +774,6 @@ class AutomaticoPage(QWidget):
         self._advance_to_next_piece()
 
     def _trigger_manual_cut(self):
-        # If a table row is selected, use it directly; else open dialog
         r=self.tbl_cut.currentRow()
         if r is not None and r>=0 and not self._row_is_header(r):
             try:
@@ -808,7 +796,6 @@ class AutomaticoPage(QWidget):
                     setattr(self.machine,"semi_auto_target_pieces",1); setattr(self.machine,"semi_auto_count_done",0)
                 self._manual_current_piece=piece
                 return
-        # fallback: open dialog
         dlg=ManualCutDialog(self,preset=None)
         if not dlg.exec(): return
         data=dlg.get_data()
@@ -870,10 +857,6 @@ class AutomaticoPage(QWidget):
         self._update_counters_ui()
 
     def _simulate_manual_cut(self):
-        # If machine/dummy didn't lock brake yet, accept cut anyway for manual after short grace period
-        if not self._brake_locked:
-            # allow immediate cut in manual if no brake: proceed
-            pass
         piece=self._manual_current_piece
         if not piece: return
         self._emit_label(piece)
@@ -973,8 +956,20 @@ class AutomaticoPage(QWidget):
         except Exception as e:
             QMessageBox.critical(self,"Posizionamento",str(e)); return
         self._move_target_mm=float(target_mm); self._inpos_since=0.0; self._lock_on_inpos=True
-        # Fallback: força blocco freno dopo breve tempo in ambienti dummy
         QTimer.singleShot(300, self._maybe_force_lock)
+
+    def _set_pressers(self,left_locked:Optional[bool]=None,right_locked:Optional[bool]=None):
+        with contextlib.suppress(Exception):
+            if left_locked is not None:
+                if hasattr(self.machine,"set_left_presser_locked"):
+                    self.machine.set_left_presser_locked(bool(left_locked))
+                else:
+                    setattr(self.machine,"left_presser_locked",bool(left_locked))
+            if right_locked is not None:
+                if hasattr(self.machine,"set_right_presser_locked"):
+                    self.machine.set_right_presser_locked(bool(right_locked))
+                else:
+                    setattr(self.machine,"right_presser_locked",bool(right_locked))
 
     def _move_and_arm(self,length:float,ax:float,ad:float,profile:str,element:str):
         thickness_mm=self._get_profile_thickness(profile)
@@ -1009,7 +1004,6 @@ class AutomaticoPage(QWidget):
 
     def _maybe_force_lock(self):
         if not self._brake_locked:
-            # If machine doesn't expose positioning_active or inpos, force brake lock as fallback
             in_mov = bool(getattr(self.machine,"positioning_active",False))
             if not in_mov:
                 self._lock_brake()
@@ -1087,7 +1081,6 @@ class AutomaticoPage(QWidget):
         return bool(it) and not bool(it.flags() & Qt.ItemIsSelectable)
 
     def _on_cell_double_clicked(self,row:int,col:int):
-        # In Manuale: doppio click posiziona immediatamente la riga
         if self._mode=="manual" and not self._row_is_header(row):
             try:
                 piece={
@@ -1109,7 +1102,6 @@ class AutomaticoPage(QWidget):
             self._mode="manual"
             self._update_counters_ui()
             return
-        # In plan: doppio click su header ottimizza quel profilo
         if self._row_is_header(row) and self._mode!="manual":
             profile=self.tbl_cut.item(row,1).text().strip()
             if profile:
