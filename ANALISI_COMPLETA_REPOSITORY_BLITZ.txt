@@ -1,0 +1,737 @@
+ANALISI COMPLETA REPOSITORY BLITZ
+
+Questo documento contiene un'analisi completa e dettagliata di tutti i file presenti nella repository "blitz", includendo la descrizione della funzione di ogni file e le sue relazioni con il sistema.
+Data analisi: 2025-11-17 21:19:33
+
+1. PANORAMICA GENERALE
+Il progetto BLITZ è un'applicazione per il controllo di una troncatrice CNC a 2 teste. L'applicazione è sviluppata in Python utilizzando il framework Qt6 (PySide6) per l'interfaccia grafica.
+Architettura del Sistema:
+* Linguaggio principale: Python 3.x
+* Framework UI: PySide6 (Qt6)
+* Librerie principali: numpy (calcoli numerici), ortools (ottimizzazione)
+* Database: SQLite per gestione commesse e tipologie
+
+
+2. STATISTICHE REPOSITORY
+Tipo File
+Quantità
+JSON
+3
+Markdown
+1
+Other
+1
+Python
+69
+SQL
+1
+Text
+1
+Totale file: 76
+
+
+3. STRUTTURA DIRECTORY
+La repository è organizzata nelle seguenti directory principali:
+
+* qt6_app/: Applicazione principale Qt6
+* qt6_app/ui_qt/: Moduli interfaccia utente
+* qt6_app/ui_qt/data/: Gestione database e persistenza dati
+* qt6_app/ui_qt/dialogs/: Finestre di dialogo modali
+* qt6_app/ui_qt/logic/: Logica di business (homing, planning, sequencing)
+* qt6_app/ui_qt/pages/: Pagine principali dell'applicazione
+* qt6_app/ui_qt/services/: Servizi e motori (calcoli, import DXF, parametrico)
+* qt6_app/ui_qt/utils/: Utility e configurazioni
+* qt6_app/ui_qt/widgets/: Componenti UI riutilizzabili
+* ui/: Moduli condivisi (stato macchina)
+* data/: File di configurazione e dati
+* data/typologies/: Definizioni tipologie prodotti
+
+
+4. ANALISI DETTAGLIATA DEI FILE
+Di seguito l'elenco completo di tutti i file con descrizione dettagliata della loro funzione e pertinenze nel sistema.
+
+Directory: ROOT
+1. ?? .gitignore
+Tipo: Other
+* Percorso: .gitignore
+* Funzione: Configurazione Git
+* Descrizione: Specifica i file da ignorare nel version control (cache Python, ambienti virtuali, database, log)
+* Pertinenze: File di supporto generale
+
+2. ?? README.md
+Tipo: Markdown
+* Percorso: README.md
+* Funzione: Documentazione principale del progetto
+* Descrizione: File README che descrive il progetto Blitz - una troncatrice CNC a 2 teste
+* Pertinenze: File di supporto generale
+
+Directory: data
+3. ?? settings.json
+Tipo: JSON
+* Percorso: data/settings.json
+* Funzione: Configurazione solver
+* Descrizione: Impostazioni per il solver di ottimizzazione (ILP) con limite di tempo
+* Contenuto: File di configurazione JSON con 2 chiavi principali
+* Chiavi: solver, ilp_time_limit_s
+* Pertinenze: Configurazione applicazione
+
+4. ?? themes.json
+Tipo: JSON
+* Percorso: data/themes.json
+* Funzione: Temi interfaccia
+* Descrizione: Definisce la palette colori e stili dell'interfaccia (tema scuro di default)
+* Contenuto: File di configurazione JSON con 1 chiavi principali
+* Chiavi: Default
+* Pertinenze: Gestione temi e stili visuali
+
+Directory: data/typologies
+5. ?? finestra_2_ante.json
+Tipo: JSON
+* Percorso: data/typologies/finestra_2_ante.json
+* Funzione: Tipologia prodotto
+* Descrizione: Definizione parametrica di una finestra a 2 ante battenti con calcoli automatici per telai, ante, riporti e fermavetri
+* Contenuto: File di configurazione JSON con 6 chiavi principali
+* Chiavi: name, version, description, parameters, derived, elements
+* Pertinenze: File di supporto generale
+
+Directory: qt6_app
+6. ?? main_qt.py
+Tipo: Python
+* Percorso: qt6_app/main_qt.py
+* Funzione: Entry point applicazione
+* Descrizione: File principale che avvia l'applicazione Qt6, gestisce il logging, crea la finestra principale e implementa lo stato macchina dummy per sviluppo
+* Dettagli tecnici: Linee: 335, Imports: 15, Classi: 4, Funzioni: 29
+* Pertinenze: Entry point principale dell'applicazione
+
+Directory: qt6_app/ui_qt/data
+7. ?? __init__.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/data/__init__.py
+* Funzione: Data Access Object
+* Descrizione: Gestione dati per   init  
+* Dettagli tecnici: Linee: 2, Imports: 0, Classi: 0, Funzioni: 0
+* Note: package marker
+* Pertinenze: File di supporto generale
+
+8. ?? commesse_dao.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/data/commesse_dao.py
+* Funzione: Data Access Object
+* Descrizione: Gestione dati per commesse dao
+* Dettagli tecnici: Linee: 46, Imports: 3, Classi: 0, Funzioni: 7
+* Pertinenze: Accesso e gestione database
+
+9. ?? db.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/data/db.py
+* Funzione: Data Access Object
+* Descrizione: Gestione dati per db
+* Dettagli tecnici: Linee: 55, Imports: 4, Classi: 0, Funzioni: 2
+* Pertinenze: Accesso e gestione database
+
+10. ?? seed.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/data/seed.py
+* Funzione: Data Access Object
+* Descrizione: Gestione dati per seed
+* Dettagli tecnici: Linee: 15, Imports: 3, Classi: 0, Funzioni: 1
+* Note: Se non ci sono tipologie, applichiamo la seed.sql
+* Pertinenze: File di supporto generale
+
+11. ?? seed.sql
+Tipo: SQL
+* Percorso: qt6_app/ui_qt/data/seed.sql
+* Funzione: File di supporto
+* Descrizione: File SQL: seed
+* Pertinenze: File di supporto generale
+
+12. ?? tipologie_dao.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/data/tipologie_dao.py
+* Funzione: Data Access Object
+* Descrizione: Gestione dati per tipologie dao
+* Dettagli tecnici: Linee: 21, Imports: 0, Classi: 0, Funzioni: 0
+* Pertinenze: Accesso e gestione database
+
+Directory: qt6_app/ui_qt/dialogs
+13. ?? component_hardware_map_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/component_hardware_map_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per component hardware map qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 93, Imports: 5, Classi: 1, Funzioni: 6
+* Pertinenze: Interfaccia utente - Interazione modale
+
+14. ?? component_hw_formula_picker_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/component_hw_formula_picker_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per component hw formula picker qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 142, Imports: 6, Classi: 1, Funzioni: 10
+* Pertinenze: Interfaccia utente - Interazione modale
+
+15. ?? cutlist_viewer_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/cutlist_viewer_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per cutlist viewer qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 145, Imports: 9, Classi: 1, Funzioni: 6
+* Pertinenze: Interfaccia utente - Interazione modale
+
+16. ?? dxf_measure_dialog.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/dxf_measure_dialog.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per dxf measure dialog nell'interfaccia utente
+* Dettagli tecnici: Linee: 68, Imports: 3, Classi: 1, Funzioni: 5
+* Pertinenze: Interfaccia utente - Interazione modale
+
+17. ?? hardware_manager_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/hardware_manager_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per hardware manager qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 239, Imports: 8, Classi: 1, Funzioni: 13
+* Pertinenze: Interfaccia utente - Interazione modale
+
+18. ?? hw_formula_presets__qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/hw_formula_presets__qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per hw formula presets  qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 137, Imports: 4, Classi: 1, Funzioni: 7
+* Pertinenze: Interfaccia utente - Interazione modale
+
+19. ?? hw_mechanism_manager_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/hw_mechanism_manager_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per hw mechanism manager qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 179, Imports: 5, Classi: 1, Funzioni: 11
+* Pertinenze: Interfaccia utente - Interazione modale
+
+20. ?? log_viewer_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/log_viewer_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per log viewer qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 36, Imports: 4, Classi: 1, Funzioni: 3
+* Pertinenze: Interfaccia utente - Interazione modale
+
+21. ?? multi_formulas_editor_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/multi_formulas_editor_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per multi formulas editor qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 254, Imports: 6, Classi: 1, Funzioni: 16
+* Pertinenze: Interfaccia utente - Interazione modale
+
+22. ?? optimization_run_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/optimization_run_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per optimization run qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 516, Imports: 11, Classi: 2, Funzioni: 31
+* Pertinenze: Interfaccia utente - Interazione modale
+
+23. ?? optimization_settings_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/optimization_settings_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per optimization settings qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 110, Imports: 5, Classi: 1, Funzioni: 6
+* Pertinenze: Interfaccia utente - Interazione modale, Configurazione applicazione
+
+24. ?? order_row_dims_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/order_row_dims_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per order row dims qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 94, Imports: 4, Classi: 1, Funzioni: 4
+* Pertinenze: Interfaccia utente - Interazione modale
+
+25. ?? order_row_group_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/order_row_group_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per order row group qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 36, Imports: 3, Classi: 1, Funzioni: 3
+* Pertinenze: Interfaccia utente - Interazione modale
+
+26. ?? order_row_hw_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/order_row_hw_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per order row hw qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 49, Imports: 3, Classi: 1, Funzioni: 5
+* Pertinenze: Interfaccia utente - Interazione modale
+
+27. ?? order_row_typology_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/order_row_typology_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per order row typology qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 36, Imports: 3, Classi: 1, Funzioni: 4
+* Pertinenze: Interfaccia utente - Interazione modale
+
+28. ?? orders_manager_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/orders_manager_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per orders manager qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 93, Imports: 4, Classi: 1, Funzioni: 7
+* Pertinenze: Interfaccia utente - Interazione modale
+
+29. ?? profile_edit_dialog.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/profile_edit_dialog.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per profile edit dialog nell'interfaccia utente
+* Dettagli tecnici: Linee: 49, Imports: 2, Classi: 1, Funzioni: 2
+* Pertinenze: Interfaccia utente - Interazione modale
+
+30. ?? profile_save_dialog.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/profile_save_dialog.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per profile save dialog nell'interfaccia utente
+* Dettagli tecnici: Linee: 108, Imports: 4, Classi: 1, Funzioni: 4
+* Pertinenze: Interfaccia utente - Interazione modale
+
+31. ?? tipologia_editor_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/tipologia_editor_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per tipologia editor qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 565, Imports: 10, Classi: 2, Funzioni: 36
+* Pertinenze: Interfaccia utente - Interazione modale
+
+32. ?? typology_hw_options_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/typology_hw_options_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per typology hw options qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 173, Imports: 5, Classi: 1, Funzioni: 11
+* Pertinenze: Interfaccia utente - Interazione modale
+
+33. ?? typology_mech_formulas_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/typology_mech_formulas_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per typology mech formulas qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 193, Imports: 6, Classi: 1, Funzioni: 7
+* Pertinenze: Interfaccia utente - Interazione modale
+
+34. ?? vars_editor_qt.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/dialogs/vars_editor_qt.py
+* Funzione: Dialog/finestra modale
+* Descrizione: Finestra di dialogo per vars editor qt nell'interfaccia utente
+* Dettagli tecnici: Linee: 64, Imports: 4, Classi: 1, Funzioni: 5
+* Pertinenze: Interfaccia utente - Interazione modale
+
+Directory: qt6_app/ui_qt/logic
+35. ?? __init__.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/logic/__init__.py
+* Funzione: Logica applicativa
+* Descrizione: Modulo logico per   init  
+* Dettagli tecnici: Linee: 2, Imports: 0, Classi: 0, Funzioni: 0
+* Note: package marker
+* Pertinenze: Algoritmi e logica di controllo
+
+36. ?? homing.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/logic/homing.py
+* Funzione: Logica applicativa
+* Descrizione: Modulo logico per homing
+* Dettagli tecnici: Linee: 100, Imports: 2, Classi: 0, Funzioni: 2
+* Pertinenze: Algoritmi e logica di controllo
+
+37. ?? planner.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/logic/planner.py
+* Funzione: Logica applicativa
+* Descrizione: Modulo logico per planner
+* Dettagli tecnici: Linee: 33, Imports: 2, Classi: 0, Funzioni: 2
+* Note: Planner ILP/BFD per Automatico.  - plan_ilp(jobs, stock, time_limit_s): tenta OR-Tools; fallback a BFD se non disponibile. - plan_bfd(jobs, stock): algoritmo semplice first/best fit decreasing come placeholder.  Entrambi restituiscono un dict: { "solver": "ILP"|"BFD", "steps": [ { "id": str, "len": float, "qty": int, "stock_id": str|None } ], }
+* Pertinenze: Algoritmi e logica di controllo
+
+38. ?? refiner.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/logic/refiner.py
+* Funzione: Logica applicativa
+* Descrizione: Modulo logico per refiner
+* Dettagli tecnici: Linee: 334, Imports: 6, Classi: 0, Funzioni: 10
+* Note: ============================================================ Calcoli kerf angolare + ripasso + recupero reversibile (automatico) ============================================================
+* Pertinenze: Algoritmi e logica di controllo
+
+39. ?? sequencer.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/logic/sequencer.py
+* Funzione: Logica applicativa
+* Descrizione: Modulo logico per sequencer
+* Dettagli tecnici: Linee: 70, Imports: 1, Classi: 1, Funzioni: 8
+* Pertinenze: Algoritmi e logica di controllo
+
+Directory: qt6_app/ui_qt/pages
+40. ?? automatico_page.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/pages/automatico_page.py
+* Funzione: Pagina applicazione
+* Descrizione: Pagina automatico page dell'applicazione principale
+* Dettagli tecnici: Linee: 1262, Imports: 23, Classi: 4, Funzioni: 79
+* Pertinenze: Interfaccia utente - Schermata principale
+
+41. ?? home_page.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/pages/home_page.py
+* Funzione: Pagina applicazione
+* Descrizione: Pagina home page dell'applicazione principale
+* Dettagli tecnici: Linee: 220, Imports: 11, Classi: 1, Funzioni: 13
+* Note: Import "tollerante" del theme_store (icone tema + tema attivo)
+* Pertinenze: Interfaccia utente - Schermata principale
+
+42. ?? manuale_page.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/pages/manuale_page.py
+* Funzione: Pagina applicazione
+* Descrizione: Pagina manuale page dell'applicazione principale
+* Dettagli tecnici: Linee: 476, Imports: 6, Classi: 1, Funzioni: 25
+* Note: Dimensioni base (verranno scalate dinamicamente)
+* Pertinenze: Interfaccia utente - Schermata principale
+
+43. ?? quotevani_page.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/pages/quotevani_page.py
+* Funzione: Pagina applicazione
+* Descrizione: Pagina quotevani page dell'applicazione principale
+* Dettagli tecnici: Linee: 459, Imports: 19, Classi: 1, Funzioni: 15
+* Pertinenze: Interfaccia utente - Schermata principale
+
+44. ?? semi_auto_page.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/pages/semi_auto_page.py
+* Funzione: Pagina applicazione
+* Descrizione: Pagina semi auto page dell'applicazione principale
+* Dettagli tecnici: Linee: 966, Imports: 11, Classi: 1, Funzioni: 36
+* Pertinenze: Interfaccia utente - Schermata principale
+
+45. ?? tipologie_page.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/pages/tipologie_page.py
+* Funzione: Pagina applicazione
+* Descrizione: Pagina tipologie page dell'applicazione principale
+* Dettagli tecnici: Linee: 183, Imports: 12, Classi: 1, Funzioni: 10
+* Pertinenze: Interfaccia utente - Schermata principale
+
+46. ?? utility_page.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/pages/utility_page.py
+* Funzione: Pagina applicazione
+* Descrizione: Pagina utility page dell'applicazione principale
+* Dettagli tecnici: Linee: 1405, Imports: 21, Classi: 7, Funzioni: 108
+* Note: v4.1 - Etichette: anteprima render, placeholder cliccabili, simulazione a video. Fix: ProfilesSubPage completo (con _build), costruttori QFrame corretti.
+* Pertinenze: Interfaccia utente - Schermata principale
+
+Directory: qt6_app/ui_qt/services
+47. ?? calculators.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/services/calculators.py
+* Funzione: Servizio business logic
+* Descrizione: Servizio per gestire calculators
+* Dettagli tecnici: Linee: 15, Imports: 3, Classi: 0, Funzioni: 2
+* Pertinenze: Business logic e elaborazione dati
+
+48. ?? dxf_importer.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/services/dxf_importer.py
+* Funzione: Servizio business logic
+* Descrizione: Servizio per gestire dxf importer
+* Dettagli tecnici: Linee: 80, Imports: 3, Classi: 0, Funzioni: 2
+* Pertinenze: Business logic e elaborazione dati
+
+49. ?? legacy_formula.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/services/legacy_formula.py
+* Funzione: Servizio business logic
+* Descrizione: Servizio per gestire legacy formula
+* Dettagli tecnici: Linee: 141, Imports: 5, Classi: 1, Funzioni: 14
+* Pertinenze: Business logic e elaborazione dati
+
+50. ?? orders_store.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/services/orders_store.py
+* Funzione: Servizio business logic
+* Descrizione: Servizio per gestire orders store
+* Dettagli tecnici: Linee: 102, Imports: 7, Classi: 1, Funzioni: 12
+* Pertinenze: Business logic e elaborazione dati, Gestione stato e persistenza
+
+51. ?? parametric_engine.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/services/parametric_engine.py
+* Funzione: Servizio business logic
+* Descrizione: Servizio per gestire parametric engine
+* Dettagli tecnici: Linee: 162, Imports: 6, Classi: 6, Funzioni: 14
+* Note: Valutatore sicuro per formule (solo aritmetica/funzioni whitelisted)
+* Pertinenze: Business logic e elaborazione dati
+
+52. ?? probe_service.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/services/probe_service.py
+* Funzione: Servizio business logic
+* Descrizione: Servizio per gestire probe service
+* Dettagli tecnici: Linee: 52, Imports: 4, Classi: 1, Funzioni: 4
+* Pertinenze: Business logic e elaborazione dati
+
+53. ?? profiles_store.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/services/profiles_store.py
+* Funzione: Servizio business logic
+* Descrizione: Servizio per gestire profiles store
+* Dettagli tecnici: Linee: 109, Imports: 3, Classi: 1, Funzioni: 9
+* Note: Database condiviso per profili/spessori (interoperabile con Tipologie) Percorso unico: data/profiles.db a livello progetto
+* Pertinenze: Business logic e elaborazione dati, Gestione stato e persistenza
+
+54. ?? qcad_integration.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/services/qcad_integration.py
+* Funzione: Servizio business logic
+* Descrizione: Servizio per gestire qcad integration
+* Dettagli tecnici: Linee: 128, Imports: 7, Classi: 0, Funzioni: 5
+* Pertinenze: Business logic e elaborazione dati
+
+55. ?? rs485_manager.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/services/rs485_manager.py
+* Funzione: Servizio business logic
+* Descrizione: Servizio per gestire rs485 manager
+* Dettagli tecnici: Linee: 143, Imports: 5, Classi: 1, Funzioni: 8
+* Note: Dipendenze opzionali: pyserial, pymodbus
+* Pertinenze: Business logic e elaborazione dati
+
+56. ?? typologies_store.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/services/typologies_store.py
+* Funzione: Servizio business logic
+* Descrizione: Servizio per gestire typologies store
+* Dettagli tecnici: Linee: 350, Imports: 6, Classi: 1, Funzioni: 19
+* Pertinenze: Business logic e elaborazione dati, Gestione stato e persistenza
+
+Directory: qt6_app/ui_qt
+57. ?? theme.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/theme.py
+* Funzione: File di supporto
+* Descrizione: File Python: theme
+* Dettagli tecnici: Linee: 158, Imports: 2, Classi: 0, Funzioni: 3
+* Note: Palette coerente con il THEME Tk (stesse chiavi)
+* Pertinenze: Gestione temi e stili visuali
+
+Directory: qt6_app/ui_qt/utils
+58. ?? app_settings.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/utils/app_settings.py
+* Funzione: Utility
+* Descrizione: Funzioni di utilità per app settings
+* Dettagli tecnici: Linee: 39, Imports: 4, Classi: 0, Funzioni: 6
+* Pertinenze: Configurazione applicazione
+
+59. ?? label_templates_store.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/utils/label_templates_store.py
+* Funzione: Utility
+* Descrizione: Funzioni di utilità per label templates store
+* Dettagli tecnici: Linee: 284, Imports: 3, Classi: 0, Funzioni: 18
+* Pertinenze: Gestione stato e persistenza
+
+60. ?? settings.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/utils/settings.py
+* Funzione: Utility
+* Descrizione: Funzioni di utilità per settings
+* Dettagli tecnici: Linee: 57, Imports: 3, Classi: 0, Funzioni: 7
+* Pertinenze: Configurazione applicazione
+
+61. ?? theme_store.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/utils/theme_store.py
+* Funzione: Utility
+* Descrizione: Funzioni di utilità per theme store
+* Dettagli tecnici: Linee: 102, Imports: 3, Classi: 0, Funzioni: 8
+* Pertinenze: Gestione temi e stili visuali, Gestione stato e persistenza
+
+Directory: qt6_app/ui_qt/widgets
+62. ?? header.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/header.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: header
+* Dettagli tecnici: Linee: 374, Imports: 3, Classi: 1, Funzioni: 15
+* Pertinenze: Componente UI riutilizzabile
+
+63. ?? heads_view.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/heads_view.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: heads view
+* Dettagli tecnici: Linee: 143, Imports: 4, Classi: 1, Funzioni: 5
+* Pertinenze: Componente UI riutilizzabile
+
+64. ?? min_stack.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/min_stack.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: min stack
+* Dettagli tecnici: Linee: 14, Imports: 2, Classi: 1, Funzioni: 2
+* Pertinenze: Componente UI riutilizzabile
+
+65. ?? overlay.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/overlay.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: overlay
+* Dettagli tecnici: Linee: 26, Imports: 2, Classi: 1, Funzioni: 2
+* Pertinenze: Componente UI riutilizzabile
+
+66. ?? plan_visualizer.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/plan_visualizer.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: plan visualizer
+* Dettagli tecnici: Linee: 404, Imports: 7, Classi: 1, Funzioni: 13
+* Pertinenze: Componente UI riutilizzabile
+
+67. ?? section_preview.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/section_preview.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: section preview
+* Dettagli tecnici: Linee: 247, Imports: 8, Classi: 1, Funzioni: 11
+* Pertinenze: Componente UI riutilizzabile
+
+68. ?? section_preview_popup.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/section_preview_popup.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: section preview popup
+* Dettagli tecnici: Linee: 55, Imports: 5, Classi: 1, Funzioni: 4
+* Pertinenze: Componente UI riutilizzabile
+
+69. ?? size_ignorer.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/size_ignorer.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: size ignorer
+* Dettagli tecnici: Linee: 21, Imports: 2, Classi: 1, Funzioni: 3
+* Pertinenze: Componente UI riutilizzabile
+
+70. ?? status_panel.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/status_panel.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: status panel
+* Dettagli tecnici: Linee: 122, Imports: 4, Classi: 1, Funzioni: 6
+* Note: Palette
+* Pertinenze: Componente UI riutilizzabile
+
+71. ?? toast.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/toast.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: toast
+* Dettagli tecnici: Linee: 78, Imports: 2, Classi: 2, Funzioni: 5
+* Pertinenze: Componente UI riutilizzabile
+
+72. ?? tooltip.py
+Tipo: Python
+* Percorso: qt6_app/ui_qt/widgets/tooltip.py
+* Funzione: Widget UI
+* Descrizione: Componente UI riutilizzabile: tooltip
+* Dettagli tecnici: Linee: 48, Imports: 3, Classi: 1, Funzioni: 5
+* Pertinenze: Componente UI riutilizzabile
+
+Directory: ROOT
+73. ?? requirements-qt6.txt
+Tipo: Text
+* Percorso: requirements-qt6.txt
+* Funzione: Dipendenze Python
+* Descrizione: Lista delle dipendenze del progetto: PySide6 (Qt6), numpy, ortools per ottimizzazione
+* Pertinenze: File di supporto generale
+
+Directory: ui
+74. ?? __init__.py
+Tipo: Python
+* Percorso: ui/__init__.py
+* Funzione: File di supporto
+* Descrizione: File Python: __init__
+* Dettagli tecnici: Linee: 1, Imports: 0, Classi: 0, Funzioni: 0
+* Note: package marker
+* Pertinenze: File di supporto generale
+
+Directory: ui/shared
+75. ?? __init__.py
+Tipo: Python
+* Percorso: ui/shared/__init__.py
+* Funzione: File di supporto
+* Descrizione: File Python: __init__
+* Dettagli tecnici: Linee: 1, Imports: 0, Classi: 0, Funzioni: 0
+* Note: package marker
+* Pertinenze: File di supporto generale
+
+76. ?? machine_state.py
+Tipo: Python
+* Percorso: ui/shared/machine_state.py
+* Funzione: Stato macchina
+* Descrizione: Classe principale che gestisce lo stato della macchina CNC: homing, movimenti, angoli, freno, frizione, encoder, emergenza
+* Dettagli tecnici: Linee: 196, Imports: 3, Classi: 1, Funzioni: 13
+* Note: Stato base
+* Pertinenze: Controllo hardware CNC
+
+
+
+5. MODULI E COMPONENTI PRINCIPALI
+5.1 Interfaccia Utente (UI)
+L'interfaccia è costruita con PySide6 e organizzata in pagine, dialog e widget. Le pagine principali includono: Home, Manuale, Automatico, Semi-automatico, Tipologie, QuoteVani e Utility.
+5.2 Gestione Dati
+Il sistema utilizza SQLite per la persistenza. I DAO (Data Access Objects) gestiscono le operazioni su commesse e tipologie. Include funzionalità di seed per popolare il database.
+5.3 Logica di Controllo
+Moduli dedicati per homing (azzeramento macchina), planning (pianificazione tagli), refining (ottimizzazione), e sequencing (sequenziamento operazioni).
+5.4 Servizi
+Include motori per calcoli parametrici, import DXF, integrazione QCAD, gestione RS485, e store per ordini, profili e tipologie.
+5.5 Hardware e Machine State
+Il modulo machine_state gestisce lo stato della macchina CNC: posizionamento, angoli teste, encoder, freno, frizione, emergenza, e code di lavoro.
+
+
+6. FLUSSI OPERATIVI PRINCIPALI
+6.1 Modalità Manuale
+- L'operatore controlla direttamente posizione e angoli
+- Gestione freno e frizione manuale
+- Pulsanti teste per esecuzione tagli
+6.2 Modalità Semi-automatica
+- Impostazione parametri di taglio
+- Posizionamento automatico
+- Conteggio pezzi programmato
+6.3 Modalità Automatica
+- Caricamento commesse da database
+- Ottimizzazione sequenza tagli
+- Esecuzione automatica con monitoraggio
+6.4 Gestione Tipologie
+- Editor tipologie parametriche
+- Calcolo automatico dimensioni componenti
+- Export e import configurazioni
+
+
+7. CONCLUSIONI
+La repository BLITZ rappresenta un sistema completo per il controllo di macchine CNC. L'architettura modulare separa chiaramente le responsabilità tra UI, logica di business, e controllo hardware. Il sistema supporta multiple modalità operative e include funzionalità avanzate come ottimizzazione tagli, gestione tipologie parametriche, e integrazione CAD.
+
+Punti di forza:
+* Architettura modulare ben organizzata
+* Separazione tra logica e presentazione
+* Sistema tipologie parametrico flessibile
+* Supporto multiple modalità operative
+* Logging e gestione errori strutturati
+* Tema e UI personalizzabili
+* Ottimizzazione automatica con OR-Tools
+
+Questo documento è stato generato automaticamente analizzando 76 file nella repository.
