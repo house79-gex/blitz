@@ -1433,4 +1433,10 @@ class AutomaticoPage(QWidget):
         html = f'<span style="color: gray">[{timestamp}]</span> '
         html += f'<span style="color: {color}">{prefix} {message}</span>'
         
-        self.
+        self.log_text.append(html)
+        
+        # Auto-scroll
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        
+    
