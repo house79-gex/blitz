@@ -1,403 +1,373 @@
-from __future__ import annotations
-from typing import List, Dict, Tuple, Optional
-import math
+"""
+Widget migliorato per la visualizzazione del piano di taglio con gestione 
+corretta del collasso delle barre e visibilità degli elementi tagliati
+"""
 
-from PySide6.QtCore import Qt, QRectF, QPointF, QSize
-from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QFrame
+from PySide6.QtCore import Qt, Signal, QTimer, QPropertyAnimation, QRect, QEasingCurve
+from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QFont
 
-from ui_qt.logic.refiner import (
-    joint_consumption,
-    bar_used_length
-)
-
-
-class PlanVisualizerWidget(QWidget):
-    """
-    Visualizzazione grafica del piano (Automatico):
-
-    - Barre su righe. (Richiesta: NESSUN sfondo speciale per la barra attiva.)
-      Barre completate: sfondo grigio chiaro + bordo verde.
-    - Pezzi come trapezi ribaltati: base maggiore in alto (punte), base minore in basso (base).
-      Angoli preservati (offset orizzontali calcolati da tan(ang)*altezza), NON alterati.
-    - Nessun accavallamento: gap tra pezzi = max(kerf_px, somma punte adiacenti + margine).
-      Se necessario la scala orizzontale si riduce (solo lunghezze/gap, non gli angoli) così tutto rientra.
-    - Dopo i pezzi, i “gap” vengono riempiti con il colore della barra per impedire che il colore dei pezzi
-      invada visivamente la barra.
-    - Colori pezzi alternati (blu / teal); pezzi tagliati in verde.
-    - Stato “done” per indice con fallback per firma (se servisse).
-    """
-
+class PlanVisualizer(QWidget):
+    """Widget per visualizzare il piano di taglio con animazioni migliorate"""
+    
+    bar_selected = Signal(int)  # Emesso quando si seleziona una barra
+    
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._bars: List[List[Dict[str, float]]] = []
-        self._stock: float = 6500.0
-
-        # Parametri consumi
-        self._kerf_base: float = 3.0
-        self._ripasso_mm: float = 0.0
-        self._reversible: bool = False
-        self._thickness_mm: float = 0.0
-        self._angle_tol: float = 0.5
-        self._max_angle: float = 60.0
-        self._max_factor: float = 2.0
-        self._warn_thr: float = 0.5
-
-        # Colori barra
-        self._bg = QColor("#ffffff")
-        self._bar_bg = QColor("#f0f2f5")        # sfondo normale (anche per barra attiva ora)
-        self._bar_bg_active = QColor("#ffe7ba") # NON più usato (lasciato per retrocompatibilità)
-        self._bar_bg_done = QColor("#e9edf2")
-        self._bar_border_done = QColor("#27ae60")
-        self._border = QColor("#3b4b5a")
-        self._border_warn = QColor("#ff2d2d")
-
-        # Colori pezzi
-        self._piece_fg = QColor("#1976d2")
-        self._piece_fg_alt = QColor("#26a69a")
-        self._piece_done = QColor("#2ecc71")
-        self._text = QColor("#2c3e50")
-
-        # Stato “done”
-        self._done_counts: Dict[Tuple[float, float, float], int] = {}
-        self._done_by_index: Dict[int, List[bool]] = {}
-
-        self.setMinimumSize(520, 220)
-
-    def sizeHint(self) -> QSize:
-        return QSize(760, 360)
-
-    # ---------------- API ----------------
-
-    def set_data(self,
-                 bars: List[List[Dict[str, float]]],
-                 stock_mm: float,
-                 kerf_base: float,
-                 ripasso_mm: float,
-                 reversible: bool,
-                 thickness_mm: float,
-                 angle_tol: float,
-                 max_angle: float,
-                 max_factor: float,
-                 warn_threshold_mm: float):
-        self._bars = bars or []
-        self._stock = float(stock_mm)
-        self._kerf_base = float(kerf_base)
-        self._ripasso_mm = float(ripasso_mm)
-        self._reversible = bool(reversible)
-        self._thickness_mm = float(thickness_mm)
-        self._angle_tol = float(angle_tol)
-        self._max_angle = float(max_angle)
-        self._max_factor = float(max_factor)
-        self._warn_thr = float(warn_threshold_mm)
-        self.reset_done()
-        self.update()
-
-    def reset_done(self):
-        self._done_counts.clear()
-        self._done_by_index = {i: [False] * len(b) for i, b in enumerate(self._bars)}
-        self.update()
-
-    def set_done_by_index(self, done_map: Dict[int, List[bool]]):
-        self._done_by_index = {int(k): list(v) for k, v in (done_map or {}).items()}
-        self.update()
-
-    def mark_done_index(self, bar_idx: int, piece_idx: int):
-        if bar_idx not in self._done_by_index and 0 <= bar_idx < len(self._bars):
-            self._done_by_index[bar_idx] = [False] * len(self._bars[bar_idx])
-        if bar_idx in self._done_by_index and 0 <= piece_idx < len(self._done_by_index[bar_idx]):
-            self._done_by_index[bar_idx][piece_idx] = True
-            self.update()
-
-    def mark_done_by_signature(self,
-                               length_mm: float,
-                               ang_sx: float,
-                               ang_dx: float,
-                               len_tol: float = 0.01,
-                               ang_tol: float = 0.05) -> bool:
-        Lr = float(length_mm)
-        Ax = float(ang_sx)
-        Ad = float(ang_dx)
-        for bi, bar in enumerate(self._bars):
-            flags = self._done_by_index.get(bi, [])
-            if not flags:
-                flags = [False] * len(bar)
-                self._done_by_index[bi] = flags
-            for pi, p in enumerate(bar):
-                if flags[pi]:
-                    continue
-                if (abs(float(p.get("len", 0.0)) - Lr) <= len_tol and
-                    abs(float(p.get("ax", 0.0)) - Ax) <= ang_tol and
-                    abs(float(p.get("ad", 0.0)) - Ad) <= ang_tol):
-                    flags[pi] = True
-                    self.update()
-                    return True
-        return False
-
-    # ---------------- Helpers ----------------
-
-    @staticmethod
-    def _is_square_angle(a: float) -> bool:
-        try:
-            return abs(float(a)) <= 0.2
-        except Exception:
-            return True
-
-    @staticmethod
-    def _offset_for_angle(px_height: float, ang_deg: float) -> float:
-        try:
-            a = abs(float(ang_deg))
-        except Exception:
-            a = 0.0
-        if a <= 0.2:
-            return 0.0
-        return math.tan(math.radians(a)) * px_height
-
-    def _precompute_active_bar_from_index_map(self) -> Tuple[int, List[bool]]:
-        # Manteniamo per coerenza, anche se non usiamo highlight speciale.
-        done_flags: List[bool] = []
-        active_idx = -1
-        for bi, bar in enumerate(self._bars):
-            flags = self._done_by_index.get(bi, [])
-            bar_all_done = (len(flags) == len(bar) and all(flags)) if bar else True
-            done_flags.append(bar_all_done)
-            if not bar_all_done and active_idx == -1:
-                active_idx = bi
-        return active_idx, done_flags
-
-    def _precompute_active_bar_from_done_counts(self) -> Tuple[int, List[bool]]:
-        encountered: Dict[Tuple[float, float, float], int] = {}
-        active_idx = -1
-        done_flags: List[bool] = []
-        for bi, bar in enumerate(self._bars):
-            bar_all_done = True
-            for piece in bar:
-                L = float(piece.get("len", 0.0))
-                ax = float(piece.get("ax", 0.0))
-                ad = float(piece.get("ad", 0.0))
-                sig = (round(L, 2), round(ax, 1), round(ad, 1))
-                idx = encountered.get(sig, 0) + 1
-                encountered[sig] = idx
-                done_quota = self._done_counts.get(sig, 0)
-                if idx > done_quota:
-                    bar_all_done = False
-            done_flags.append(bar_all_done)
-            if not bar_all_done and active_idx == -1:
-                active_idx = bi
-        return active_idx, done_flags
-
-    def _required_width_px(self,
-                           lengths_mm: List[float],
-                           kerf_mm: List[float],
-                           req_top_gap_px: List[float],
-                           left_extra_px: float,
-                           right_extra_px: float,
-                           sx: float) -> float:
-        total = left_extra_px + right_extra_px
-        total += sum(L * sx for L in lengths_mm)
-        for i in range(len(kerf_mm)):
-            total += max(kerf_mm[i] * sx, req_top_gap_px[i])
-        return total
-
-    # ---------------- paint ----------------
-
-    def paintEvent(self, ev):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.fillRect(self.rect(), self._bg)
-
-        if not self._bars:
+        self.plan = None
+        self.current_bar_idx = -1
+        self.current_job_idx = -1
+        self.completed_bars = set()  # Track delle barre completate
+        self.collapsing_bars = set()  # Barre in fase di collasso
+        self.collapse_timers = {}  # Timer per ritardare il collasso
+        
+        # Configurazione visualizzazione
+        self.bar_height = 60
+        self.collapsed_bar_height = 15  # Altezza barra collassata
+        self.job_padding = 2
+        self.bar_margin = 10
+        self.collapse_delay_ms = 500  # Ritardo prima del collasso
+        
+        self._setup_ui()
+        
+    def _setup_ui(self):
+        """Setup dell'interfaccia utente"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Area scroll per le barre
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # Container per le barre
+        self.bars_container = QWidget()
+        self.bars_layout = QVBoxLayout(self.bars_container)
+        self.bars_layout.setSpacing(5)
+        
+        self.scroll.setWidget(self.bars_container)
+        layout.addWidget(self.scroll)
+        
+    def load_plan(self, plan):
+        """Carica un nuovo piano di taglio"""
+        self.plan = plan
+        self.current_bar_idx = -1
+        self.current_job_idx = -1
+        self.completed_bars.clear()
+        self.collapsing_bars.clear()
+        
+        # Cancella timer esistenti
+        for timer in self.collapse_timers.values():
+            timer.stop()
+        self.collapse_timers.clear()
+        
+        self._rebuild_display()
+        
+    def _rebuild_display(self):
+        """Ricostruisce la visualizzazione del piano"""
+        # Pulisci layout esistente
+        while self.bars_layout.count():
+            item = self.bars_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+                
+        if not self.plan or 'bars' not in self.plan:
             return
+            
+        # Crea widget per ogni barra
+        for idx, bar_data in enumerate(self.plan['bars']):
+            bar_widget = self._create_bar_widget(idx, bar_data)
+            self.bars_layout.addWidget(bar_widget)
+            
+        # Aggiungi spacer finale
+        self.bars_layout.addStretch()
+        
+    def _create_bar_widget(self, bar_idx, bar_data):
+        """Crea un widget per una singola barra"""
+        bar_frame = BarFrame(bar_idx, bar_data, self)
+        
+        # Imposta stato iniziale
+        if bar_idx in self.completed_bars:
+            bar_frame.set_completed(True)
+        
+        if bar_idx in self.collapsing_bars:
+            bar_frame.set_collapsed(True)
+        elif bar_idx == self.current_bar_idx:
+            bar_frame.set_active(True)
+            
+        # Connetti segnali
+        bar_frame.clicked.connect(lambda idx=bar_idx: self.bar_selected.emit(idx))
+        
+        return bar_frame
+        
+    def set_current_position(self, bar_idx, job_idx):
+        """Aggiorna la posizione corrente nel piano"""
+        old_bar_idx = self.current_bar_idx
+        self.current_bar_idx = bar_idx
+        self.current_job_idx = job_idx
+        
+        # Se cambiamo barra, gestisci il collasso della precedente
+        if old_bar_idx != bar_idx and old_bar_idx >= 0:
+            self._handle_bar_completion(old_bar_idx)
+            
+        # Aggiorna visualizzazione
+        self._update_bars_display()
+        
+    def _handle_bar_completion(self, bar_idx):
+        """Gestisce il completamento di una barra con ritardo nel collasso"""
+        if bar_idx not in self.completed_bars:
+            self.completed_bars.add(bar_idx)
+            
+            # Crea timer per ritardare il collasso
+            if bar_idx not in self.collapse_timers:
+                timer = QTimer()
+                timer.setSingleShot(True)
+                timer.timeout.connect(lambda: self._collapse_bar(bar_idx))
+                self.collapse_timers[bar_idx] = timer
+                timer.start(self.collapse_delay_ms)
+                
+    def _collapse_bar(self, bar_idx):
+        """Collassa effettivamente una barra dopo il ritardo"""
+        if bar_idx in self.completed_bars and bar_idx != self.current_bar_idx:
+            self.collapsing_bars.add(bar_idx)
+            
+            # Trova il widget della barra e animalo
+            for i in range(self.bars_layout.count()):
+                widget = self.bars_layout.itemAt(i).widget()
+                if isinstance(widget, BarFrame) and widget.bar_idx == bar_idx:
+                    widget.animate_collapse()
+                    break
+                    
+        # Rimuovi timer
+        if bar_idx in self.collapse_timers:
+            del self.collapse_timers[bar_idx]
+            
+    def _update_bars_display(self):
+        """Aggiorna la visualizzazione di tutte le barre"""
+        for i in range(self.bars_layout.count()):
+            widget = self.bars_layout.itemAt(i).widget()
+            if isinstance(widget, BarFrame):
+                # Reset stato
+                widget.set_active(False)
+                
+                # Imposta stato corrente
+                if widget.bar_idx == self.current_bar_idx:
+                    widget.set_active(True)
+                    widget.set_current_job(self.current_job_idx)
+                    # Assicura che la barra attiva sia visibile
+                    self._ensure_bar_visible(widget)
+                elif widget.bar_idx in self.completed_bars:
+                    widget.set_completed(True)
+                    
+    def _ensure_bar_visible(self, bar_widget):
+        """Assicura che la barra sia visibile nell'area di scroll"""
+        QTimer.singleShot(50, lambda: self.scroll.ensureWidgetVisible(bar_widget))
+        
+    def mark_job_completed(self, bar_idx, job_idx):
+        """Marca un job come completato"""
+        for i in range(self.bars_layout.count()):
+            widget = self.bars_layout.itemAt(i).widget()
+            if isinstance(widget, BarFrame) and widget.bar_idx == bar_idx:
+                widget.mark_job_completed(job_idx)
+                break
 
-        margin = 8
-        x0 = margin
-        y0 = margin
-        avail_w = max(1, self.width() - margin * 2)
-        avail_h = max(1, self.height() - margin * 2)
 
-        n_bars = len(self._bars)
-        if n_bars <= 0:
-            return
-
-        bar_h = 20.0
-        vspace = 8.0
-        total_h = n_bars * bar_h + (n_bars - 1) * vspace
-        if total_h > avail_h:
-            vspace = max(3.0, (avail_h - n_bars * bar_h) / max(1, n_bars - 1))
-            total_h = n_bars * bar_h + (n_bars - 1) * vspace
-
-        inner_pad_y = 2.0
-        inner_pad_x = 4.0
-        inner_w = (avail_w - 20) - inner_pad_x * 2
-        base_scale_x = max(0.0001, inner_w / max(1.0, self._stock))
-
-        if self._done_by_index:
-            active_idx, bar_done_flags = self._precompute_active_bar_from_index_map()
+class BarFrame(QFrame):
+    """Frame per una singola barra con supporto per animazioni"""
+    
+    clicked = Signal(int)
+    
+    def __init__(self, bar_idx, bar_data, parent=None):
+        super().__init__(parent)
+        self.bar_idx = bar_idx
+        self.bar_data = bar_data
+        self.is_active = False
+        self.is_completed = False
+        self.is_collapsed = False
+        self.current_job_idx = -1
+        self.completed_jobs = set()
+        
+        # Configurazione dimensioni
+        self.expanded_height = 60
+        self.collapsed_height = 15
+        
+        self.setFrameStyle(QFrame.Box)
+        self.setFixedHeight(self.expanded_height)
+        self.setCursor(Qt.PointingHandCursor)
+        
+        self._setup_ui()
+        
+    def _setup_ui(self):
+        """Setup dell'interfaccia della barra"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Header con info barra
+        header_layout = QHBoxLayout()
+        
+        # Indicatore stato
+        self.status_indicator = QLabel("●")
+        self.status_indicator.setStyleSheet("color: gray;")
+        header_layout.addWidget(self.status_indicator)
+        
+        # Info barra
+        self.info_label = QLabel(f"Barra #{self.bar_idx + 1} - {self.bar_data.get('length', 0):.1f}mm")
+        header_layout.addWidget(self.info_label)
+        
+        # Jobs completati
+        self.progress_label = QLabel()
+        self._update_progress_label()
+        header_layout.addWidget(self.progress_label)
+        
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+        
+        # Widget per visualizzare i jobs
+        self.jobs_widget = JobsWidget(self.bar_data.get('jobs', []))
+        layout.addWidget(self.jobs_widget)
+        
+    def _update_progress_label(self):
+        """Aggiorna l'etichetta del progresso"""
+        total_jobs = len(self.bar_data.get('jobs', []))
+        completed = len(self.completed_jobs)
+        self.progress_label.setText(f"({completed}/{total_jobs})")
+        
+    def set_active(self, active):
+        """Imposta lo stato attivo della barra"""
+        self.is_active = active
+        if active:
+            self.status_indicator.setStyleSheet("color: orange;")
+            self.setStyleSheet("""
+                BarFrame {
+                    border: 2px solid orange;
+                    background-color: rgba(255, 165, 0, 20);
+                }
+            """)
+            # Non collassare mai la barra attiva
+            if self.is_collapsed:
+                self.expand()
         else:
-            active_idx, bar_done_flags = self._precompute_active_bar_from_done_counts()
+            self._update_status_indicator()
+            self.setStyleSheet("")
+            
+    def set_completed(self, completed):
+        """Imposta lo stato completato della barra"""
+        self.is_completed = completed
+        self._update_status_indicator()
+        
+    def set_collapsed(self, collapsed):
+        """Imposta lo stato collassato della barra"""
+        if collapsed and not self.is_active:  # Non collassare se attiva
+            self.is_collapsed = True
+            self.jobs_widget.setVisible(False)
+            self.setFixedHeight(self.collapsed_height)
+        else:
+            self.expand()
+            
+    def expand(self):
+        """Espande la barra"""
+        self.is_collapsed = False
+        self.jobs_widget.setVisible(True)
+        self.setFixedHeight(self.expanded_height)
+        
+    def _update_status_indicator(self):
+        """Aggiorna l'indicatore di stato"""
+        if self.is_completed:
+            self.status_indicator.setStyleSheet("color: green;")
+        elif self.is_active:
+            self.status_indicator.setStyleSheet("color: orange;")
+        else:
+            self.status_indicator.setStyleSheet("color: gray;")
+            
+    def set_current_job(self, job_idx):
+        """Imposta il job corrente"""
+        self.current_job_idx = job_idx
+        self.jobs_widget.set_current_job(job_idx)
+        
+    def mark_job_completed(self, job_idx):
+        """Marca un job come completato"""
+        self.completed_jobs.add(job_idx)
+        self.jobs_widget.mark_job_completed(job_idx)
+        self._update_progress_label()
+        
+    def animate_collapse(self):
+        """Anima il collasso della barra"""
+        if not self.is_active:  # Non animare se attiva
+            animation = QPropertyAnimation(self, b"maximumHeight")
+            animation.setDuration(300)
+            animation.setStartValue(self.expanded_height)
+            animation.setEndValue(self.collapsed_height)
+            animation.setEasingCurve(QEasingCurve.InOutQuad)
+            animation.finished.connect(lambda: self.set_collapsed(True))
+            animation.start()
+            
+    def mousePressEvent(self, event):
+        """Gestisce il click sulla barra"""
+        if event.button() == Qt.LeftButton:
+            # Se è collassata, espandila temporaneamente
+            if self.is_collapsed:
+                self.expand()
+            self.clicked.emit(self.bar_idx)
+        super().mousePressEvent(event)
 
-        font = p.font()
-        font.setPointSizeF(9.0)
-        p.setFont(font)
 
-        encountered: Dict[Tuple[float, float, float], int] = {}
-
-        for bi, bar in enumerate(self._bars):
-            top = y0 + bi * (bar_h + vspace)
-            bar_rect = QRectF(x0, top, avail_w - 20, bar_h)
-
-            used_len_mm = bar_used_length(
-                bar, self._kerf_base, self._ripasso_mm,
-                self._reversible, self._thickness_mm,
-                self._angle_tol, self._max_angle, self._max_factor
-            )
-            near_overflow = (self._stock - used_len_mm) <= self._warn_thr + 1e-6
-
-            # Pen della barra (bordo verde se completata, rosso se near overflow)
-            if bar_done_flags[bi]:
-                pen_bar = QPen(self._bar_border_done)
+class JobsWidget(QWidget):
+    """Widget per visualizzare i jobs in una barra"""
+    
+    def __init__(self, jobs, parent=None):
+        super().__init__(parent)
+        self.jobs = jobs
+        self.current_job_idx = -1
+        self.completed_jobs = set()
+        self.setFixedHeight(25)
+        
+    def paintEvent(self, event):
+        """Disegna i jobs"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        if not self.jobs:
+            return
+            
+        width = self.width()
+        height = self.height()
+        total_length = sum(job.get('length', 0) for job in self.jobs)
+        
+        if total_length <= 0:
+            return
+            
+        x = 0
+        for idx, job in enumerate(self.jobs):
+            job_length = job.get('length', 0)
+            job_width = int((job_length / total_length) * width)
+            
+            # Colore basato sullo stato
+            if idx in self.completed_jobs:
+                color = QColor(0, 200, 0, 180)  # Verde per completato
+            elif idx == self.current_job_idx:
+                color = QColor(255, 165, 0, 180)  # Arancione per corrente
             else:
-                pen_bar = QPen(self._border_warn if near_overflow else self._border)
-            pen_bar.setWidth(1)
-
-            # Sfondo: NO highlight per barra attiva (richiesta utente)
-            if bar_done_flags[bi]:
-                bg = self._bar_bg_done
-            else:
-                bg = self._bar_bg
-
-            p.setPen(pen_bar)
-            p.fillRect(bar_rect, QBrush(bg))
-            p.drawRect(bar_rect)
-
-            piece_h = max(1.0, bar_h - inner_pad_y * 2)
-            y_top = top + inner_pad_y
-            y_bot = top + inner_pad_y + piece_h
-            left_inner = x0 + inner_pad_x
-            right_inner = x0 + bar_rect.width() - inner_pad_x
-            bar_inner_w = right_inner - left_inner
-
-            if not bar:
-                p.setPen(QPen(self._border, 1))
-                p.drawText(QRectF(x0 - 8, top - 1, 40, 16),
-                           Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
-                continue
-
-            lengths_mm: List[float] = []
-            off_l: List[float] = []
-            off_r: List[float] = []
-            kerf_mm: List[float] = []
-            for i, piece in enumerate(bar):
-                L = float(piece.get("len", 0.0))
-                ax = float(piece.get("ax", 0.0))
-                ad = float(piece.get("ad", 0.0))
-                lengths_mm.append(max(0.0, L))
-                ol = 0.0 if self._is_square_angle(ax) else self._offset_for_angle(piece_h, ax)
-                orr = 0.0 if self._is_square_angle(ad) else self._offset_for_angle(piece_h, ad)
-                off_l.append(ol)
-                off_r.append(orr)
-                if i < len(bar) - 1:
-                    gap_mm, _, _, _ = joint_consumption(
-                        piece, self._kerf_base, self._ripasso_mm,
-                        self._reversible, self._thickness_mm,
-                        self._angle_tol, self._max_angle, self._max_factor
-                    )
-                    kerf_mm.append(max(0.0, float(gap_mm)))
-
-            margin_px = 1.0
-            req_top_gap_px: List[float] = []
-            for i in range(len(bar) - 1):
-                req_top_gap_px.append(max(0.0, off_r[i] + off_l[i + 1] + margin_px))
-
-            left_extra_px = max(0.0, off_l[0])
-            right_extra_px = max(0.0, off_r[-1])
-
-            # Binsearch scala
-            low = 0.0
-            high = base_scale_x
-            for _ in range(24):
-                mid = (low + high) * 0.5
-                need = self._required_width_px(lengths_mm, kerf_mm, req_top_gap_px,
-                                               left_extra_px, right_extra_px, mid)
-                if need <= bar_inner_w:
-                    low = mid
-                else:
-                    high = mid
-            sx_bar = low
-
-            base_left: List[float] = []
-            base_right: List[float] = []
-            top_lefts: List[float] = []
-            top_rights: List[float] = []
-
-            cursor_x = left_inner + left_extra_px
-            for i in range(len(bar)):
-                w = lengths_mm[i] * sx_bar
-                bl = cursor_x
-                br = cursor_x + w
-                tl = bl - off_l[i]
-                tr = br + off_r[i]
-                base_left.append(bl)
-                base_right.append(br)
-                top_lefts.append(tl)
-                top_rights.append(tr)
-                if i < len(bar) - 1:
-                    gap_px = max(kerf_mm[i] * sx_bar, req_top_gap_px[i])
-                    cursor_x = br + gap_px
-
-            # Disegna pezzi
-            for pi, piece in enumerate(bar):
-                L = lengths_mm[pi]
-                bl = base_left[pi]; br = base_right[pi]
-                tl = top_lefts[pi]; tr = top_rights[pi]
-
-                poly = QPolygonF([
-                    QPointF(tl, y_top),
-                    QPointF(tr, y_top),
-                    QPointF(br, y_bot),
-                    QPointF(bl, y_bot),
-                ])
-
-                ax = float(piece.get("ax", 0.0))
-                ad = float(piece.get("ad", 0.0))
-                if bi in self._done_by_index and pi < len(self._done_by_index[bi]):
-                    is_done = bool(self._done_by_index[bi][pi])
-                else:
-                    sig = (round(L, 2), round(ax, 1), round(ad, 1))
-                    idx = encountered.get(sig, 0) + 1
-                    encountered[sig] = idx
-                    done_quota = self._done_counts.get(sig, 0)
-                    is_done = idx <= done_quota
-
-                fill = self._piece_done if is_done else (self._piece_fg if pi % 2 == 0 else self._piece_fg_alt)
-                p.setPen(QPen(self._text, 1))
-                p.setBrush(QBrush(fill))
-                p.drawPolygon(poly)
-
-                # Etichetta
-                label = f"{L:.0f} mm"
-                text_w = max(0.0, tr - tl)
-                p.setPen(QPen(self._text))
-                if text_w >= 46:
-                    p.drawText(QRectF(tl, y_top, text_w, piece_h), Qt.AlignCenter, label)
-                else:
-                    p.drawText(QRectF(bl - 2, y_top - 12, max(46.0, text_w + 6), 12),
-                               Qt.AlignLeft | Qt.AlignVCenter, label)
-
-            # Riempimento gap con colore della barra (evita "invasione" colori pezzi)
-            gap_brush = QBrush(bg)
-            p.setPen(Qt.NoPen)
-            for i in range(len(bar) - 1):
-                gpoly = QPolygonF([
-                    QPointF(top_rights[i],   y_top),
-                    QPointF(top_lefts[i+1],  y_top),
-                    QPointF(base_left[i+1],  y_bot),
-                    QPointF(base_right[i],   y_bot),
-                ])
-                p.setBrush(gap_brush)
-                p.drawPolygon(gpoly)
-
-            # Etichetta barra
-            p.setPen(QPen(self._border, 1))
-            p.drawText(QRectF(x0 - 8, top - 1, 40, 16),
-                       Qt.AlignRight | Qt.AlignVCenter, f"B{bi+1}")
+                color = QColor(100, 100, 100, 100)  # Grigio per pendente
+                
+            painter.fillRect(x, 0, job_width - 1, height, color)
+            
+            # Disegna info job se c'è spazio
+            if job_width > 30:
+                painter.setPen(Qt.white)
+                painter.setFont(QFont("Arial", 8))
+                text = f"{job_length:.0f}"
+                painter.drawText(x + 2, 0, job_width - 4, height, 
+                               Qt.AlignCenter, text)
+                
+            x += job_width
+            
+    def set_current_job(self, job_idx):
+        """Imposta il job corrente"""
+        self.current_job_idx = job_idx
+        self.update()
+        
+    def mark_job_completed(self, job_idx):
+        """Marca un job come completato"""
+        self.completed_jobs.add(job_idx)
+        self.update()
