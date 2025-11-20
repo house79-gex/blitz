@@ -1,27 +1,23 @@
 """
 PlanVisualizerWidget compatibile con OptimizationRunDialog
-Fornisce:
-- set_data(bars, stock_mm, kerf_base, ripasso_mm, reversible, thickness_mm, angle_tol, max_angle, max_factor, warn_threshold_mm)
-- set_done_by_index(done_map)
-- mark_done_by_signature(len_mm, ax, ad)
-- set_active_signature(len_mm, ax, ad) (alias highlight)
-- highlight_active_signature(...)
-- mark_active_by_signature(...)
-- set_active_piece_by_signature(...)
-
-Il widget disegna barre verticalmente, ogni pezzo rettangolo proporzionale alla lunghezza efficace.
-Colori:
-  completato: verde
-  attivo: arancione
-  pendente: grigio
-Mostra sfrido (residuo) come segmento finale rosso chiaro se > warn_threshold_mm.
+Rappresentazione grafica barre e pezzi:
+- Ogni pezzo come trapezio (base superiore più larga, base inferiore più stretta)
+  con i lati inclinati proporzionalmente agli angoli ax/ad.
+- Solo il pezzo attivo viene evidenziato (arancione); pezzi completati in verde; pendenti grigi.
+- Residuo visualizzato a fine barra (rosso chiaro, warning se sotto soglia).
+Metodi richiesti dal dialog:
+  set_data(...)
+  set_done_by_index(...)
+  mark_done_by_signature(...)
+  set_active_signature(...)/alias highlight/mark_active/set_active_piece_by_signature
+Internamente se viene chiamato set_active_signature cerca il primo pezzo non completato con quella firma.
 """
 
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QRectF, QSize
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF
 
 import math
 import logging
@@ -29,7 +25,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------
-# Utility calcoli (replicati leggeri)
+# Utility
 # ----------------------------------------------------------------------
 def _effective_length(piece: Dict[str, Any], thickness_mm: float) -> float:
     L = float(piece.get("len", piece.get("length_mm", piece.get("length", 0.0))))
@@ -42,11 +38,12 @@ def _effective_length(piece: Dict[str, Any], thickness_mm: float) -> float:
     except Exception: c_dx = 0.0
     return max(0.0, L - max(0.0,c_sx) - max(0.0,c_dx))
 
-def _sig(piece: Dict[str, Any]) -> Tuple[float,float,float]:
+def _sig(piece: Dict[str, Any]) -> Tuple[float,float,float,str]:
     L = float(piece.get("len", piece.get("length_mm", piece.get("length", 0.0))))
     ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
     ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
-    return (round(L,2), round(ax,1), round(ad,1))
+    prof = str(piece.get("profile","")).strip()
+    return (round(L,2), round(ax,1), round(ad,1), prof)
 
 # ----------------------------------------------------------------------
 class PlanVisualizerWidget(QWidget):
@@ -63,22 +60,21 @@ class PlanVisualizerWidget(QWidget):
         self._max_factor: float = 0.0
         self._warn_thr: float = 0.0
 
-        # done_by_index: {bar_index: [bool,...]}
         self._done_map: Dict[int,List[bool]] = {}
+        self._done_signatures: set[Tuple[float,float,float,str]] = set()
 
-        # active piece signature
-        self._active_sig: Optional[Tuple[float,float,float]] = None
-
-        # completati per signature (fallback se done_map non trova)
-        self._done_signatures: set[Tuple[float,float,float]] = set()
+        # Active piece position (preferred)
+        self._active_pos: Optional[Tuple[int,int]] = None
+        # Fallback signature search (if only signature passed)
+        self._active_sig: Optional[Tuple[float,float,float,str]] = None
 
         self._bar_v_space = 14
-        self._bar_height = 46
-        self._piece_min_w_px = 16
+        self._bar_height = 52
+        self._piece_min_w_px = 18
         self.setMinimumHeight(140)
         self.setMouseTracking(True)
 
-    # ---------------- API richiesti ----------------
+    # ---------------- API ----------------
     def set_data(self,
                  bars: List[List[Dict[str,Any]]],
                  stock_mm: float,
@@ -100,46 +96,71 @@ class PlanVisualizerWidget(QWidget):
         self._max_angle = float(max_angle or 0.0)
         self._max_factor = float(max_factor or 0.0)
         self._warn_thr = float(warn_threshold_mm or 0.0)
-        # Allinea done_map se dimensioni cambiano
+        # normalize done map
         for i,b in enumerate(self._bars):
-            lst=self._done_map.get(i)
-            if lst is None or len(lst)!=len(b):
+            dm = self._done_map.get(i)
+            if dm is None or len(dm)!=len(b):
                 self._done_map[i]=[False]*len(b)
         self._recalc_min_height()
         self.update()
 
     def set_done_by_index(self, done_map: Dict[int,List[bool]]):
-        # Normalizza rispetto a bars
-        for i,b in enumerate(self._bars):
-            arr=done_map.get(i)
-            if arr is None or len(arr)!=len(b):
-                continue
-            self._done_map[i]=[bool(x) for x in arr]
-            # aggiorna signatures
-            for j,p in enumerate(b):
-                if self._done_map[i][j]:
-                    self._done_signatures.add(_sig(p))
+        for bi, arr in done_map.items():
+            if bi < len(self._bars) and len(arr)==len(self._bars[bi]):
+                self._done_map[bi]=[bool(x) for x in arr]
+                # update signatures
+                for pi,p in enumerate(self._bars[bi]):
+                    if self._done_map[bi][pi]:
+                        self._done_signatures.add(_sig(p))
         self.update()
 
     def mark_done_by_signature(self, length_mm: float, ax: float, ad: float):
-        sig=(round(float(length_mm),2),round(float(ax),1),round(float(ad),1))
-        self._done_signatures.add(sig)
-        # Prova anche su done_map
+        sig=(round(float(length_mm),2),round(float(ax),1),round(float(ad),1),"")
+        # match ignoring profile for marking (profile optional)
+        # Add all matches as done
         for bi,bar in enumerate(self._bars):
             for pi,p in enumerate(bar):
-                if _sig(p)==sig:
+                psig=_sig(p)
+                if psig[:3]==sig[:3]:
+                    self._done_signatures.add(psig)
                     if bi not in self._done_map:
                         self._done_map[bi]=[False]*len(bar)
                     self._done_map[bi][pi]=True
+                    # se era l'attivo, rimuovi highlight
+                    if self._active_pos == (bi,pi):
+                        self._active_pos=None
         self.update()
 
-    # alias varie
-    def set_active_signature(self, length_mm: float, ax: float, ad: float):
-        self._active_sig=(round(float(length_mm),2),round(float(ax),1),round(float(ad),1))
+    # Attivo per firma (usato dal dialog)
+    def set_active_signature(self, length_mm: float, ax: float, ad: float,
+                             profile: str = ""):
+        target_sig=(round(float(length_mm),2),round(float(ax),1),round(float(ad),1),str(profile or "").strip())
+        self._active_sig=target_sig
+        # trova primo pezzo non completato con quella firma
+        self._active_pos=None
+        for bi,bar in enumerate(self._bars):
+            for pi,p in enumerate(bar):
+                psig=_sig(p)
+                if psig[:3]==target_sig[:3] and not (
+                    (bi in self._done_map and self._done_map[bi][pi]) or (psig in self._done_signatures)
+                ):
+                    self._active_pos=(bi,pi)
+                    self.update()
+                    return
+        # se non trovato, highlight nulla
         self.update()
+
+    # Alias richiesti
     highlight_active_signature = set_active_signature
-    mark_active_by_signature   = set_active_signature
+    mark_active_by_signature = set_active_signature
     set_active_piece_by_signature = set_active_signature
+
+    # Possibile API aggiuntiva (se in futuro si usa direttamente bar,idx)
+    def set_active_position(self, bar_idx:int, piece_idx:int):
+        if 0<=bar_idx<len(self._bars) and 0<=piece_idx<len(self._bars[bar_idx]):
+            self._active_pos=(bar_idx,piece_idx)
+            self._active_sig=None
+            self.update()
 
     # ---------------- Dimensionamento ----------------
     def _recalc_min_height(self):
@@ -164,130 +185,139 @@ class PlanVisualizerWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, "Nessun piano")
             return
 
-        # scala base: larghezza disponibile per pezzi (lascia margine sinistro per testo)
-        left_margin = 140
-        usable_w = max(100, W - left_margin - 20)
+        left_margin = 150
+        usable_w = max(100, W - left_margin - 28)
 
         for bi, bar in enumerate(self._bars):
-            # Footer info barra
             bar_rect = QRectF(10, y, W-20, self._bar_height)
-            # background
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor("#fdfdfd"))
+            painter.setBrush(QColor("#fcfcfc"))
             painter.drawRoundedRect(bar_rect, 6, 6)
-            painter.setPen(QPen(QColor("#ccc"),1))
+            painter.setPen(QPen(QColor("#c5c5c5"),1))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(bar_rect, 6, 6)
 
-            # calcolo lunghezze efficaci
             effs=[_effective_length(p,self._thickness_mm) for p in bar]
             total_eff = sum(effs)
-            # consumo giunzioni (approx kerf+ripasso ad ogni giunzione)
             joints = 0.0
             if len(bar)>1:
                 joints = (self._kerf_base + max(0.0,self._ripasso_mm))*(len(bar)-1)
             used_len = total_eff + joints
             residual = max(0.0, self._stock_mm - used_len)
 
-            # header / descrizione
             painter.setPen(QPen(QColor("#333"),1))
             title = f"Barra {bi+1}  Usato: {used_len:.1f} mm  Residuo: {residual:.1f} mm"
             if residual <= self._warn_thr + 1e-6:
                 title += "  [WARN]"
-            painter.drawText(QRectF(14,y+4,left_margin-10,12), Qt.AlignLeft|Qt.AlignVCenter, title)
+            painter.drawText(QRectF(14,y+4,left_margin-6,12), Qt.AlignLeft|Qt.AlignVCenter, title)
 
-            # disegno pezzi su fascia
             x_piece = left_margin
-            h_piece = self._bar_height - 20
-            top_piece = y + 16
+            h_piece = self._bar_height - 22
+            top_piece = y + 18
 
-            # scala orizzontale
-            scale = 0.0
-            if used_len>0:
-                scale = usable_w / max(used_len, self._stock_mm)  # mostra anche residuo proporzionale se c'è spazio
+            scale = (usable_w / max(used_len, self._stock_mm)) if used_len>0 else 0.0
 
             for pi,p in enumerate(bar):
                 eff=effs[pi]
-                piece_w = eff*scale
-                # aggiungi lo spazio giunzione dopo (non per ultimo)
+                piece_w = max(self._piece_min_w_px, eff*scale)
                 joint_w = 0.0
                 if pi < len(bar)-1:
                     joint_w = (self._kerf_base + max(0.0,self._ripasso_mm))*scale
-                piece_w = max(self._piece_min_w_px, piece_w)
 
-                # Stato
                 sig=_sig(p)
                 done = (bi in self._done_map and pi < len(self._done_map[bi]) and self._done_map[bi][pi]) or sig in self._done_signatures
-                active = (self._active_sig == sig)
+                active = (self._active_pos == (bi,pi))
 
                 if done:
-                    col1,col2 = QColor(110,210,110), QColor(70,170,70)
+                    col1,col2 = QColor(115,215,115), QColor(75,165,75)
+                    txt_color = Qt.white
                 elif active:
-                    col1,col2 = QColor(255,200,120), QColor(255,140,0)
+                    col1,col2 = QColor(255,195,110), QColor(255,140,0)
+                    txt_color = Qt.black
                 else:
-                    col1,col2 = QColor(200,200,200), QColor(150,150,150)
+                    col1,col2 = QColor(205,205,205), QColor(150,150,150)
+                    txt_color = Qt.black
 
-                # rettangolo pezzo
-                r_piece = QRectF(x_piece, top_piece, piece_w, h_piece)
+                # Trapezio: base superiore = piece_w, base inferiore = piece_w - taper_left - taper_right
+                # Taper proporzionale agli angoli (limite 35% larghezza totale).
+                ax = abs(sig[1])
+                ad = abs(sig[2])
+                max_taper_ratio = 0.35
+                taper_left = piece_w * max_taper_ratio * min(ax/90.0,1.0)
+                taper_right = piece_w * max_taper_ratio * min(ad/90.0,1.0)
+                # Evita che la base inferiore risulti negativa
+                total_taper = min(taper_left + taper_right, piece_w * 0.6)
+                if taper_left + taper_right > total_taper:
+                    # ridistribuisce proporzionalmente
+                    ratio = total_taper / (taper_left + taper_right + 1e-9)
+                    taper_left *= ratio
+                    taper_right *= ratio
+
+                top_left_x = x_piece
+                top_right_x = x_piece + piece_w
+                bottom_left_x = x_piece + taper_left
+                bottom_right_x = x_piece + piece_w - taper_right
+
+                poly = QPolygonF([
+                    QRectF(top_left_x, top_piece, 0,0).topLeft(),
+                    QRectF(top_right_x, top_piece,0,0).topLeft(),
+                    QRectF(bottom_right_x, top_piece + h_piece,0,0).bottomLeft(),
+                    QRectF(bottom_left_x, top_piece + h_piece,0,0).bottomLeft()
+                ])
+
                 painter.setPen(Qt.NoPen)
-                # gradiente semplificato
                 painter.setBrush(col1)
-                painter.drawRoundedRect(r_piece, 4,4)
+                painter.drawPolygon(poly)
                 painter.setPen(QPen(col2,1))
-                painter.drawRoundedRect(r_piece,4,4)
+                painter.drawPolygon(poly)
 
-                # testo
-                txt_len = f"{sig[0]:.0f}"
-                ang_sx = sig[1]; ang_dx = sig[2]
-                angle_part=""
-                if ang_sx!=0.0 or ang_dx!=0.0:
-                    if piece_w > 42:
-                        angle_part = f"{ang_sx:.0f}/{ang_dx:.0f}"
-                show_text = txt_len if not angle_part else f"{txt_len}\n{angle_part}"
-                painter.setPen(QPen(Qt.black if not done and not active else Qt.white,1))
-                painter.drawText(r_piece, Qt.AlignCenter, show_text)
+                # Testo
+                painter.setPen(QPen(txt_color,1))
+                piece_text = f"{sig[0]:.0f}"
+                if (ax!=0.0 or ad!=0.0) and piece_w > 55:
+                    piece_text += f"\n{int(sig[1])}/{int(sig[2])}"
+                # area disponibile: bounding box del trapezio
+                text_rect = QRectF(x_piece, top_piece, piece_w, h_piece)
+                painter.drawText(text_rect, Qt.AlignCenter, piece_text)
 
-                # evidenzia bordo attivo
+                # Evidenzia attivo
                 if active:
                     painter.setPen(QPen(QColor(255,100,0),2))
                     painter.setBrush(Qt.NoBrush)
-                    painter.drawRoundedRect(r_piece.adjusted(-2,-2,2,2),5,5)
+                    painter.drawPolygon(poly)
 
                 x_piece += piece_w
 
-                # giunzione (kerf+ripasso) come separatore
+                # Giunzione
                 if joint_w > 0:
-                    r_joint = QRectF(x_piece, top_piece + h_piece*0.15, joint_w, h_piece*0.70)
+                    r_joint = QRectF(x_piece, top_piece + h_piece*0.25, joint_w, h_piece*0.50)
                     painter.setPen(Qt.NoPen)
-                    painter.setBrush(QColor(240,240,240))
+                    painter.setBrush(QColor(235,235,235))
                     painter.drawRect(r_joint)
                     painter.setPen(QPen(QColor(180,180,180),1,Qt.DashLine))
                     painter.drawRect(r_joint)
                     x_piece += joint_w
 
-            # residuo
+            # Residuo
             if residual>0:
                 res_w = residual*scale
                 if res_w > 4:
                     r_res = QRectF(x_piece, top_piece, max(4,res_w), h_piece)
-                    painter.setPen(Qt.NoPen)
                     warn = residual <= self._warn_thr + 1e-6
+                    painter.setPen(Qt.NoPen)
                     painter.setBrush(QColor(255,210,210) if warn else QColor(255,230,230))
                     painter.drawRoundedRect(r_res,4,4)
-                    painter.setPen(QPen(QColor(200,80,80 if warn else 110),1))
+                    painter.setPen(QPen(QColor(200,90 if warn else 120,90),1))
                     painter.drawRoundedRect(r_res,4,4)
                     painter.setPen(QPen(Qt.black,1))
                     painter.drawText(r_res, Qt.AlignCenter, f"{residual:.0f}")
 
             y += self._bar_height + self._bar_v_space
 
-    # ---------------- Interazione semplice ----------------
+    # ---------------- Interazione futura ----------------
     def mousePressEvent(self, ev):
-        # Non implementiamo selezione pezzo avanzata ora
+        # Potremmo in futuro tradurre click in selezione pezzo
         super().mousePressEvent(ev)
 
-    # Compat: alcune chiamate nel codice possono usare highlight_* senza parametri addizionali
-    # già mappate agli alias definendo la stessa logica
-
-# Backwards compatibility alias
+# Compat alias
 PlanVisualizer = PlanVisualizerWidget
