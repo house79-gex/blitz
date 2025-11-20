@@ -1,18 +1,15 @@
 # AUTOMATICO PAGE - Versione completa corretta
-# Fix SyntaxError linea 273: l'uso di "with contextlib.suppress(...)" dopo il punto e virgola è illegale.
-# Sostituito con:
-#    be.write(instr)
-#    with contextlib.suppress(Exception):
-#        be.dispose()
+# Fix: aggiunti metodi mancanti _on_label_toggle, _test_label, _emit_label (causavano AttributeError).
+# Stato macchina del ciclo di taglio:
+#   idle → (Start) → arming → moving → ready_to_cut → (Taglio F7 / impulso lama) → wait_brake_release
+#   In wait_brake_release il sistema attende rilascio freno; se auto-continue attivo e pezzo successivo identico
+#   avanza automaticamente (advance_to_next_piece). Altrimenti serve F9 (Start) dopo rilascio freno.
+# Evidenziazione (activePieceChanged) solo in stato READY (freno bloccato e quota raggiunta).
+# Auto-continue disattivato per fuori quota (_fq_state.active) e per pezzi extra corti (< _extshort_safe_mm).
+# Persistenza parametri ottimizzazione tramite read_settings / write_settings.
+# DEBUG_LOG per attivare log transizioni.
 #
-# Il resto del file conserva la logica di stato precedente.
-# Stati: idle, arming, moving, ready_to_cut, cutting, await_brake_release
-# Evidenziazione solo in READY (activePieceChanged).
-# Avanzamento solo dopo taglio + rilascio freno (o F9 se auto-continue disattivato).
-# Auto-continue: scatta dopo rilascio freno in WAIT_BRAKE se prossimo pezzo identico (firma).
-# Fuori quota / extra corto disabilitano auto-continue.
-# Persistenza configurazione tramite read_settings / write_settings.
-# DEBUG_LOG per abilitare log transizioni.
+# Se desideri debugging, imposta DEBUG_LOG = True.
 
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
@@ -91,6 +88,7 @@ STATE_CUTTING = "cutting"
 STATE_WAIT_BRAKE = "await_brake_release"
 
 
+# ---------------- Dialog configurazione ottimizzazione ----------------
 class OptimizationConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -175,6 +173,7 @@ class OptimizationConfigDialog(QDialog):
         self.accept()
 
 
+# ---------------- Dialog taglio manuale ----------------
 class ManualCutDialog(QDialog):
     def __init__(self, parent=None, preset: Optional[Dict[str,Any]] = None):
         super().__init__(parent)
@@ -208,6 +207,7 @@ class ManualCutDialog(QDialog):
         }
 
 
+# ---------------- Stampa etichette ----------------
 class LabelPrinter:
     def __init__(self, settings: Dict[str, Any], toast_cb=None):
         self.toast = toast_cb
@@ -268,14 +268,14 @@ class LabelPrinter:
                           cut=bool(cut if cut is not None else True))
             backend=backend_factory(self.backend); be=backend(printer_identifier=self.printer)
             be.write(instr)
-            with contextlib.suppress(Exception):
-                be.dispose()
+            with contextlib.suppress(Exception): be.dispose()
             return True
         except Exception as e:
             if self.toast: self.toast(f"Errore stampa: {e}","err")
             return False
 
 
+# ---------------- Pagina Automatico ----------------
 class AutomaticoPage(QWidget):
     activePieceChanged = Signal(dict)
     pieceCut = Signal(dict)
@@ -306,9 +306,11 @@ class AutomaticoPage(QWidget):
                 logger.info(msg)
         self._toast = _toast_impl
 
+        # UI refs
         self.tbl_cut=None; self.lbl_target=None; self.lbl_done=None; self.lbl_remaining=None
         self.status=None; self.btn_start_row=None; self.viewer_frame=None; self.lbl_quota_card=None; self.banner=None
 
+        # Data / piano
         self._orders=OrdersStore()
         self._profiles_store=ProfilesStore()
         self._current_profile_thickness=0.0
@@ -323,6 +325,7 @@ class AutomaticoPage(QWidget):
         self._cur_sig=None
         self._active_row=None
 
+        # Macchina
         self._brake_locked=False
         self._blade_prev=False
         self._start_prev=False
@@ -331,10 +334,12 @@ class AutomaticoPage(QWidget):
         self._lock_on_inpos=False
         self._poll=None
 
+        # Stato sequenza
         self._state=STATE_IDLE
         self._pending_active_piece=None
         self._positioning_in_progress=False
 
+        # Config
         cfg=read_settings()
         self._kerf_max_angle_deg=float(cfg.get("opt_kerf_max_angle_deg",60.0))
         self._kerf_max_factor=float(cfg.get("opt_kerf_max_factor",2.0))
@@ -447,7 +452,7 @@ class AutomaticoPage(QWidget):
         QShortcut(QKeySequence("F9"), self, activated=self._handle_start_trigger)
         QShortcut(QKeySequence("F7"), self, activated=self._simulate_cut_key)
 
-    # ----- Modalità manuale -----
+    # ---------------- Modalità manuale ----------------
     def _enter_manual_mode(self):
         if self._mode == "plan":
             self._bars.clear(); self._seq_plan.clear(); self._seq_pos=-1; self._cur_sig=None
@@ -455,7 +460,54 @@ class AutomaticoPage(QWidget):
         self._update_counters_ui()
         self._toast("Manuale pronto. Seleziona un pezzo e premi Start.","info")
 
-    # ----- Config ottimizzazione -----
+    # ---------------- Etichette (metodi mancanti) ----------------
+    def _on_label_toggle(self,on:bool):
+        self._label_enabled=bool(on)
+        cfg=dict(read_settings()); cfg["label_enabled"]=self._label_enabled
+        write_settings(cfg); self._label_printer.update_settings(cfg)
+
+    def _test_label(self):
+        piece={"seq_id":999,"profile":"DEMO","element":"Test","len":1234.5,"ax":45.0,"ad":0.0}
+        self._emit_label(piece)
+
+    def _emit_label(self,piece:Dict[str,Any]):
+        if not self._label_enabled: return
+        fmt={
+            "profile":piece.get("profile",""),
+            "element":piece.get("element",""),
+            "length_mm":piece.get("len",piece.get("length",0.0)),
+            "ang_sx":piece.get("ax",piece.get("ang_sx",0.0)),
+            "ang_dx":piece.get("ad",piece.get("ang_dx",0.0)),
+            "seq_id":piece.get("seq_id",0),
+            "timestamp":time.strftime("%H:%M:%S")
+        }
+        templates=resolve_templates(piece.get("profile",""),piece.get("element",""))
+        for tmpl in templates:
+            lines=[]
+            for raw in tmpl.get("lines",[]):
+                try: lines.append(str(raw).format(**fmt))
+                except Exception: lines.append(str(raw))
+            self._label_printer.print_label(lines,
+                                            paper=tmpl.get("paper"),
+                                            rotate=int(tmpl.get("rotate",0)),
+                                            font_size=int(tmpl.get("font_size",32)),
+                                            cut=bool(tmpl.get("cut",True)))
+
+    # ---------------- Banner / Toast ----------------
+    def _show_banner(self,msg:str,level:str="info"):
+        styles={"info":"background:#ffe7ba; color:#1b1b1b; border:1px solid #c49a28;",
+                "ok":"background:#d4efdf; color:#145a32; border:1px solid #27ae60;",
+                "warn":"background:#fdecea; color:#7b241c; border:1px solid #c0392b;",
+                "err":"background:#fceaea; color:#922b21; border:1px solid #e74c3c;"}
+        st=styles.get(level,styles["info"])
+        self.banner.setText(msg)
+        self.banner.setStyleSheet(f"QLabel {{ {st} font-size:18px; font-weight:800; padding:8px 12px; border-radius:6px; }}")
+        self.banner.setVisible(True)
+
+    def _hide_banner(self):
+        self.banner.setVisible(False); self.banner.setText("")
+
+    # ---------------- Config ottimizzazione ----------------
     def _open_opt_config(self):
         dlg = OptimizationConfigDialog(self)
         if dlg.exec():
@@ -471,7 +523,7 @@ class AutomaticoPage(QWidget):
             self._strict_bar_sequence=bool(cfg.get("opt_strict_bar_sequence",True))
             self._tail_refine_enabled=bool(cfg.get("opt_enable_tail_refine",True))
 
-    # ----- Import cutlist -----
+    # ---------------- Import cutlist ----------------
     def _import_cutlist(self):
         dlg=OrdersManagerDialog(self,self._orders)
         if dlg.exec() and getattr(dlg,"selected_order_id",None):
