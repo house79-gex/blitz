@@ -1,6 +1,6 @@
 """
 Pagina Automatico - Gestione ciclo automatico con ottimizzazione e visualizzazione migliorata
-Version: 2.1
+Version: 3.0
 Date: 2025-11-20
 Author: house79-gex
 """
@@ -21,32 +21,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, QObject
 from PySide6.QtGui import QFont, QColor, QPalette, QIcon
 
-# Fix import paths - usa percorsi relativi corretti
-try:
-    # Se siamo in qt6_app, dobbiamo salire di un livello per trovare ui
-    import sys
-    import os
-    parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    if parent_dir not in sys.path:
-        sys.path.insert(0, parent_dir)
-    from ui.shared.machine_state import MachineState
-except ImportError:
-    # Fallback: usa una classe dummy
-    class MachineState:
-        def __init__(self):
-            self.position = 0
-            self.angle_sx = 90
-            self.angle_dx = 90
-            self.emergency = False
-            self.homing_done = False
-            
-        def do_homing(self):
-            self.homing_done = True
-
 # Import locali con percorsi relativi corretti
 from ..widgets.toast import Toast
 from ..widgets.heads_view import HeadsView
-from ..widgets.plan_visualizer import PlanVisualizer  # Import dal modulo widgets
+from ..widgets.plan_visualizer import PlanVisualizer
 from ..dialogs.optimization_run_qt import OptimizationDialog
 from ..dialogs.optimization_settings_qt import OptimizationSettingsDialog
 from ..dialogs.cutlist_viewer_qt import CutlistViewerDialog
@@ -57,6 +35,20 @@ from ..services.orders_store import OrdersStore
 from ..utils.settings import load_settings, save_settings
 
 logger = logging.getLogger(__name__)
+
+
+class DummyMachineState:
+    """Classe dummy per MachineState quando non disponibile"""
+    def __init__(self):
+        self.position = 0.0
+        self.angle_sx = 90
+        self.angle_dx = 90
+        self.emergency = False
+        self.homing_done = False
+        
+    def do_homing(self):
+        self.homing_done = True
+        return True
 
 
 class AutomaticWorker(QObject):
@@ -70,7 +62,7 @@ class AutomaticWorker(QObject):
     cycle_completed = Signal()
     error = Signal(str)
     
-    def __init__(self, machine_state: MachineState, plan: Dict):
+    def __init__(self, machine_state, plan: Dict):
         super().__init__()
         self.machine_state = machine_state
         self.plan = plan
@@ -155,9 +147,12 @@ class AutomaticWorker(QObject):
 class AutomaticoPage(QWidget):
     """Pagina per la gestione del modo automatico con ottimizzazione"""
     
-    def __init__(self, machine_state: MachineState, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.machine_state = machine_state
+        
+        # Ottieni o crea machine_state
+        self.machine_state = self._get_or_create_machine_state(parent)
+        
         self.orders_store = OrdersStore()
         self.current_plan = None
         self.current_bar_idx = -1
@@ -174,6 +169,16 @@ class AutomaticoPage(QWidget):
         
         self._init_ui()
         self._load_settings()
+        
+    def _get_or_create_machine_state(self, parent):
+        """Ottiene machine_state dal parent o crea un dummy"""
+        # Prova a ottenere dal parent
+        if parent and hasattr(parent, 'machine_state'):
+            return parent.machine_state
+            
+        # Altrimenti crea un dummy
+        logger.warning("MachineState non disponibile dal parent, uso DummyMachineState")
+        return DummyMachineState()
         
     def _init_ui(self):
         """Inizializza l'interfaccia utente"""
@@ -387,7 +392,7 @@ class AutomaticoPage(QWidget):
         
         plan_layout.addWidget(info_frame)
         
-        # Visualizzatore piano - usa il widget importato
+        # Visualizzatore piano
         self.plan_visualizer = PlanVisualizer(self)
         self.plan_visualizer.bar_selected.connect(self._on_bar_selected)
         plan_layout.addWidget(self.plan_visualizer)
@@ -439,7 +444,7 @@ class AutomaticoPage(QWidget):
         machine_group = QGroupBox("Stato Macchina")
         machine_layout = QVBoxLayout()
         
-        # Vista teste
+        # Vista teste - passa machine_state
         self.heads_view = HeadsView(self.machine_state)
         self.heads_view.setFixedHeight(100)
         machine_layout.addWidget(self.heads_view)
@@ -578,18 +583,29 @@ class AutomaticoPage(QWidget):
     def _update_ui_state(self):
         """Aggiorna lo stato dell'interfaccia"""
         if self.machine_state:
-            # Aggiorna posizione
-            self.pos_label.setText(f"{self.machine_state.position:.1f} mm")
-            self.angle_sx_label.setText(f"{self.machine_state.angle_sx}°")
-            self.angle_dx_label.setText(f"{self.machine_state.angle_dx}°")
+            # Aggiorna posizione - controlla che gli attributi esistano
+            if hasattr(self.machine_state, 'position'):
+                self.pos_label.setText(f"{self.machine_state.position:.1f} mm")
+            
+            if hasattr(self.machine_state, 'angle_sx'):
+                self.angle_sx_label.setText(f"{self.machine_state.angle_sx}°")
+            
+            if hasattr(self.machine_state, 'angle_dx'):
+                self.angle_dx_label.setText(f"{self.machine_state.angle_dx}°")
             
             # Aggiorna vista teste
             if self.heads_view:
-                self.heads_view.update_state(
-                    self.machine_state.position,
-                    self.machine_state.angle_sx,
-                    self.machine_state.angle_dx
-                )
+                # La HeadsView si aggiorna automaticamente se ha il riferimento a machine_state
+                if hasattr(self.heads_view, 'update'):
+                    self.heads_view.update()
+                
+            # Aggiorna tempo ciclo se in esecuzione
+            if self.cycle_start_time:
+                elapsed = time.time() - self.cycle_start_time
+                hours = int(elapsed // 3600)
+                minutes = int((elapsed % 3600) // 60)
+                seconds = int(elapsed % 60)
+                self.cycle_time_label.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
                 
     def start_automatic_cycle(self):
         """Avvia il ciclo automatico"""
@@ -670,6 +686,9 @@ class AutomaticoPage(QWidget):
         self.cycle_status_label.setText("🔴 Fermato")
         self.cycle_status_label.setStyleSheet("color: red; font-weight: bold;")
         
+        # Reset tempo ciclo
+        self.cycle_start_time = None
+        
         self.log_message("Ciclo fermato")
         self.show_toast("Ciclo fermato", "warning")
         
@@ -731,6 +750,9 @@ class AutomaticoPage(QWidget):
         # Log
         self.log_message(f"Job completato: Barra {bar_idx+1}, Pezzo {job_idx+1}")
         
+        # Calcola e mostra efficienza
+        self._update_efficiency()
+        
         # Avanza se auto-advance attivo
         if self.auto_advance_check.isChecked():
             QTimer.singleShot(200, lambda: self._advance_to_next_job(bar_idx, job_idx))
@@ -738,7 +760,7 @@ class AutomaticoPage(QWidget):
     @Slot(int)
     def _on_bar_completed(self, bar_idx: int):
         """Gestisce il completamento di una barra"""
-        self.log_message(f"Barra {bar_idx+1} completata")
+        self.log_message(f"Barra {bar_idx+1} completata", "success")
         
         # Ritarda il collasso per permettere la visualizzazione
         if self.plan_visualizer:
@@ -859,15 +881,35 @@ class AutomaticoPage(QWidget):
         # Rimuovi highlight dopo 500ms
         QTimer.singleShot(500, lambda: self.current_job_frame.setStyleSheet(original_style))
         
+    def _update_efficiency(self):
+        """Aggiorna il calcolo dell'efficienza"""
+        if self.current_plan:
+            bars = self.current_plan.get('bars', [])
+            total_length = sum(
+                sum(job.get('length', 0) for job in bar.get('jobs', []))
+                for bar in bars
+            )
+            total_bar_length = sum(bar.get('length', 0) for bar in bars)
+            
+            if total_bar_length > 0:
+                efficiency = (total_length / total_bar_length) * 100
+                self.efficiency_label.setText(f"{efficiency:.1f}%")
+            else:
+                self.efficiency_label.setText("-")
+                
     def _run_optimization(self):
         """Apre il dialog di ottimizzazione"""
-        dialog = OptimizationDialog(self.orders_store, self)
-        
-        if dialog.exec():
-            plan = dialog.get_optimized_plan()
-            if plan:
-                self.load_plan(plan)
-                self.show_toast("Piano ottimizzato caricato", "success")
+        try:
+            dialog = OptimizationDialog(self.orders_store, self)
+            
+            if dialog.exec():
+                plan = dialog.get_optimized_plan()
+                if plan:
+                    self.load_plan(plan)
+                    self.show_toast("Piano ottimizzato caricato", "success")
+        except Exception as e:
+            logger.error(f"Errore nell'apertura del dialog di ottimizzazione: {e}")
+            QMessageBox.critical(self, "Errore", f"Impossibile aprire il dialog di ottimizzazione:\n{str(e)}")
                 
     def load_plan(self, plan: Dict):
         """Carica un piano di taglio"""
@@ -892,6 +934,9 @@ class AutomaticoPage(QWidget):
         
         # Popola tabella tagli
         self._populate_cuts_table()
+        
+        # Calcola efficienza iniziale
+        self._update_efficiency()
         
         # Log
         self.log_message(f"Piano caricato: {bars_count} barre, {jobs_count} tagli")
@@ -924,13 +969,16 @@ class AutomaticoPage(QWidget):
             job_item = self.cuts_table.item(row, 1)
             
             if bar_item and job_item:
-                if int(bar_item.text()) == bar_idx + 1 and int(job_item.text()) == job_idx + 1:
-                    status_item = self.cuts_table.item(row, 5)
-                    if status_item:
-                        status_item.setText(status)
-                        if "Completato" in status:
-                            status_item.setForeground(QColor(0, 200, 0))
-                    break
+                try:
+                    if int(bar_item.text()) == bar_idx + 1 and int(job_item.text()) == job_idx + 1:
+                        status_item = self.cuts_table.item(row, 5)
+                        if status_item:
+                            status_item.setText(status)
+                            if "Completato" in status:
+                                status_item.setForeground(QColor(0, 200, 0))
+                        break
+                except ValueError:
+                    continue
                     
     def _load_plan(self):
         """Carica un piano da file"""
@@ -988,13 +1036,13 @@ class AutomaticoPage(QWidget):
         """Salta il job corrente"""
         if self.worker and hasattr(self.worker, 'is_running') and self.worker.is_running:
             # Segnala al worker di saltare
-            self.log_message(f"Job saltato: Barra {self.current_bar_idx+1}, Pezzo {self.current_job_idx+1}")
+            self.log_message(f"Job saltato: Barra {self.current_bar_idx+1}, Pezzo {self.current_job_idx+1}", "warning")
             self._advance_to_next_job(self.current_bar_idx, self.current_job_idx)
             
     def _retry_current_job(self):
         """Ripete il job corrente"""
         if self.worker and hasattr(self.worker, 'is_running') and self.worker.is_running:
-            self.log_message(f"Ripetizione job: Barra {self.current_bar_idx+1}, Pezzo {self.current_job_idx+1}")
+            self.log_message(f"Ripetizione job: Barra {self.current_bar_idx+1}, Pezzo {self.current_job_idx+1}", "info")
             # TODO: Implementa logica di retry
             
     def _open_orders_manager(self):
@@ -1022,8 +1070,13 @@ class AutomaticoPage(QWidget):
             if response == QMessageBox.Yes:
                 # Esegui homing
                 if hasattr(self.machine_state, 'do_homing'):
-                    self.machine_state.do_homing()
-                    return self.machine_state.homing_done
+                    result = self.machine_state.do_homing()
+                    if result:
+                        self.log_message("Homing eseguito con successo", "success")
+                        return True
+                    else:
+                        self.log_message("Homing fallito", "error")
+                        return False
             return False
             
         return True
@@ -1033,19 +1086,15 @@ class AutomaticoPage(QWidget):
         timestamp = datetime.now().strftime("%H:%M:%S")
         
         # Colore basato sul livello
-        if level == "error":
-            color = "red"
-            prefix = "❌"
-        elif level == "warning":
-            color = "orange"
-            prefix = "⚠️"
-        elif level == "success":
-            color = "green"
-            prefix = "✅"
-        else:
-            color = "white"
-            prefix = "ℹ️"
-            
+        color_map = {
+            "error": ("red", "❌"),
+            "warning": ("orange", "⚠️"),
+            "success": ("green", "✅"),
+            "info": ("black", "ℹ️")
+        }
+        
+        color, prefix = color_map.get(level, ("black", "ℹ️"))
+        
         html = f'<span style="color: gray">[{timestamp}]</span> '
         html += f'<span style="color: {color}">{prefix} {message}</span>'
         
@@ -1055,41 +1104,55 @@ class AutomaticoPage(QWidget):
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
         
+        # Log anche su console
+        logger.info(f"{level.upper()}: {message}")
+        
     def show_toast(self, message: str, toast_type: str = "info"):
         """Mostra un toast di notifica"""
-        toast = Toast(message, toast_type, self)
-        toast.show()
-        
+        try:
+            toast = Toast(message, toast_type, self)
+            toast.show()
+        except Exception as e:
+            # Se Toast non funziona, usa un metodo alternativo
+            logger.warning(f"Toast non disponibile: {e}")
+            self.status_message.setText(message)
+            
     def _load_settings(self):
         """Carica le impostazioni salvate"""
-        settings = load_settings()
-        
-        if 'automatic' in settings:
-            auto_settings = settings['automatic']
-            self.speed_spin.setValue(auto_settings.get('speed', 50))
-            self.kerf_spin.setValue(auto_settings.get('kerf', 3.0))
-            self.ripasso_spin.setValue(auto_settings.get('ripasso', 5.0))
-            self.recupero_check.setChecked(auto_settings.get('recupero', True))
-            self.auto_advance_check.setChecked(auto_settings.get('auto_advance', True))
-            self.confirm_cut_check.setChecked(auto_settings.get('confirm_cut', False))
-            self.sound_enabled_check.setChecked(auto_settings.get('sound_enabled', True))
+        try:
+            settings = load_settings()
+            
+            if 'automatic' in settings:
+                auto_settings = settings['automatic']
+                self.speed_spin.setValue(auto_settings.get('speed', 50))
+                self.kerf_spin.setValue(auto_settings.get('kerf', 3.0))
+                self.ripasso_spin.setValue(auto_settings.get('ripasso', 5.0))
+                self.recupero_check.setChecked(auto_settings.get('recupero', True))
+                self.auto_advance_check.setChecked(auto_settings.get('auto_advance', True))
+                self.confirm_cut_check.setChecked(auto_settings.get('confirm_cut', False))
+                self.sound_enabled_check.setChecked(auto_settings.get('sound_enabled', True))
+        except Exception as e:
+            logger.warning(f"Impossibile caricare impostazioni: {e}")
             
     def save_settings(self):
         """Salva le impostazioni correnti"""
-        settings = load_settings()
-        
-        settings['automatic'] = {
-            'speed': self.speed_spin.value(),
-            'kerf': self.kerf_spin.value(),
-            'ripasso': self.ripasso_spin.value(),
-            'recupero': self.recupero_check.isChecked(),
-            'auto_advance': self.auto_advance_check.isChecked(),
-            'confirm_cut': self.confirm_cut_check.isChecked(),
-            'sound_enabled': self.sound_enabled_check.isChecked()
-        }
-        
-        save_settings(settings)
-        
+        try:
+            settings = load_settings()
+            
+            settings['automatic'] = {
+                'speed': self.speed_spin.value(),
+                'kerf': self.kerf_spin.value(),
+                'ripasso': self.ripasso_spin.value(),
+                'recupero': self.recupero_check.isChecked(),
+                'auto_advance': self.auto_advance_check.isChecked(),
+                'confirm_cut': self.confirm_cut_check.isChecked(),
+                'sound_enabled': self.sound_enabled_check.isChecked()
+            }
+            
+            save_settings(settings)
+        except Exception as e:
+            logger.warning(f"Impossibile salvare impostazioni: {e}")
+            
     def closeEvent(self, event):
         """Gestisce la chiusura della pagina"""
         # Salva impostazioni
@@ -1102,4 +1165,8 @@ class AutomaticoPage(QWidget):
         # Cleanup
         self._cleanup_worker()
         
+        # Ferma timer
+        if self.update_timer:
+            self.update_timer.stop()
+            
         event.accept()
