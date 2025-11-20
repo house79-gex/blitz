@@ -509,7 +509,16 @@ class OptimizationRunDialog(QDialog):
 
     @Slot(dict)
     def onPieceCut(self, piece: Dict[str,Any]):
-        L = float(piece.get("len", piece.get("length", 0.0)))
-        ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
-        ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
-        self.update_after_cut(L, ax, ad)
+    bar = piece.get("bar")
+    idx = piece.get("idx")
+    if bar is not None and idx is not None and hasattr(self._graph, "mark_done_at"):
+        try:
+            self._graph.mark_done_at(int(bar), int(idx))
+            return
+        except Exception:
+            pass
+    # fallback per compatibilità
+    L = float(piece.get("len", piece.get("length", 0.0)))
+    ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
+    ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
+    self.update_after_cut(L, ax, ad)
