@@ -32,6 +32,10 @@ from ui_qt.logic.refiner import (
     compute_bar_breakdown
 )
 
+# Altezza riga del visualizer (deve combaciare con ROW_HEIGHT_PX in plan_visualizer.py se cambiata lì)
+# Non importiamo direttamente la costante dal widget per evitare coupling rigido.
+VIZ_ROW_HEIGHT_PX = 30
+
 
 class OptimizationSummaryDialog(QDialog):
     COLS = ["Barra","Pezzi","Usato (mm)","Residuo (mm)","Efficienza (%)",
@@ -184,7 +188,8 @@ class OptimizationRunDialog(QDialog):
     simulationRequested = Signal()
     startRequested = Signal()
 
-    GRAPH_BAR_H = 16     # (non più usato per altezza interna del visualizer, mantenuto per compat)
+    # Non usiamo più GRAPH_BAR_H per il calcolo diretto, ma lasciamo per compatibilità eventuale.
+    GRAPH_BAR_H = 16
     GRAPH_V_GAP = 6
     TABLE_MIN_H = 180
 
@@ -228,9 +233,7 @@ class OptimizationRunDialog(QDialog):
         self._refresh_views()
         self._apply_geometry()
         self._resize_graph_area()
-
-        # Delay resize after show to ensure full width
-        QTimer.singleShot(80, self._resize_graph_area)
+        QTimer.singleShot(80, self._resize_graph_area)  # assicura larghezza finale
 
         # Shortcuts
         self._sc_f7 = QShortcut(QKeySequence("F7"), self); self._sc_f7.activated.connect(self.simulationRequested.emit)
@@ -257,7 +260,7 @@ class OptimizationRunDialog(QDialog):
         gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(4,4,4,4); gl.setSpacing(4)
 
         self._scroll = QScrollArea(self._panel_graph)
-        self._scroll.setWidgetResizable(True)  # CRITICO: permette al contenitore di espandersi a tutta larghezza
+        self._scroll.setWidgetResizable(True)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
@@ -458,9 +461,9 @@ class OptimizationRunDialog(QDialog):
 
     def _estimate_content_height(self) -> int:
         n_bars = self._remaining_bars_count() if self._collapse_done_bars else len(self._bars)
-        if n_bars <= 0: return 140
-        # Visualizer calcola già la propria min height; qui teniamo un minimo per il container.
-        return max(140, n_bars * (ROW_HEIGHT_PX + 22) + 40)
+        if n_bars <= 0:
+            return 140
+        return max(140, n_bars * (VIZ_ROW_HEIGHT_PX + 22) + 40)
 
     def _resize_graph_area(self):
         if not (self._graph_container and self._graph): return
@@ -504,7 +507,6 @@ class OptimizationRunDialog(QDialog):
         L = float(piece.get("len", piece.get("length", 0.0)))
         ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
         ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
-        # Prova bar/idx se disponibili
         bar = piece.get("bar")
         idx = piece.get("idx")
         if bar is not None and idx is not None and hasattr(self._graph, "set_active_position"):
@@ -520,7 +522,6 @@ class OptimizationRunDialog(QDialog):
 
     @Slot(dict)
     def onPieceCut(self, piece: Dict[str,Any]):
-        # Prefer bar/idx marking
         bar = piece.get("bar")
         idx = piece.get("idx")
         if bar is not None and idx is not None and hasattr(self._graph, "mark_done_at"):
