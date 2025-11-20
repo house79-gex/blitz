@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import csv, contextlib
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal, QRect, Slot, QEvent
+from PySide6.QtCore import Qt, Signal, QRect, Slot, QEvent, QTimer
 from PySide6.QtGui import QKeyEvent, QTextDocument, QColor, QBrush, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
@@ -78,16 +78,16 @@ class OptimizationSummaryDialog(QDialog):
         btns = QHBoxLayout()
         btns.addStretch(1)
         self.btn_csv = QPushButton("Esporta CSV")
-        the_pdf = QPushButton("Esporta PDF")
+        btn_pdf = QPushButton("Esporta PDF")
         self.btn_close = QPushButton("Chiudi")
         btns.addWidget(self.btn_csv)
-        btns.addWidget(the_pdf)
+        btns.addWidget(btn_pdf)
         btns.addWidget(self.btn_close)
         root.addLayout(btns)
 
         self.btn_close.clicked.connect(self.close)
         self.btn_csv.clicked.connect(self._export_csv)
-        the_pdf.clicked.connect(self._export_pdf)
+        btn_pdf.clicked.connect(self._export_pdf)
 
         self._fill_table()
         self.resize(1120, 520)
@@ -184,11 +184,11 @@ class OptimizationRunDialog(QDialog):
     simulationRequested = Signal()
     startRequested = Signal()
 
-    GRAPH_BAR_H = 16
+    GRAPH_BAR_H = 16     # (non più usato per altezza interna del visualizer, mantenuto per compat)
     GRAPH_V_GAP = 6
     TABLE_MIN_H = 180
 
-    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
@@ -229,6 +229,9 @@ class OptimizationRunDialog(QDialog):
         self._apply_geometry()
         self._resize_graph_area()
 
+        # Delay resize after show to ensure full width
+        QTimer.singleShot(80, self._resize_graph_area)
+
         # Shortcuts
         self._sc_f7 = QShortcut(QKeySequence("F7"), self); self._sc_f7.activated.connect(self.simulationRequested.emit)
         self._sc_f9 = QShortcut(QKeySequence("F9"), self); self._sc_f9.activated.connect(self.startRequested.emit)
@@ -251,17 +254,19 @@ class OptimizationRunDialog(QDialog):
         root.addWidget(opts, 0)
 
         self._panel_graph = QFrame()
-        gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(6,6,6,6); gl.setSpacing(4)
+        gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(4,4,4,4); gl.setSpacing(4)
+
         self._scroll = QScrollArea(self._panel_graph)
-        self._scroll.setWidgetResizable(False)
+        self._scroll.setWidgetResizable(True)  # CRITICO: permette al contenitore di espandersi a tutta larghezza
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         self._graph_container = QWidget()
-        self._graph_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self._graph_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         cont_layout = QVBoxLayout(self._graph_container); cont_layout.setContentsMargins(0,0,0,0); cont_layout.setSpacing(0)
 
         self._graph = PlanVisualizerWidget(self._graph_container)
+        self._graph.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._graph.installEventFilter(self)
 
         cont_layout.addWidget(self._graph)
@@ -440,7 +445,7 @@ class OptimizationRunDialog(QDialog):
             screen = QApplication.primaryScreen()
             if screen:
                 avail = screen.availableGeometry()
-                self.resize(max(980, self.width()), int(avail.height() - 32))
+                self.resize(max(1180, self.width()), int(avail.height() - 40))
                 self.move(avail.x() + 12, avail.y() + 12)
 
     def _remaining_bars_count(self) -> int:
@@ -453,12 +458,13 @@ class OptimizationRunDialog(QDialog):
 
     def _estimate_content_height(self) -> int:
         n_bars = self._remaining_bars_count() if self._collapse_done_bars else len(self._bars)
-        if n_bars<=0: return 120
-        return n_bars * self.GRAPH_BAR_H + max(0, n_bars - 1) * self.GRAPH_V_GAP + 16
+        if n_bars <= 0: return 140
+        # Visualizer calcola già la propria min height; qui teniamo un minimo per il container.
+        return max(140, n_bars * (ROW_HEIGHT_PX + 22) + 40)
 
     def _resize_graph_area(self):
         if not (self._graph_container and self._graph): return
-        content_h = max(120, self._estimate_content_height())
+        content_h = self._estimate_content_height()
         self._graph_container.setMinimumHeight(int(content_h))
         self._graph_container.setMaximumHeight(int(content_h))
         self._graph.setMinimumHeight(int(content_h))
@@ -467,7 +473,8 @@ class OptimizationRunDialog(QDialog):
             self._graph.update()
 
     def resizeEvent(self, event):
-        super().resizeEvent(event); self._resize_graph_area()
+        super().resizeEvent(event)
+        self._resize_graph_area()
 
     # ---------------- Cut marking ----------------
     def _mark_done_local(self, length_mm: float, ang_sx: float, ang_dx: float):
@@ -497,6 +504,15 @@ class OptimizationRunDialog(QDialog):
         L = float(piece.get("len", piece.get("length", 0.0)))
         ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
         ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
+        # Prova bar/idx se disponibili
+        bar = piece.get("bar")
+        idx = piece.get("idx")
+        if bar is not None and idx is not None and hasattr(self._graph, "set_active_position"):
+            try:
+                self._graph.set_active_position(int(bar), int(idx))
+                return
+            except Exception:
+                pass
         for meth in ("set_active_signature","highlight_active_signature","mark_active_by_signature","set_active_piece_by_signature"):
             with contextlib.suppress(Exception):
                 getattr(self._graph, meth)(L, ax, ad)
@@ -504,13 +520,12 @@ class OptimizationRunDialog(QDialog):
 
     @Slot(dict)
     def onPieceCut(self, piece: Dict[str,Any]):
-        # Uso preferenziale bar/idx se forniti
+        # Prefer bar/idx marking
         bar = piece.get("bar")
         idx = piece.get("idx")
         if bar is not None and idx is not None and hasattr(self._graph, "mark_done_at"):
             try:
                 self._graph.mark_done_at(int(bar), int(idx))
-                # Aggiorna stato locale
                 if 0 <= int(bar) < len(self._done_by_index):
                     if 0 <= int(idx) < len(self._done_by_index[int(bar)]):
                         self._done_by_index[int(bar)][int(idx)] = True
@@ -518,7 +533,6 @@ class OptimizationRunDialog(QDialog):
                 return
             except Exception:
                 pass
-        # fallback firma
         L = float(piece.get("len", piece.get("length", 0.0)))
         ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
         ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
