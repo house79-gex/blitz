@@ -12,17 +12,52 @@ from datetime import datetime
 from typing import Optional, Dict, List, Any
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QGroupBox, QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox,
-    QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QSplitter, QFrame, QProgressBar, QTabWidget, QListWidget,
-    QMessageBox, QFileDialog, QGridLayout, QScrollArea,
-    QDialogButtonBox, QListWidgetItem, QStackedWidget
+    QDialog,           # Per la classe base del dialog
+    QWidget,           # QUESTO È QUELLO CHE MANCA!
+    QVBoxLayout,       # Layout verticale
+    QHBoxLayout,       # Layout orizzontale
+    QLabel,            # Etichette
+    QPushButton,       # Pulsanti
+    QGroupBox,         # Gruppi
+    QSpinBox,          # SpinBox per interi
+    QDoubleSpinBox,    # SpinBox per decimali
+    QComboBox,         # ComboBox
+    QCheckBox,         # CheckBox
+    QTextEdit,         # Area di testo
+    QTableWidget,      # Tabella
+    QTableWidgetItem,  # Elementi tabella
+    QHeaderView,       # Header tabella
+    QSplitter,         # Splitter
+    QFrame,            # Frame
+    QProgressBar,      # Barra di progresso
+    QTabWidget,        # Tab widget
+    QListWidget,       # Lista widget
+    QMessageBox,       # Message box
+    QFileDialog,       # File dialog
+    QGridLayout,       # Grid layout
+    QScrollArea,       # Area scroll
+    QDialogButtonBox,  # Button box
+    QListWidgetItem,   # Item lista
+    QStackedWidget     # Stacked widget
 )
-from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, QObject
-from PySide6.QtGui import QFont, QColor, QPalette, QIcon
+from PySide6.QtCore import (
+    Qt,                # Costanti Qt
+    QTimer,            # Timer
+    Signal,            # Segnali
+    Slot,              # Slot
+    QThread,           # Thread
+    QObject            # Object base
+)
 
-# Import corretto del PlanVisualizer
+from PySide6.QtGui import (
+    QFont,             # Font
+    QColor,            # Colori
+    QPalette,          # Palette
+    QIcon              # Icone
+)
+
+
+# Import locali
 from ..widgets.plan_visualizer import PlanVisualizer
 from ..logic.planner import plan_ilp, plan_bfd
 from ..logic.refiner import refine_plan
