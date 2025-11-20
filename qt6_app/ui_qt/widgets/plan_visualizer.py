@@ -1,11 +1,13 @@
 """
-Widget migliorato per la visualizzazione del piano di taglio con gestione 
-corretta del collasso delle barre e visibilità degli elementi tagliati
+Widget per la visualizzazione del piano di taglio
+File: qt6_app/ui_qt/widgets/plan_visualizer.py
+Date: 2025-11-20
+Author: house79-gex
 """
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QFrame
-from PySide6.QtCore import Qt, Signal, QTimer, QPropertyAnimation, QRect, QEasingCurve
-from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QFont
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QScrollArea
+from PySide6.QtCore import Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve, QRect
+from PySide6.QtGui import QPainter, QColor, QFont
 
 class PlanVisualizer(QWidget):
     """Widget per visualizzare il piano di taglio con animazioni migliorate"""
@@ -17,16 +19,16 @@ class PlanVisualizer(QWidget):
         self.plan = None
         self.current_bar_idx = -1
         self.current_job_idx = -1
-        self.completed_bars = set()  # Track delle barre completate
-        self.collapsing_bars = set()  # Barre in fase di collasso
-        self.collapse_timers = {}  # Timer per ritardare il collasso
+        self.completed_bars = set()
+        self.collapsing_bars = set()
+        self.collapse_timers = {}
         
         # Configurazione visualizzazione
         self.bar_height = 60
-        self.collapsed_bar_height = 15  # Altezza barra collassata
+        self.collapsed_bar_height = 15
         self.job_padding = 2
         self.bar_margin = 10
-        self.collapse_delay_ms = 500  # Ritardo prima del collasso
+        self.collapse_delay_ms = 500
         
         self._setup_ui()
         
@@ -123,7 +125,7 @@ class PlanVisualizer(QWidget):
             if bar_idx not in self.collapse_timers:
                 timer = QTimer()
                 timer.setSingleShot(True)
-                timer.timeout.connect(lambda: self._collapse_bar(bar_idx))
+                timer.timeout.connect(lambda idx=bar_idx: self._collapse_bar(idx))
                 self.collapse_timers[bar_idx] = timer
                 timer.start(self.collapse_delay_ms)
                 
@@ -143,19 +145,31 @@ class PlanVisualizer(QWidget):
         if bar_idx in self.collapse_timers:
             del self.collapse_timers[bar_idx]
             
+    def collapse_completed_bar(self, bar_idx: int):
+        """Collassa una barra completata con animazione ritardata"""
+        if bar_idx == self.current_bar_idx:
+            return
+            
+        if bar_idx not in self.collapsing_bars:
+            self.collapsing_bars.add(bar_idx)
+            
+            for i in range(self.bars_layout.count()):
+                widget = self.bars_layout.itemAt(i).widget()
+                if hasattr(widget, 'bar_idx') and widget.bar_idx == bar_idx:
+                    if hasattr(widget, 'animate_collapse'):
+                        widget.animate_collapse()
+                    break
+            
     def _update_bars_display(self):
         """Aggiorna la visualizzazione di tutte le barre"""
         for i in range(self.bars_layout.count()):
             widget = self.bars_layout.itemAt(i).widget()
             if isinstance(widget, BarFrame):
-                # Reset stato
                 widget.set_active(False)
                 
-                # Imposta stato corrente
                 if widget.bar_idx == self.current_bar_idx:
                     widget.set_active(True)
                     widget.set_current_job(self.current_job_idx)
-                    # Assicura che la barra attiva sia visibile
                     self._ensure_bar_visible(widget)
                 elif widget.bar_idx in self.completed_bars:
                     widget.set_completed(True)
@@ -171,6 +185,20 @@ class PlanVisualizer(QWidget):
             if isinstance(widget, BarFrame) and widget.bar_idx == bar_idx:
                 widget.mark_job_completed(job_idx)
                 break
+                
+    def reset(self):
+        """Reset completo del visualizzatore"""
+        self.current_bar_idx = -1
+        self.current_job_idx = -1
+        self.completed_bars.clear()
+        self.collapsing_bars.clear()
+        
+        for timer in self.collapse_timers.values():
+            timer.stop()
+        self.collapse_timers.clear()
+        
+        if self.plan:
+            self._rebuild_display()
 
 
 class BarFrame(QFrame):
@@ -212,7 +240,8 @@ class BarFrame(QFrame):
         header_layout.addWidget(self.status_indicator)
         
         # Info barra
-        self.info_label = QLabel(f"Barra #{self.bar_idx + 1} - {self.bar_data.get('length', 0):.1f}mm")
+        bar_length = self.bar_data.get('length', 0)
+        self.info_label = QLabel(f"Barra #{self.bar_idx + 1} - {bar_length:.1f}mm")
         header_layout.addWidget(self.info_label)
         
         # Jobs completati
@@ -244,7 +273,6 @@ class BarFrame(QFrame):
                     background-color: rgba(255, 165, 0, 20);
                 }
             """)
-            # Non collassare mai la barra attiva
             if self.is_collapsed:
                 self.expand()
         else:
@@ -258,7 +286,7 @@ class BarFrame(QFrame):
         
     def set_collapsed(self, collapsed):
         """Imposta lo stato collassato della barra"""
-        if collapsed and not self.is_active:  # Non collassare se attiva
+        if collapsed and not self.is_active:
             self.is_collapsed = True
             self.jobs_widget.setVisible(False)
             self.setFixedHeight(self.collapsed_height)
@@ -293,7 +321,7 @@ class BarFrame(QFrame):
         
     def animate_collapse(self):
         """Anima il collasso della barra"""
-        if not self.is_active:  # Non animare se attiva
+        if not self.is_active:
             animation = QPropertyAnimation(self, b"maximumHeight")
             animation.setDuration(300)
             animation.setStartValue(self.expanded_height)
@@ -305,7 +333,6 @@ class BarFrame(QFrame):
     def mousePressEvent(self, event):
         """Gestisce il click sulla barra"""
         if event.button() == Qt.LeftButton:
-            # Se è collassata, espandila temporaneamente
             if self.is_collapsed:
                 self.expand()
             self.clicked.emit(self.bar_idx)
@@ -340,7 +367,7 @@ class JobsWidget(QWidget):
         x = 0
         for idx, job in enumerate(self.jobs):
             job_length = job.get('length', 0)
-            job_width = int((job_length / total_length) * width)
+            job_width = max(1, int((job_length / total_length) * width))
             
             # Colore basato sullo stato
             if idx in self.completed_jobs:
@@ -371,3 +398,7 @@ class JobsWidget(QWidget):
         """Marca un job come completato"""
         self.completed_jobs.add(job_idx)
         self.update()
+
+
+# Alias per compatibilità con vecchi import
+PlanVisualizerWidget = PlanVisualizer
