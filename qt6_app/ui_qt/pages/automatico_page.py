@@ -440,7 +440,7 @@ class AutomaticoPage(QWidget):
         machine_layout = QVBoxLayout()
         
         # Vista teste
-        self.heads_view = HeadsView()
+        self.heads_view = HeadsView(self.machine_state)
         self.heads_view.setFixedHeight(100)
         machine_layout.addWidget(self.heads_view)
         
