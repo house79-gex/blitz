@@ -1,11 +1,22 @@
 """
-PlanVisualizerWidget compatibile con OptimizationRunDialog.
-Rappresentazione grafica:
-- Pezzi come trapezi realistici: base superiore = lunghezza esterna, base inferiore = lunghezza effettiva.
-  Gli offset (spalle) derivano da thickness_mm * tan(angolo) convertiti in pixel (con minimo visivo).
-- Solo il pezzo attivo è evidenziato (arancione). Completati verdi, pendenti grigi.
-- Residuo visualizzato alla fine (rosso chiaro con warning).
-Metodi supportati (chiamati dal dialog / pagina):
+PlanVisualizerWidget compatibile con OptimizationRunDialog
+Caratteristiche:
+- Altezza barra fissa: BAR_HEIGHT_PX (default 20 px).
+- Larghezza barra adattata alla larghezza del widget meno un margine.
+- Ogni pezzo disegnato come trapezio:
+    * Base superiore = lunghezza esterna (len).
+    * Base inferiore = len - offset_sx_mm - offset_dx_mm (offset = thickness_mm * tan(angle)).
+    * Offset convertiti in pixel usando stessa scala orizzontale.
+    * Offset minimi garantiti per angoli > 0° (OFFSET_MIN_PX).
+- Colori:
+    * Completato: verde
+    * Attivo: arancione
+    * Pendente: grigio
+- mark_done_by_signature: marca solo la PRIMA occorrenza non completata (non tutte le firme).
+- set_active_signature: evidenzia solo un pezzo (prima occorrenza non completata di quella firma).
+- Supporta auto-continue senza che firme identiche generino highlight multipli.
+
+Metodi supportati:
   set_data(...)
   set_done_by_index(...)
   mark_done_by_signature(...)
@@ -15,6 +26,7 @@ Metodi supportati (chiamati dal dialog / pagina):
   set_active_piece_by_signature(...)
   set_active_position(bar_idx, piece_idx)
   set_active_piece_by_indices(bar_idx, piece_idx)
+  mark_done_at(bar_idx, piece_idx)  (per eventuale uso diretto)
 """
 
 from __future__ import annotations
@@ -22,52 +34,48 @@ from typing import List, Dict, Any, Tuple, Optional
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QRectF, QSize, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
 
 import math
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Amplificazione offset angoli (se troppo piccoli) e min pixel
-OFFSET_BOOST = 1.0     # puoi aumentare se vuoi trapezi più evidenti (es. 1.5)
-OFFSET_PIX_MIN = 2.0   # minimo pixel per lato se angolo > 0°
+BAR_HEIGHT_PX = 20
+BAR_VERTICAL_GAP = 8
+LEFT_MARGIN_PX = 140
+RIGHT_MARGIN_PX = 24
+MIN_PIECE_WIDTH_PX = 14
+OFFSET_MIN_PX = 2.0   # offset minimo visivo se angolo > 0
+OFFSET_SCALE_BOOST = 1.0  # puoi aumentare (es. 1.5) se vuoi trapezi più evidenti
 
 
-def _external_length(piece: Dict[str, Any]) -> float:
-    return float(piece.get("len", piece.get("length_mm", piece.get("length", 0.0))))
+def _ext_len(p: Dict[str, Any]) -> float:
+    return float(p.get("len", p.get("length_mm", p.get("length", 0.0))))
 
 
-def _effective_length(piece: Dict[str, Any], thickness_mm: float) -> float:
-    L = _external_length(piece)
-    if thickness_mm <= 0: return max(0.0, L)
-    ax = abs(float(piece.get("ax", piece.get("ang_sx", 0.0))))
-    ad = abs(float(piece.get("ad", piece.get("ang_dx", 0.0))))
-    try: c_sx = thickness_mm * math.tan(math.radians(ax))
-    except Exception: c_sx = 0.0
-    try: c_dx = thickness_mm * math.tan(math.radians(ad))
-    except Exception: c_dx = 0.0
-    return max(0.0, L - max(0.0,c_sx) - max(0.0,c_dx))
-
-
-def _angle_offsets_mm(piece: Dict[str, Any], thickness_mm: float) -> Tuple[float,float]:
+def _offsets_mm(p: Dict[str, Any], thickness_mm: float) -> Tuple[float, float]:
     if thickness_mm <= 0:
         return 0.0, 0.0
-    ax = abs(float(piece.get("ax", piece.get("ang_sx", 0.0))))
-    ad = abs(float(piece.get("ad", piece.get("ang_dx", 0.0))))
-    try: off_sx = thickness_mm * math.tan(math.radians(ax))
-    except Exception: off_sx = 0.0
-    try: off_dx = thickness_mm * math.tan(math.radians(ad))
-    except Exception: off_dx = 0.0
-    return max(0.0, off_sx), max(0.0, off_dx)
+    ax = abs(float(p.get("ax", p.get("ang_sx", 0.0))))
+    ad = abs(float(p.get("ad", p.get("ang_dx", 0.0))))
+    try:
+        sx = thickness_mm * math.tan(math.radians(ax))
+    except Exception:
+        sx = 0.0
+    try:
+        dx = thickness_mm * math.tan(math.radians(ad))
+    except Exception:
+        dx = 0.0
+    return max(0.0, sx), max(0.0, dx)
 
 
-def _sig(piece: Dict[str, Any]) -> Tuple[float,float,float,str]:
-    L = _external_length(piece)
-    ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
-    ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
-    prof = str(piece.get("profile","")).strip()
-    return (round(L,2), round(ax,1), round(ad,1), prof)
+def _signature(p: Dict[str, Any]) -> Tuple[float, float, float, str]:
+    L = _ext_len(p)
+    ax = float(p.get("ax", p.get("ang_sx", 0.0)))
+    ad = float(p.get("ad", p.get("ang_dx", 0.0)))
+    prof = str(p.get("profile", "")).strip()
+    return (round(L, 2), round(ax, 1), round(ad, 1), prof)
 
 
 class PlanVisualizerWidget(QWidget):
@@ -75,32 +83,27 @@ class PlanVisualizerWidget(QWidget):
         super().__init__(parent)
         self._bars: List[List[Dict[str, Any]]] = []
         self._stock_mm: float = 0.0
+        self._thickness_mm: float = 0.0
         self._kerf_base: float = 0.0
         self._ripasso_mm: float = 0.0
-        self._reversible: bool = False
-        self._thickness_mm: float = 0.0
-        self._angle_tol: float = 0.0
-        self._max_angle: float = 0.0
-        self._max_factor: float = 0.0
         self._warn_thr: float = 0.0
 
-        self._done_map: Dict[int,List[bool]] = {}
-        self._done_signatures: set[Tuple[float,float,float,str]] = set()
+        # done_map: bar_idx -> list[bool]
+        self._done_map: Dict[int, List[bool]] = {}
+        # Non usiamo più un set globale di firme completate per evitare green su tutte le uguali.
+        # Manteniamo per compat, ma non lo usiamo per mass-mark.
+        self._done_signatures: set[Tuple[float, float, float, str]] = set()
 
-        # Posizione attiva preferenziale (bar, idx)
-        self._active_pos: Optional[Tuple[int,int]] = None
-        # Firma attiva solo per fallback
-        self._active_sig: Optional[Tuple[float,float,float,str]] = None
+        # Pezzo attivo
+        self._active_pos: Optional[Tuple[int, int]] = None
+        self._active_sig: Optional[Tuple[float, float, float, str]] = None
 
-        self._bar_v_space = 14
-        self._bar_height = 60
-        self._piece_min_w_px = 18
-        self.setMinimumHeight(140)
+        self.setMinimumHeight(120)
         self.setMouseTracking(True)
 
-    # ---------------- API ----------------
+    # ---------------- Data setup ----------------
     def set_data(self,
-                 bars: List[List[Dict[str,Any]]],
+                 bars: List[List[Dict[str, Any]]],
                  stock_mm: float,
                  kerf_base: float,
                  ripasso_mm: float,
@@ -110,239 +113,223 @@ class PlanVisualizerWidget(QWidget):
                  max_angle: float,
                  max_factor: float,
                  warn_threshold_mm: float):
+        # 'reversible', 'angle_tol', 'max_angle', 'max_factor' non influenzano grafica qui
         self._bars = bars or []
         self._stock_mm = float(stock_mm or 0.0)
         self._kerf_base = float(kerf_base or 0.0)
         self._ripasso_mm = float(ripasso_mm or 0.0)
-        self._reversible = bool(reversible)
         self._thickness_mm = float(thickness_mm or 0.0)
-        self._angle_tol = float(angle_tol or 0.0)
-        self._max_angle = float(max_angle or 0.0)
-        self._max_factor = float(max_factor or 0.0)
         self._warn_thr = float(warn_threshold_mm or 0.0)
-        for i,b in enumerate(self._bars):
-            dm = self._done_map.get(i)
-            if dm is None or len(dm)!=len(b):
-                self._done_map[i]=[False]*len(b)
+        # normalizza done map
+        tmp_map: Dict[int, List[bool]] = {}
+        for i, b in enumerate(self._bars):
+            arr = self._done_map.get(i)
+            if arr is None or len(arr) != len(b):
+                tmp_map[i] = [False] * len(b)
+            else:
+                tmp_map[i] = arr
+        self._done_map = tmp_map
         self._recalc_min_height()
         self.update()
 
-    def set_done_by_index(self, done_map: Dict[int,List[bool]]):
+    def _recalc_min_height(self):
+        total_h = len(self._bars) * (BAR_HEIGHT_PX + BAR_VERTICAL_GAP) + 40
+        self.setMinimumHeight(max(120, total_h))
+
+    def sizeHint(self) -> QSize:
+        return QSize(max(600, self.width()), self.minimumHeight())
+
+    # ---------------- Done mapping ----------------
+    def set_done_by_index(self, done_map: Dict[int, List[bool]]):
         for bi, arr in done_map.items():
-            if bi < len(self._bars) and len(arr)==len(self._bars[bi]):
-                self._done_map[bi]=[bool(x) for x in arr]
-                for pi,p in enumerate(self._bars[bi]):
-                    if self._done_map[bi][pi]:
-                        self._done_signatures.add(_sig(p))
+            if bi < len(self._bars) and len(arr) == len(self._bars[bi]):
+                self._done_map[bi] = [bool(x) for x in arr]
+                # Evita di marcare tutte le firme come green massivo
         self.update()
+
+    def mark_done_at(self, bar_idx: int, piece_idx: int):
+        """Marca esattamente un pezzo come completato (preferibile)."""
+        if 0 <= bar_idx < len(self._bars) and 0 <= piece_idx < len(self._bars[bar_idx]):
+            self._done_map.setdefault(bar_idx, [False] * len(self._bars[bar_idx]))
+            self._done_map[bar_idx][piece_idx] = True
+            if self._active_pos == (bar_idx, piece_idx):
+                self._active_pos = None
+            self.update()
 
     def mark_done_by_signature(self, length_mm: float, ax: float, ad: float):
-        sig=(round(float(length_mm),2),round(float(ax),1),round(float(ad),1),"")
-        for bi,bar in enumerate(self._bars):
-            for pi,p in enumerate(bar):
-                psig=_sig(p)
-                if psig[:3]==sig[:3]:
-                    self._done_signatures.add(psig)
-                    if bi not in self._done_map:
-                        self._done_map[bi]=[False]*len(bar)
-                    self._done_map[bi][pi]=True
-                    if self._active_pos == (bi,pi):
-                        self._active_pos=None
-        self.update()
+        """Compat: segna SOLO la prima occorrenza non completata di quella firma (non tutte)."""
+        target = (round(float(length_mm), 2), round(float(ax), 1), round(float(ad), 1))
+        for bi, bar in enumerate(self._bars):
+            for pi, p in enumerate(bar):
+                sig = _signature(p)
+                if sig[0] == target[0] and sig[1] == target[1] and sig[2] == target[2]:
+                    if not self._done_map.get(bi, [False] * len(bar))[pi]:
+                        self.mark_done_at(bi, pi)
+                        return
+        # Se non trovata, nessuna azione.
 
-    def set_active_signature(self, length_mm: float, ax: float, ad: float, profile: str=""):
-        target_sig=(round(float(length_mm),2),round(float(ax),1),round(float(ad),1),str(profile or "").strip())
-        self._active_sig=target_sig
-        self._active_pos=None
-        for bi,bar in enumerate(self._bars):
-            for pi,p in enumerate(bar):
-                psig=_sig(p)
-                if psig[:3]==target_sig[:3] and not (
-                    (bi in self._done_map and self._done_map[bi][pi]) or (psig in self._done_signatures)
-                ):
-                    self._active_pos=(bi,pi)
-                    self.update()
-                    return
+    # ---------------- Active piece ----------------
+    def set_active_signature(self, length_mm: float, ax: float, ad: float, profile: str = ""):
+        target = (round(float(length_mm), 2), round(float(ax), 1), round(float(ad), 1), profile.strip())
+        self._active_sig = target
+        self._active_pos = None
+        # Trova prima occorrenza non completata
+        for bi, bar in enumerate(self._bars):
+            for pi, p in enumerate(bar):
+                sig = _signature(p)
+                if sig[:3] == target[:3]:
+                    if not self._done_map.get(bi, [False] * len(bar))[pi]:
+                        self._active_pos = (bi, pi)
+                        self.update()
+                        return
         self.update()
 
     highlight_active_signature = set_active_signature
     mark_active_by_signature = set_active_signature
     set_active_piece_by_signature = set_active_signature
 
-    def set_active_position(self, bar_idx:int, piece_idx:int):
-        if 0<=bar_idx<len(self._bars) and 0<=piece_idx<len(self._bars[bar_idx]):
-            self._active_pos=(bar_idx,piece_idx)
-            self._active_sig=None
-            self.update()
+    def set_active_position(self, bar_idx: int, piece_idx: int):
+        if 0 <= bar_idx < len(self._bars) and 0 <= piece_idx < len(self._bars[bar_idx]):
+            if not self._done_map.get(bar_idx, [False] * len(self._bars[bar_idx]))[piece_idx]:
+                self._active_pos = (bar_idx, piece_idx)
+                self._active_sig = None
+                self.update()
 
     set_active_piece_by_indices = set_active_position
 
-    # ---------------- Dimensionamento ----------------
-    def _recalc_min_height(self):
-        h = len(self._bars)* (self._bar_height + self._bar_v_space) + 40
-        self.setMinimumHeight(max(140,h))
-
-    def sizeHint(self) -> QSize:
-        return QSize(max(780,self.width()), self.minimumHeight())
-
-    # ---------------- Disegno ----------------
+    # ---------------- Paint ----------------
     def paintEvent(self, ev):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         try:
             W = self.width()
+            x_start = LEFT_MARGIN_PX
+            x_end = W - RIGHT_MARGIN_PX
+            usable_width = max(100, x_end - x_start)
+
             y = 8
             font = QFont()
-            font.setPointSize(8)
+            font.setPointSize(7)
             painter.setFont(font)
 
             if not self._bars:
-                painter.setPen(QPen(QColor("#444"),1))
+                painter.setPen(QPen(QColor("#555"), 1))
                 painter.drawText(self.rect(), Qt.AlignCenter, "Nessun piano")
                 return
 
-            left_margin = 160
-            usable_w = max(120, W - left_margin - 32)
-
+            # Disegna ogni barra
             for bi, bar in enumerate(self._bars):
-                bar_rect = QRectF(10, y, W-20, self._bar_height)
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor("#fcfcfd"))
-                painter.drawRoundedRect(bar_rect, 6, 6)
-                painter.setPen(QPen(QColor("#bbbbbb"),1))
-                painter.setBrush(Qt.NoBrush)
-                painter.drawRoundedRect(bar_rect, 6, 6)
+                # Lunghezza totale (stock) e scala
+                stock = max(1.0, self._stock_mm)
+                scale = usable_width / stock
 
-                effs=[_effective_length(p,self._thickness_mm) for p in bar]
-                total_eff = sum(effs)
-                joints = 0.0
-                if len(bar)>1:
-                    joints = (self._kerf_base + max(0.0,self._ripasso_mm))*(len(bar)-1)
-                used_len = total_eff + joints
-                residual = max(0.0, self._stock_mm - used_len)
+                # Sfondo barra (linea base)
+                bar_rect = QRectF(x_start - 4, y - 2, usable_width + 8, BAR_HEIGHT_PX + 4)
+                painter.setPen(QPen(QColor("#d0d0d0"), 1))
+                painter.setBrush(QColor("#fafafa"))
+                painter.drawRoundedRect(bar_rect, 4, 4)
 
-                painter.setPen(QPen(QColor("#222"),1))
-                title = f"Barra {bi+1}  Usato eff.: {used_len:.1f} mm  Residuo: {residual:.1f} mm"
-                if residual <= self._warn_thr + 1e-6:
-                    title += " [WARN]"
-                painter.drawText(QRectF(14,y+4,left_margin-8,14), Qt.AlignLeft|Qt.AlignVCenter, title)
+                # Titolo
+                painter.setPen(QPen(QColor("#222"), 1))
+                painter.drawText(QRectF(8, y, LEFT_MARGIN_PX - 12, BAR_HEIGHT_PX),
+                                 Qt.AlignLeft | Qt.AlignVCenter,
+                                 f"Barra {bi+1}")
 
-                x_piece = left_margin
-                top_piece = y + 18
-                h_piece = self._bar_height - 26
+                x_cursor = x_start
 
-                scale = (usable_w / max(used_len, self._stock_mm)) if used_len>0 else 0.0
+                # Disegna pezzi
+                for pi, p in enumerate(bar):
+                    ext_len = _ext_len(p)
+                    off_sx_mm, off_dx_mm = _offsets_mm(p, self._thickness_mm)
+                    off_sx_mm *= OFFSET_SCALE_BOOST
+                    off_dx_mm *= OFFSET_SCALE_BOOST
 
-                for pi,p in enumerate(bar):
-                    eff=_effective_length(p,self._thickness_mm)
-                    ext=_external_length(p)
-                    piece_w = max(self._piece_min_w_px, eff*scale)
-                    joint_w = 0.0
-                    if pi < len(bar)-1:
-                        joint_w = (self._kerf_base + max(0.0,self._ripasso_mm))*scale
-
-                    sig=_sig(p)
-                    done = (bi in self._done_map and pi < len(self._done_map[bi]) and self._done_map[bi][pi]) or sig in self._done_signatures
-                    active = (self._active_pos == (bi,pi))
-
-                    if done:
-                        col_fill = QColor(115,215,115)
-                        col_edge = QColor(75,165,75)
-                        txt_color = Qt.white
-                    elif active:
-                        col_fill = QColor(255,195,110)
-                        col_edge = QColor(255,140,0)
-                        txt_color = Qt.black
-                    else:
-                        col_fill = QColor(205,205,205)
-                        col_edge = QColor(150,150,150)
-                        txt_color = Qt.black
-
-                    off_sx_mm, off_dx_mm = _angle_offsets_mm(p, self._thickness_mm)
-                    off_sx_mm *= OFFSET_BOOST
-                    off_dx_mm *= OFFSET_BOOST
-
-                    top_w = piece_w
-                    if eff > 0 and ext >= eff:
-                        top_w = piece_w * (ext / eff)
-
+                    piece_w = max(MIN_PIECE_WIDTH_PX, ext_len * scale)
+                    # Offset in pixel
                     off_sx_px = off_sx_mm * scale if off_sx_mm > 0 else 0.0
                     off_dx_px = off_dx_mm * scale if off_dx_mm > 0 else 0.0
-                    if off_sx_px > 0 and off_sx_px < OFFSET_PIX_MIN:
-                        off_sx_px = OFFSET_PIX_MIN
-                    if off_dx_px > 0 and off_dx_px < OFFSET_PIX_MIN:
-                        off_dx_px = OFFSET_PIX_MIN
+                    if off_sx_px > 0 and off_sx_px < OFFSET_MIN_PX: off_sx_px = OFFSET_MIN_PX
+                    if off_dx_px > 0 and off_dx_px < OFFSET_MIN_PX: off_dx_px = OFFSET_MIN_PX
 
-                    max_taper_px = top_w * 0.65
-                    if off_sx_px + off_dx_px > max_taper_px:
-                        ratio = max_taper_px / (off_sx_px + off_dx_px + 1e-9)
+                    max_total_taper = piece_w * 0.65
+                    taper_sum = off_sx_px + off_dx_px
+                    if taper_sum > max_total_taper:
+                        ratio = max_total_taper / (taper_sum + 1e-9)
                         off_sx_px *= ratio
                         off_dx_px *= ratio
+                        taper_sum = off_sx_px + off_dx_px
 
-                    bottom_w = max(4.0, top_w - (off_sx_px + off_dx_px))
+                    bottom_w = max(4.0, piece_w - taper_sum)
 
-                    top_left_x = x_piece
-                    top_right_x = x_piece + top_w
-                    bottom_left_x = x_piece + off_sx_px
-                    bottom_right_x = bottom_left_x + bottom_w
+                    top_left = QPointF(x_cursor, y)
+                    top_right = QPointF(x_cursor + piece_w, y)
+                    bottom_left = QPointF(x_cursor + off_sx_px, y + BAR_HEIGHT_PX)
+                    bottom_right = QPointF(x_cursor + off_sx_px + bottom_w, y + BAR_HEIGHT_PX)
 
-                    poly = QPolygonF([
-                        QPointF(top_left_x, top_piece),
-                        QPointF(top_right_x, top_piece),
-                        QPointF(bottom_right_x, top_piece + h_piece),
-                        QPointF(bottom_left_x, top_piece + h_piece)
-                    ])
+                    poly = QPolygonF([top_left, top_right, bottom_right, bottom_left])
+
+                    done = self._done_map.get(bi, [False]*len(bar))[pi]
+                    active = (self._active_pos == (bi, pi))
+
+                    if done:
+                        fill_col = QColor(115, 215, 115)
+                        edge_col = QColor(70, 160, 70)
+                        txt_col = QColor(255, 255, 255)
+                    elif active:
+                        fill_col = QColor(255, 195, 110)
+                        edge_col = QColor(255, 140, 0)
+                        txt_col = QColor(0, 0, 0)
+                    else:
+                        fill_col = QColor(205, 205, 205)
+                        edge_col = QColor(150, 150, 150)
+                        txt_col = QColor(0, 0, 0)
 
                     painter.setPen(Qt.NoPen)
-                    painter.setBrush(col_fill)
+                    painter.setBrush(fill_col)
                     painter.drawPolygon(poly)
-                    painter.setPen(QPen(col_edge,1))
+                    painter.setPen(QPen(edge_col, 1))
                     painter.drawPolygon(poly)
 
-                    painter.setPen(QPen(txt_color,1))
-                    length_text = f"{sig[0]:.0f}"
-                    ax_val = int(round(sig[1]))
-                    ad_val = int(round(sig[2]))
-                    if (ax_val!=0 or ad_val!=0) and top_w > 55:
-                        length_text += f"\n{ax_val}/{ad_val}"
-                    text_rect = QRectF(top_left_x, top_piece, top_w, h_piece)
-                    painter.drawText(text_rect, Qt.AlignCenter, length_text)
+                    # Testo lunghezza / angoli
+                    sig = _signature(p)
+                    text = f"{sig[0]:.0f}"
+                    axi = int(round(sig[1])); adi = int(round(sig[2]))
+                    if (axi != 0 or adi != 0) and piece_w > 55:
+                        text += f"\n{axi}/{adi}"
+                    painter.setPen(QPen(txt_col, 1))
+                    painter.drawText(QRectF(x_cursor, y, piece_w, BAR_HEIGHT_PX),
+                                     Qt.AlignCenter, text)
 
                     if active:
-                        painter.setPen(QPen(QColor(255,100,0),2))
-                        painter.setBrush(Qt.NoBrush)
+                        painter.setPen(QPen(QColor(255, 100, 0), 2))
                         painter.drawPolygon(poly)
 
-                    x_piece += piece_w
-                    if joint_w > 0:
-                        r_joint = QRectF(x_piece, top_piece + h_piece*0.25, joint_w, h_piece*0.50)
-                        painter.setPen(Qt.NoPen)
-                        painter.setBrush(QColor(235,235,235))
-                        painter.drawRect(r_joint)
-                        painter.setPen(QPen(QColor(180,180,180),1,Qt.DashLine))
-                        painter.drawRect(r_joint)
-                        x_piece += joint_w
+                    x_cursor += piece_w
 
-                if residual>0:
-                    res_w = residual*scale
-                    if res_w > 4:
-                        r_res = QRectF(x_piece, top_piece, max(4,res_w), h_piece)
-                        warn = residual <= self._warn_thr + 1e-6
+                # Residuo (se c'è spazio)
+                residuo = max(0.0, self._stock_mm - sum(_ext_len(p) for p in bar))
+                if residuo > 0:
+                    rw = residuo * scale
+                    if rw > 4:
+                        r_rect = QRectF(x_cursor, y, rw, BAR_HEIGHT_PX)
+                        warn = residuo <= self._warn_thr + 1e-6
                         painter.setPen(Qt.NoPen)
-                        painter.setBrush(QColor(255,210,210) if warn else QColor(255,232,232))
-                        painter.drawRoundedRect(r_res,4,4)
-                        painter.setPen(QPen(QColor(200,90 if warn else 120,90),1))
-                        painter.drawRoundedRect(r_res,4,4)
-                        painter.setPen(QPen(Qt.black,1))
-                        painter.drawText(r_res, Qt.AlignCenter, f"{residual:.0f}")
+                        painter.setBrush(QColor(255, 210, 210) if warn else QColor(255, 230, 230))
+                        painter.drawRect(r_rect)
+                        painter.setPen(QPen(QColor(200, 90 if warn else 120, 90), 1))
+                        painter.drawRect(r_rect)
+                        painter.setPen(QPen(QColor(0, 0, 0), 1))
+                        painter.drawText(r_rect, Qt.AlignCenter, f"{residuo:.0f}")
 
-                y += self._bar_height + self._bar_v_space
+                y += BAR_HEIGHT_PX + BAR_VERTICAL_GAP
+
         except Exception as e:
             logger.error(f"Errore paintEvent PlanVisualizer: {e}", exc_info=True)
-        finally:
-            pass
 
+    # (Eventuale futura interazione)
     def mousePressEvent(self, ev):
         super().mousePressEvent(ev)
 
+
+# Alias compatibilità
 PlanVisualizer = PlanVisualizerWidget
