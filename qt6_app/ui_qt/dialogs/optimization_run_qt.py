@@ -188,7 +188,7 @@ class OptimizationRunDialog(QDialog):
     GRAPH_V_GAP = 6
     TABLE_MIN_H = 180
 
-    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[Widget] = None):
+    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
@@ -209,7 +209,7 @@ class OptimizationRunDialog(QDialog):
         self._max_factor = float(cfg.get("opt_kerf_max_factor", 2.0))
         self._warn_thr = float(cfg.get("opt_warn_overflow_mm", 0.5))
 
-        self._overlay_target: Optional[Widget] = overlay_target
+        self._overlay_target: Optional[QWidget] = overlay_target
         self._show_graph = True if self._overlay_target is not None else bool(cfg.get("opt_show_graph", True))
         self._collapse_done_bars: bool = bool(cfg.get("opt_collapse_done_bars", True))
 
@@ -217,9 +217,8 @@ class OptimizationRunDialog(QDialog):
         self._bars_residuals: List[float] = []
         self._done_by_index: Dict[int, List[bool]] = {}
 
-        # container per scroll
         self._scroll: Optional[QScrollArea] = None
-        self._graph_container: Optional[Widget] = None
+        self._graph_container: Optional[QWidget] = None
 
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -230,7 +229,7 @@ class OptimizationRunDialog(QDialog):
         self._apply_geometry()
         self._resize_graph_area()
 
-        # Scorciatoie tastiera
+        # Shortcuts
         self._sc_f7 = QShortcut(QKeySequence("F7"), self); self._sc_f7.activated.connect(self.simulationRequested.emit)
         self._sc_f9 = QShortcut(QKeySequence("F9"), self); self._sc_f9.activated.connect(self.startRequested.emit)
         self._sc_space = QShortcut(QKeySequence("Space"), self); self._sc_space.activated.connect(self.startRequested.emit)
@@ -251,7 +250,6 @@ class OptimizationRunDialog(QDialog):
         ol.addWidget(btn_summary); ol.addWidget(btn_start); ol.addWidget(btn_cut)
         root.addWidget(opts, 0)
 
-        # pannello grafico con scrollbar verticale robusto
         self._panel_graph = QFrame()
         gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(6,6,6,6); gl.setSpacing(4)
         self._scroll = QScrollArea(self._panel_graph)
@@ -259,7 +257,6 @@ class OptimizationRunDialog(QDialog):
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # container contenuto scrollabile
         self._graph_container = QWidget()
         self._graph_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         cont_layout = QVBoxLayout(self._graph_container); cont_layout.setContentsMargins(0,0,0,0); cont_layout.setSpacing(0)
@@ -272,7 +269,6 @@ class OptimizationRunDialog(QDialog):
         gl.addWidget(self._scroll, 1)
         root.addWidget(self._panel_graph, 0)
 
-        # tabella firme
         self._tbl = QTableWidget(0, 4)
         self._tbl.setHorizontalHeaderLabels(["Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà"])
         hdr = self._tbl.horizontalHeader()
@@ -315,7 +311,7 @@ class OptimizationRunDialog(QDialog):
         dlg.setAttribute(Qt.WA_DeleteOnClose, True)
         dlg.show()
 
-    # ---------------- Helpers (data) ----------------
+    # ---------------- Data helpers ----------------
     def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
         pieces: List[Dict[str, float]] = []
         for r in self._rows:
@@ -376,7 +372,6 @@ class OptimizationRunDialog(QDialog):
         except Exception:
             pass
 
-        # ordina intra-barra per lunghezze decrescenti; barre per max lunghezza
         for b in bars:
             with contextlib.suppress(Exception):
                 b.sort(key=lambda p:(-float(p["len"]),float(p["ax"]),float(p["ad"])))
@@ -387,7 +382,7 @@ class OptimizationRunDialog(QDialog):
                                          self._reversible, self._thickness,
                                          self._angle_tol, self._max_angle, self._max_factor)
 
-    # ---------------- Views & state ----------------
+    # ---------------- State / views ----------------
     def _init_done_state(self):
         self._done_by_index = {i: [False]*len(b) for i, b in enumerate(self._bars)}
         with contextlib.suppress(Exception):
@@ -432,7 +427,7 @@ class OptimizationRunDialog(QDialog):
             self._tbl.setItem(row, 2, QTableWidgetItem(f"{float(r.get('ang_dx',0.0)):.1f}"))
             self._tbl.setItem(row, 3, QTableWidgetItem(str(q)))
 
-    # ---------------- Geometry / sizing ----------------
+    # ---------------- Geometry ----------------
     def _apply_geometry(self):
         if self._overlay_target is not None:
             try:
@@ -474,7 +469,7 @@ class OptimizationRunDialog(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event); self._resize_graph_area()
 
-    # ---------------- Aggiornamenti dopo taglio ----------------
+    # ---------------- Cut marking ----------------
     def _mark_done_local(self, length_mm: float, ang_sx: float, ang_dx: float):
         tol_L = 1e-2; tol_A = 1e-2
         for i, bar in enumerate(self._bars):
@@ -496,7 +491,7 @@ class OptimizationRunDialog(QDialog):
         self._mark_done_local(length_mm, ang_sx, ang_dx)
         self._refresh_graph_only()
 
-    # ---------------- Slot esterni (da AutomaticoPage) ----------------
+    # ---------------- Slots esterni ----------------
     @Slot(dict)
     def onActivePieceChanged(self, piece: Dict[str,Any]):
         L = float(piece.get("len", piece.get("length", 0.0)))
@@ -509,16 +504,22 @@ class OptimizationRunDialog(QDialog):
 
     @Slot(dict)
     def onPieceCut(self, piece: Dict[str,Any]):
-    bar = piece.get("bar")
-    idx = piece.get("idx")
-    if bar is not None and idx is not None and hasattr(self._graph, "mark_done_at"):
-        try:
-            self._graph.mark_done_at(int(bar), int(idx))
-            return
-        except Exception:
-            pass
-    # fallback per compatibilità
-    L = float(piece.get("len", piece.get("length", 0.0)))
-    ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
-    ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
-    self.update_after_cut(L, ax, ad)
+        # Uso preferenziale bar/idx se forniti
+        bar = piece.get("bar")
+        idx = piece.get("idx")
+        if bar is not None and idx is not None and hasattr(self._graph, "mark_done_at"):
+            try:
+                self._graph.mark_done_at(int(bar), int(idx))
+                # Aggiorna stato locale
+                if 0 <= int(bar) < len(self._done_by_index):
+                    if 0 <= int(idx) < len(self._done_by_index[int(bar)]):
+                        self._done_by_index[int(bar)][int(idx)] = True
+                self._refresh_graph_only()
+                return
+            except Exception:
+                pass
+        # fallback firma
+        L = float(piece.get("len", piece.get("length", 0.0)))
+        ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
+        ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
+        self.update_after_cut(L, ax, ad)
