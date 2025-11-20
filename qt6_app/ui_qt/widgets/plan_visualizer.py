@@ -1,25 +1,20 @@
 """
-PlanVisualizerWidget (full-width, corrected overflow, adjustable vertical space)
+PlanVisualizerWidget (full-width scaling + increased vertical spacing)
 
-Correzioni richieste:
-1. La barra ora occupa il 100% (meno i margini) della larghezza disponibile dell'area grafica.
-2. Eliminato il problema dell’ultimo elemento che “esce” dalla barra:
-   - Calcoliamo prima tutte le larghezze (pezzi + kerf) in pixel.
-   - Se la somma eccede lo spazio disponibile (per arrotondamenti), applichiamo un fattore di riduzione uniforme.
-   - Se la somma è più corta (scenario raro), possiamo opzionalmente espandere.
-3. Mostra trapezi realistici: angolo grafico derivato da tan(angolo) con altezza costante ROW_HEIGHT_PX.
-4. Scala orizzontale basata SOLO sulla somma (lunghezze esterne + kerf*(n-1)) per sfruttare tutta la larghezza.
-5. Più altezza totale per visualizzare più barre (AUTO_HEIGHT = True). Calcola min height dinamica.
-6. Parametri configurabili in alto (ROW_HEIGHT_PX, BAR_VERTICAL_GAP, MIN_PIECE_WIDTH_PX).
-7. Nessun pezzo oltre i margini: correzione post-scaling e clamp finale dell’ultimo pixel.
-8. Evidenziazione singolo pezzo attivo (arancione) e solo il tagliato (verde).
-9. Possibilità di modalità compatta (COMPACT_MODE) che riduce l’altezza barra se vuoi farne stare di più a schermo.
+Modifiche rispetto alla versione precedente:
+- Forzata espansione al 100% della larghezza disponibile: tutti i pezzi + kerf vengono riscalati
+  con un unico fattore (FULL_WIDTH_FORCE) così da eliminare il ~25% di spazio libero a destra.
+- Distribuzione dei pixel di arrotondamento: eventuali differenze tra somma arrotondata e width reale
+  vengono ripartite partendo dai pezzi più larghi per saturare inner_right.
+- Aumentato lo spazio verticale tra barre: BAR_VERTICAL_GAP portato a 22 (modificabile).
+- Margini laterali ridotti (LEFT_MARGIN_PX / RIGHT_MARGIN_PX) per sfruttare maggiormente la larghezza.
+- Correzione overflow finale: l’ultimo pezzo viene clampato se ancora eccede, ma prima tentiamo la ridistribuzione.
+- Parametri configurabili in testa.
 
-Se desideri comprimere ulteriormente (più barre visibili con minore altezza), imposta:
-  ROW_HEIGHT_PX = 22
-  BAR_VERTICAL_GAP = 6
+Nota: thickness_mm non influenza la geometria (visualizzazione 2D degli angoli).
+Residuo non disegnato. Si può aggiungere successivamente.
 
-API invariata per il dialogo:
+API invariata:
   set_data(...)
   set_done_by_index(...)
   mark_done_by_signature(...)
@@ -30,8 +25,6 @@ API invariata per il dialogo:
   set_active_position(...)
   set_active_piece_by_indices(...)
   mark_done_at(...)
-
-NOTA: thickness_mm non influenza la geometria (rappresentazione idealizzata 2D dei soli angoli).
 """
 
 from __future__ import annotations
@@ -47,19 +40,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ---------------- Parametri configurabili ----------------
-ROW_HEIGHT_PX       = 30      # altezza di ogni barra (aumenta per trapezi più evidenti)
-BAR_VERTICAL_GAP    = 10      # spazio verticale tra barre
-LEFT_MARGIN_PX      = 12
-RIGHT_MARGIN_PX     = 12
-TOP_MARGIN_PX       = 12
+ROW_HEIGHT_PX        = 30     # altezza barra
+BAR_VERTICAL_GAP     = 22     # spazio verticale tra barre (aumentato)
+LEFT_MARGIN_PX       = 8
+RIGHT_MARGIN_PX      = 8
+TOP_MARGIN_PX        = 14
 
-MIN_PIECE_WIDTH_PX  = 24      # larghezza minima visiva pezzo
-MIN_KERF_WIDTH_PX   = 3.5     # kerf minimo visivo
-MAX_TAPER_RATIO     = 0.70    # somma offset <= MAX_TAPER_RATIO * top_width
-ANGLE_CLAMP_VERTICAL= 89.0    # oltre questo consideriamo il taglio come verticale
-EXPAND_IF_SHORT     = True    # se la somma pixel < area disponibile, espandi per riempire
-COMPACT_MODE        = False   # se True riduce l’altezza totale calcolata
-AUTO_HEIGHT         = True    # se True la height si adatta al numero di barre
+MIN_PIECE_WIDTH_PX   = 22     # minima larghezza visiva pezzo
+MIN_KERF_WIDTH_PX    = 3.5    # minima larghezza visiva kerf
+MAX_TAPER_RATIO      = 0.70   # somma offset <= 70% top width
+ANGLE_CLAMP_VERTICAL = 89.0   # oltre considerato verticale -> offset 0
+FULL_WIDTH_FORCE     = True   # forza sempre saturazione larghezza
+EXPAND_IF_SHORT      = True   # (ridondante se FULL_WIDTH_FORCE True, lasciato per compatibilità)
 
 # ---------------- Utility ----------------
 def _ext_len(p: Dict[str, Any]) -> float:
@@ -90,7 +82,7 @@ class PlanVisualizerWidget(QWidget):
         self._kerf_mm: float = 0.0
         self._ripasso_mm: float = 0.0
         self._stock_mm: float = 0.0
-        self._thickness_mm: float = 0.0  # non usato per disegno
+        self._thickness_mm: float = 0.0
         self._warn_thr: float = 0.0
 
         self._done_map: Dict[int,List[bool]] = {}
@@ -118,7 +110,7 @@ class PlanVisualizerWidget(QWidget):
         self._ripasso_mm = float(ripasso_mm or 0.0)
         self._thickness_mm = float(thickness_mm or 0.0)
         self._warn_thr = float(warn_threshold_mm or 0.0)
-        # Normalizza done map misura per misura
+        # Normalizza done map
         new_map={}
         for i,b in enumerate(self._bars):
             arr=self._done_map.get(i)
@@ -185,18 +177,10 @@ class PlanVisualizerWidget(QWidget):
     # ------------- Layout dinamico -------------
     def _recalc_min_height(self):
         rows = len(self._bars)
-        if AUTO_HEIGHT:
-            h = TOP_MARGIN_PX + rows*(ROW_HEIGHT_PX+BAR_VERTICAL_GAP) + 20
-        else:
-            # Fisso: mostra almeno 8 barre
-            show_rows = max(rows, 8)
-            h = TOP_MARGIN_PX + show_rows*(ROW_HEIGHT_PX+BAR_VERTICAL_GAP) + 20
-        if COMPACT_MODE:
-            h = int(h*0.88)
-        self.setMinimumHeight(max(160,h))
+        h = TOP_MARGIN_PX + rows*(ROW_HEIGHT_PX+BAR_VERTICAL_GAP) + 24
+        self.setMinimumHeight(max(180,h))
 
     def sizeHint(self)->QSize:
-        # Larghezza minima generosa
         return QSize(max(1100,self.width()), self.minimumHeight())
 
     # ------------- Disegno -------------
@@ -221,47 +205,87 @@ class PlanVisualizerWidget(QWidget):
                 return
 
             for bi, bar in enumerate(self._bars):
-                # Lunghezza totale mm per scala
+                # Lunghezza totale mm per scala: sum pezzi + kerf*(n-1)
                 total_mm = sum(_ext_len(p) for p in bar)
                 if len(bar)>1:
                     total_mm += self._kerf_mm*(len(bar)-1)
                 total_mm = max(1.0,total_mm)
+
+                # Scala "grezza"
                 scale = inner_width / total_mm
 
-                # Pre-calcolo larghezze pezzi + kerf (float)
-                piece_widths = []
-                kerf_widths = []
+                # Pre-calcolo dimensioni in pixel (float) prima del fattore globale
+                raw_piece_widths=[]
+                raw_kerf_widths=[]
                 for pi,p in enumerate(bar):
-                    w = _ext_len(p) * scale
+                    w = _ext_len(p)*scale
                     if w < MIN_PIECE_WIDTH_PX:
                         w = MIN_PIECE_WIDTH_PX
-                    piece_widths.append(w)
+                    raw_piece_widths.append(w)
                     if pi < len(bar)-1:
-                        kw = self._kerf_mm * scale
+                        kw = self._kerf_mm*scale
                         if kw < MIN_KERF_WIDTH_PX:
                             kw = MIN_KERF_WIDTH_PX
-                        kerf_widths.append(kw)
+                        raw_kerf_widths.append(kw)
 
-                total_pixels = sum(piece_widths) + sum(kerf_widths)
-                # Riduzione o espansione per usare TUTTA la larghezza
-                if total_pixels > inner_width + 0.5:
-                    factor = inner_width / total_pixels
-                    piece_widths = [w*factor for w in piece_widths]
-                    kerf_widths = [k*factor for k in kerf_widths]
-                    total_pixels = inner_width
-                elif EXPAND_IF_SHORT and total_pixels < inner_width - 0.5:
-                    factor = inner_width / total_pixels
-                    piece_widths = [w*factor for w in piece_widths]
-                    kerf_widths = [k*factor for k in kerf_widths]
-                    total_pixels = inner_width
+                total_pixels = sum(raw_piece_widths)+sum(raw_kerf_widths)
 
-                # sfondo barra
-                bar_rect = QRectF(inner_left-6, y-5, inner_width+12, ROW_HEIGHT_PX+10)
+                # Forza saturazione esatta larghezza (FULL_WIDTH_FORCE)
+                if FULL_WIDTH_FORCE and total_pixels != inner_width:
+                    factor = inner_width / total_pixels
+                    piece_widths = [w*factor for w in raw_piece_widths]
+                    kerf_widths  = [k*factor for k in raw_kerf_widths]
+                else:
+                    # eventuale espansione se corta
+                    if EXPAND_IF_SHORT and total_pixels < inner_width - 0.5:
+                        factor = inner_width / total_pixels
+                        piece_widths = [w*factor for w in raw_piece_widths]
+                        kerf_widths  = [k*factor for k in raw_kerf_widths]
+                    else:
+                        piece_widths = raw_piece_widths
+                        kerf_widths  = raw_kerf_widths
+
+                # Arrotonda a pixel interi e redistribuisci differenza
+                int_piece = [int(round(w)) for w in piece_widths]
+                int_kerf  = [int(round(k)) for k in kerf_widths]
+                used = sum(int_piece)+sum(int_kerf)
+                diff = inner_width - used
+
+                if diff != 0:
+                    # ordina pezzi per ampiezza desc per distribuire (positiva -> aggiungi, negativa -> togli)
+                    order = sorted(range(len(int_piece)), key=lambda i: int_piece[i], reverse=True)
+                    sign = 1 if diff>0 else -1
+                    idx=0
+                    while diff != 0 and order:
+                        i=order[idx % len(order)]
+                        # vincoli minimi
+                        new_w = int_piece[i]+sign
+                        if new_w >= MIN_PIECE_WIDTH_PX:
+                            int_piece[i]=new_w
+                            diff -= sign
+                        idx+=1
+                        if idx>len(order)*3: break  # evita loop infinito
+
+                # Clamp finale (se ancora overflow per arrotondamenti)
+                final_used = sum(int_piece)+sum(int_kerf)
+                if final_used > inner_width:
+                    overflow = final_used - inner_width
+                    # togli pixel dai pezzi più larghi
+                    order = sorted(range(len(int_piece)), key=lambda i: int_piece[i], reverse=True)
+                    for i in order:
+                        if overflow<=0: break
+                        if int_piece[i] > MIN_PIECE_WIDTH_PX:
+                            take = min(overflow, int_piece[i]-MIN_PIECE_WIDTH_PX)
+                            int_piece[i] -= take
+                            overflow -= take
+
+                # Sfondo barra
+                bar_rect = QRectF(inner_left-4, y-4, inner_width+8, ROW_HEIGHT_PX+8)
                 painter.setPen(QPen(QColor("#d0d0d0"),1))
                 painter.setBrush(QColor("#fdfdfd"))
                 painter.drawRoundedRect(bar_rect,6,6)
 
-                # etichetta barra
+                # Etichetta
                 painter.setPen(QPen(QColor("#222"),1))
                 painter.drawText(QRectF(inner_left-2, y-2, 50, ROW_HEIGHT_PX+4),
                                  Qt.AlignLeft | Qt.AlignVCenter, f"B{bi+1}")
@@ -269,7 +293,7 @@ class PlanVisualizerWidget(QWidget):
                 x_cursor=inner_left
 
                 for pi,p in enumerate(bar):
-                    piece_w = piece_widths[pi]
+                    piece_w = int_piece[pi]
                     ax, ad = _get_angles(p)
                     off_sx_px = _offset_px_for_angle(ax, ROW_HEIGHT_PX)
                     off_dx_px = _offset_px_for_angle(ad, ROW_HEIGHT_PX)
@@ -281,15 +305,16 @@ class PlanVisualizerWidget(QWidget):
                         off_sx_px *= ratio
                         off_dx_px *= ratio
                         taper_sum = off_sx_px + off_dx_px
+
                     bottom_w = max(4.0, piece_w - taper_sum)
 
-                    # Correzione finale anti-overflow ultima cella
+                    # Anti overflow ultimo pezzo
                     projected_end = x_cursor + piece_w
-                    if pi == len(bar)-1 and projected_end > inner_left + inner_width:
-                        excess = projected_end - (inner_left + inner_width)
+                    limit = inner_left + inner_width
+                    if pi == len(bar)-1 and projected_end > limit:
+                        excess = projected_end - limit
                         piece_w -= excess
                         if piece_w < 4: piece_w = 4
-                        # ricalcola taper abbassando se serve
                         max_taper = piece_w * MAX_TAPER_RATIO
                         if taper_sum > max_taper:
                             ratio = max_taper/(taper_sum+1e-9)
@@ -299,7 +324,7 @@ class PlanVisualizerWidget(QWidget):
                         bottom_w = max(4.0, piece_w - taper_sum)
 
                     top_left = QPointF(x_cursor, y)
-                    top_right = QPointF(x_cursor + piece_w, y)
+                    top_right= QPointF(x_cursor + piece_w, y)
                     bottom_left = QPointF(x_cursor + off_sx_px, y + ROW_HEIGHT_PX)
                     bottom_right= QPointF(x_cursor + off_sx_px + bottom_w, y + ROW_HEIGHT_PX)
                     poly = QPolygonF([top_left, top_right, bottom_right, bottom_left])
@@ -329,7 +354,7 @@ class PlanVisualizerWidget(QWidget):
                     sig=_signature(p)
                     txt=f"{sig[0]:.0f}"
                     axi=int(round(sig[1])); adi=int(round(sig[2]))
-                    if (axi!=0 or adi!=0) and piece_w > 62:
+                    if (axi!=0 or adi!=0) and piece_w > 60:
                         txt += f"\n{axi}/{adi}"
                     painter.setPen(QPen(txt_col,1))
                     painter.drawText(QRectF(x_cursor, y, piece_w, ROW_HEIGHT_PX),
@@ -341,12 +366,12 @@ class PlanVisualizerWidget(QWidget):
 
                     x_cursor += piece_w
 
+                    # Gap kerf
                     if pi < len(bar)-1:
-                        gap_w = kerf_widths[pi]
-                        # correzione anti-overflow anche sul gap (se necessario)
+                        gap_w = int_kerf[pi] if pi < len(int_kerf) else 0
                         projected_gap_end = x_cursor + gap_w
-                        if projected_gap_end > inner_left + inner_width:
-                            gap_w = (inner_left + inner_width) - x_cursor
+                        if projected_gap_end > limit:
+                            gap_w = limit - x_cursor
                             if gap_w < 2: gap_w = 2
                         gap_rect = QRectF(x_cursor, y, gap_w, ROW_HEIGHT_PX)
                         painter.setPen(Qt.NoPen)
