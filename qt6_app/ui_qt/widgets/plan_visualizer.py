@@ -55,7 +55,7 @@ FILL_RATIO = 0.95           # % della larghezza interna da riempire coi pezzi
 MIN_PIECE_WIDTH_PX = 18     # larghezza minima di un pezzo per non sparire
 KERF_MIN_PX = 3.0           # larghezza minima visiva del gap kerf
 OFFSET_MIN_PX = 2.0         # offset minimo per angoli > 0°
-OFFSET_SCALE_BOOST = 1.0    # moltiplicatore sugli offset (aumenta la “inclinazione”)
+OFFSET_SCALE_BOOST = 1.5    # moltiplicatore sugli offset (aumenta la “inclinazione”)
 
 # Firma (signature) = (lunghezza, angolo sx, angolo dx, profilo)
 def _signature(p: Dict[str, Any]) -> Tuple[float,float,float,str]:
