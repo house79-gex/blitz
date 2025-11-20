@@ -1,515 +1,780 @@
-from __future__ import annotations
-from typing import List, Dict, Any, Optional, Tuple
-import csv, contextlib
+"""
+Dialog per l'esecuzione dell'ottimizzazione del piano di taglio
+File: qt6_app/ui_qt/dialogs/optimization_run_qt.py
+Date: 2025-11-20
+Author: house79-gex
+"""
+
+import json
+import logging
+import time
 from datetime import datetime
+from typing import Optional, Dict, List, Any
 
-from PySide6.QtCore import Qt, Signal, QRect, Slot, QEvent
-from PySide6.QtGui import QKeyEvent, QTextDocument, QColor, QBrush, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
-    QWidget, QFileDialog, QScrollArea, QSizePolicy
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QGroupBox, QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox,
+    QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView,
+    QSplitter, QFrame, QProgressBar, QTabWidget, QListWidget,
+    QMessageBox, QFileDialog, QGridLayout, QScrollArea,
+    QDialogButtonBox, QListWidgetItem, QStackedWidget
 )
+from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, QObject
+from PySide6.QtGui import QFont, QColor, QPalette, QIcon
 
-try:
-    from PySide6.QtPrintSupport import QPrinter
-except Exception:
-    QPrinter = None
+# Import corretto del PlanVisualizer
+from ..widgets.plan_visualizer import PlanVisualizer
+from ..logic.planner import plan_ilp, plan_bfd
+from ..logic.refiner import refine_plan
+from ..logic.sequencer import Sequencer
+from ..services.orders_store import OrdersStore
+from ..utils.settings import load_settings, save_settings
 
-try:
-    from ui_qt.utils.settings import read_settings, write_settings
-except Exception:
-    def read_settings(): return {}
-    def write_settings(_): pass
-
-from ui_qt.widgets.plan_visualizer import PlanVisualizerWidget
-from ui_qt.logic.refiner import (
-    pack_bars_knapsack_ilp,
-    refine_tail_ilp,
-    bar_used_length,
-    residuals,
-    joint_consumption,
-    compute_bar_breakdown
-)
+logger = logging.getLogger(__name__)
 
 
-class OptimizationSummaryDialog(QDialog):
-    COLS = ["Barra","Pezzi","Usato (mm)","Residuo (mm)","Efficienza (%)",
-            "Kerf ang (mm)","Ripasso (mm)","Recupero (mm)","Dettaglio","Warn"]
-
-    def __init__(self, parent: QWidget, profile: str,
-                 bars: List[List[Dict[str, float]]],
-                 residuals_list: List[float],
-                 stock_mm: float):
-        super().__init__(parent)
-        self.setWindowTitle(f"Riepilogo ottimizzazione — {profile}")
-        self.setModal(False)
-        self._profile = profile
-        self._bars = bars or []
-        self._residuals = residuals_list or []
-        self._stock = float(stock_mm or 6500.0)
-
-        cfg = read_settings()
-        self._kerf_base = float(cfg.get("opt_kerf_mm", 3.0))
-        self._ripasso = float(cfg.get("opt_ripasso_mm", 0.0))
-        self._reversible = bool(cfg.get("opt_current_profile_reversible", False))
-        self._thickness = float(cfg.get("opt_current_profile_thickness_mm", 0.0))
-        self._angle_tol = float(cfg.get("opt_reversible_angle_tol_deg", 0.5))
-        self._max_angle = float(cfg.get("opt_kerf_max_angle_deg", 60.0))
-        self._max_factor = float(cfg.get("opt_kerf_max_factor", 2.0))
-        self._warn_thr = float(cfg.get("opt_warn_overflow_mm", 0.5))
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
-
-        hdr = QLabel(f"Profilo: {profile} — Stock: {self._stock:.0f} mm")
-        hdr.setStyleSheet("font-weight:700;")
-        root.addWidget(hdr)
-
-        self.tbl = QTableWidget(0, len(self.COLS), self)
-        self.tbl.setHorizontalHeaderLabels(self.COLS)
-        hh = self.tbl.horizontalHeader()
-        for i in range(len(self.COLS)):
-            hh.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(8, QHeaderView.Stretch)
-        root.addWidget(self.tbl, 1)
-
-        btns = QHBoxLayout()
-        btns.addStretch(1)
-        self.btn_csv = QPushButton("Esporta CSV")
-        the_pdf = QPushButton("Esporta PDF")
-        self.btn_close = QPushButton("Chiudi")
-        btns.addWidget(self.btn_csv)
-        btns.addWidget(the_pdf)
-        btns.addWidget(self.btn_close)
-        root.addLayout(btns)
-
-        self.btn_close.clicked.connect(self.close)
-        self.btn_csv.clicked.connect(self._export_csv)
-        the_pdf.clicked.connect(self._export_pdf)
-
-        self._fill_table()
-        self.resize(1120, 520)
-
-    def _fill_table(self):
-        warn_color = QColor("#ffcccc")
-        self.tbl.setRowCount(0)
-        for i, bar in enumerate(self._bars):
-            pezzi = len(bar)
-            bd = compute_bar_breakdown(
-                bar, self._kerf_base, self._ripasso,
-                self._reversible, self._thickness,
-                self._angle_tol, self._max_angle, self._max_factor
-            )
-            used = bd["used_total"]
-            kerf_ang = bd["kerf_proj_sum"]
-            ripasso_sum = bd["ripasso_sum"]
-            recovery_sum = bd["recovery_sum"]
-            residuo = float(self._residuals[i]) if i < len(self._residuals) else max(self._stock - used, 0.0)
-            eff = (used / self._stock * 100.0) if self._stock > 0 else 0.0
-            details = []
-            for piece in bar:
-                L = float(piece.get("len", 0.0)); ax = float(piece.get("ax", 0.0)); ad = float(piece.get("ad", 0.0))
-                details.append(f"{L:.0f}({ax:.0f}/{ad:.0f})")
-            warn = ""
-            if self._stock - used <= self._warn_thr + 1e-6:
-                warn = f"<{self._warn_thr:.2f}mm"
-            r = self.tbl.rowCount()
-            self.tbl.insertRow(r)
-            vals = [
-                f"B{i+1}", str(pezzi), f"{used:.1f}", f"{residuo:.1f}",
-                f"{eff:.1f}", f"{kerf_ang:.1f}", f"{ripasso_sum:.1f}",
-                f"{recovery_sum:.1f}", " + ".join(details), warn
-            ]
-            for c, v in enumerate(vals):
-                it = QTableWidgetItem(v)
-                if warn and c == 9:
-                    it.setBackground(QBrush(warn_color))
-                self.tbl.setItem(r, c, it)
-
-    def _export_csv(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Esporta CSV",
-            f"riepilogo_{self._profile}_{datetime.now():%Y%m%d_%H%M%S}.csv",
-            "CSV (*.csv)"
-        )
-        if not path:
-            return
+class OptimizationWorker(QObject):
+    """Worker thread per l'esecuzione dell'ottimizzazione"""
+    
+    # Segnali
+    progress = Signal(int)
+    status = Signal(str)
+    result = Signal(dict)
+    error = Signal(str)
+    log = Signal(str)
+    
+    def __init__(self, jobs: List[Dict], stock: List[Dict], settings: Dict):
+        super().__init__()
+        self.jobs = jobs
+        self.stock = stock
+        self.settings = settings
+        self.is_running = False
+        
+    def run(self):
+        """Esegue l'ottimizzazione"""
+        self.is_running = True
+        
         try:
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f, delimiter=";")
-                w.writerow([f"Profilo: {self._profile}", f"Stock: {self._stock:.0f} mm"])
-                w.writerow(self.COLS)
-                for r in range(self.tbl.rowCount()):
-                    row = [self.tbl.item(r, c).text() if self.tbl.item(r, c) else "" for c in range(self.tbl.columnCount())]
-                    w.writerow(row)
-        except Exception:
-            pass
-
-    def _export_pdf(self):
-        if QPrinter is None:
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Esporta PDF",
-            f"riepilogo_{self._profile}_{datetime.now():%Y%m%d_%H%M%S}.pdf",
-            "PDF (*.pdf)"
+            self.log.emit("Avvio ottimizzazione...")
+            self.status.emit("Preparazione dati...")
+            self.progress.emit(10)
+            
+            # Prepara i dati per l'ottimizzatore
+            time.sleep(0.5)  # Simula preparazione
+            
+            self.status.emit("Esecuzione algoritmo di ottimizzazione...")
+            self.progress.emit(30)
+            
+            # Esegui ottimizzazione
+            solver = self.settings.get('solver', 'ILP')
+            time_limit = self.settings.get('time_limit', 60)
+            
+            if solver == 'ILP':
+                self.log.emit(f"Utilizzo solver ILP con timeout {time_limit}s")
+                plan = plan_ilp(self.jobs, self.stock, time_limit)
+            else:
+                self.log.emit("Utilizzo algoritmo BFD")
+                plan = plan_bfd(self.jobs, self.stock)
+                
+            self.progress.emit(60)
+            
+            if not plan:
+                raise Exception("Ottimizzazione fallita: nessun piano generato")
+                
+            # Raffina il piano se richiesto
+            if self.settings.get('enable_refining', True):
+                self.status.emit("Raffinamento del piano...")
+                self.log.emit("Applicazione raffinamenti...")
+                
+                kerf = self.settings.get('kerf', 3.0)
+                ripasso = self.settings.get('ripasso', 5.0)
+                recupero = self.settings.get('recupero', True)
+                
+                plan = refine_plan(plan, kerf, ripasso, recupero)
+                self.progress.emit(80)
+                
+            # Sequenziamento se richiesto
+            if self.settings.get('enable_sequencing', True):
+                self.status.emit("Sequenziamento ottimale...")
+                self.log.emit("Calcolo sequenza ottimale...")
+                
+                sequencer = Sequencer()
+                plan = sequencer.sequence_plan(plan)
+                self.progress.emit(90)
+                
+            # Calcola statistiche
+            self.status.emit("Calcolo statistiche...")
+            stats = self._calculate_stats(plan)
+            plan['stats'] = stats
+            
+            self.log.emit(f"Ottimizzazione completata: {stats['total_bars']} barre, {stats['total_cuts']} tagli")
+            self.progress.emit(100)
+            
+            # Risultato finale
+            self.result.emit(plan)
+            
+        except Exception as e:
+            logger.error(f"Errore nell'ottimizzazione: {e}")
+            self.error.emit(str(e))
+            
+    def _calculate_stats(self, plan: Dict) -> Dict:
+        """Calcola statistiche del piano"""
+        bars = plan.get('bars', [])
+        total_cuts = sum(len(bar.get('jobs', [])) for bar in bars)
+        total_length = sum(
+            sum(job.get('length', 0) for job in bar.get('jobs', []))
+            for bar in bars
         )
-        if not path:
-            return
-        html_rows = []
-        for r in range(self.tbl.rowCount()):
-            cols = [self.tbl.item(r, c).text() if self.tbl.item(r, c) else "" for c in range(self.tbl.columnCount())]
-            tds = "".join(f"<td style='border:1px solid #999;padding:4px 6px'>{c}</td>" for c in cols)
-            html_rows.append(f"<tr>{tds}</tr>")
-        html = f"""
-        <html><head><meta charset='utf-8'><style>
-        table{{border-collapse:collapse;width:100%;font-size:12px}}
-        th,td{{border:1px solid #999;padding:4px 6px}}
-        th{{background:#f0f0f0}}
-        </style></head><body>
-        <h2>Riepilogo ottimizzazione — {self._profile}</h2>
-        <div>Stock: {self._stock:.0f} mm — Generato: {datetime.now():%Y-%m-%d %H:%M:%S}</div><br/>
-        <table><thead><tr>{''.join(f'<th>{c}</th>' for c in self.COLS)}</tr></thead>
-        <tbody>{''.join(html_rows)}</tbody></table></body></html>
-        """
-        doc = QTextDocument(); doc.setHtml(html)
-        printer = QPrinter(QPrinter.HighResolution)
-        printer.setOutputFormat(QPrinter.PdfFormat)
-        printer.setOutputFileName(path)
-        doc.print_(printer)
+        total_waste = sum(bar.get('waste', 0) for bar in bars)
+        
+        efficiency = 0
+        if total_length + total_waste > 0:
+            efficiency = (total_length / (total_length + total_waste)) * 100
+            
+        return {
+            'total_bars': len(bars),
+            'total_cuts': total_cuts,
+            'total_length': total_length,
+            'total_waste': total_waste,
+            'efficiency': efficiency,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+    def stop(self):
+        """Ferma l'ottimizzazione"""
+        self.is_running = False
 
 
-class OptimizationRunDialog(QDialog):
-    simulationRequested = Signal()
-    startRequested = Signal()
-
-    GRAPH_BAR_H = 16
-    GRAPH_V_GAP = 6
-    TABLE_MIN_H = 180
-
-    def __init__(self, parent, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[Widget] = None):
+class OptimizationDialog(QDialog):
+    """Dialog per configurare ed eseguire l'ottimizzazione"""
+    
+    def __init__(self, orders_store: OrdersStore = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Ottimizzazione - {profile}")
-        self.setModal(False)
-        self.profile = profile
-        self._rows: List[Dict[str, Any]] = [dict(r) for r in rows]
-
-        cfg = read_settings()
-        self._stock = float(cfg.get("opt_stock_mm", 6500.0))
-        stock_use = float(cfg.get("opt_stock_usable_mm", 0.0))
-        if stock_use > 0:
-            self._stock = stock_use
-        self._kerf_base = float(cfg.get("opt_kerf_mm", 3.0))
-        self._ripasso = float(cfg.get("opt_ripasso_mm", 0.0))
-        self._reversible = bool(cfg.get("opt_current_profile_reversible", False))
-        self._thickness = float(cfg.get("opt_current_profile_thickness_mm", 0.0))
-        self._angle_tol = float(cfg.get("opt_reversible_angle_tol_deg", 0.5))
-        self._max_angle = float(cfg.get("opt_kerf_max_angle_deg", 60.0))
-        self._max_factor = float(cfg.get("opt_kerf_max_factor", 2.0))
-        self._warn_thr = float(cfg.get("opt_warn_overflow_mm", 0.5))
-
-        self._overlay_target: Optional[Widget] = overlay_target
-        self._show_graph = True if self._overlay_target is not None else bool(cfg.get("opt_show_graph", True))
-        self._collapse_done_bars: bool = bool(cfg.get("opt_collapse_done_bars", True))
-
-        self._bars: List[List[Dict[str, float]]] = []
-        self._bars_residuals: List[float] = []
-        self._done_by_index: Dict[int, List[bool]] = {}
-
-        # container per scroll
-        self._scroll: Optional[QScrollArea] = None
-        self._graph_container: Optional[Widget] = None
-
-        self.setFocusPolicy(Qt.StrongFocus)
-
-        self._build()
-        self._compute_plan_once()
-        self._init_done_state()
-        self._refresh_views()
-        self._apply_geometry()
-        self._resize_graph_area()
-
-        # Scorciatoie tastiera
-        self._sc_f7 = QShortcut(QKeySequence("F7"), self); self._sc_f7.activated.connect(self.simulationRequested.emit)
-        self._sc_f9 = QShortcut(QKeySequence("F9"), self); self._sc_f9.activated.connect(self.startRequested.emit)
-        self._sc_space = QShortcut(QKeySequence("Space"), self); self._sc_space.activated.connect(self.startRequested.emit)
-
-    # ---------------- UI ----------------
-    def _build(self):
-        root = QVBoxLayout(self); root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
-
-        opts = QFrame(); ol = QHBoxLayout(opts); ol.setContentsMargins(0,0,0,0); ol.setSpacing(6)
-        self._chk_graph = QCheckBox("Mostra grafica piano"); self._chk_graph.setChecked(self._show_graph)
-        self._chk_graph.toggled.connect(self._toggle_graph)
-        self._chk_collapse = QCheckBox("Collassa barre completate"); self._chk_collapse.setChecked(self._collapse_done_bars)
-        self._chk_collapse.toggled.connect(self._toggle_collapse_done)
-        btn_summary = QPushButton("Riepilogo…"); btn_summary.clicked.connect(self._open_summary)
-        btn_start = QPushButton("Avanza (F9 / Space)"); btn_start.clicked.connect(self.startRequested.emit)
-        btn_cut = QPushButton("Simula taglio (F7)"); btn_cut.clicked.connect(self.simulationRequested.emit)
-        ol.addWidget(self._chk_graph); ol.addWidget(self._chk_collapse); ol.addStretch(1)
-        ol.addWidget(btn_summary); ol.addWidget(btn_start); ol.addWidget(btn_cut)
-        root.addWidget(opts, 0)
-
-        # pannello grafico con scrollbar verticale robusto
-        self._panel_graph = QFrame()
-        gl = QVBoxLayout(self._panel_graph); gl.setContentsMargins(6,6,6,6); gl.setSpacing(4)
-        self._scroll = QScrollArea(self._panel_graph)
-        self._scroll.setWidgetResizable(False)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        # container contenuto scrollabile
-        self._graph_container = QWidget()
-        self._graph_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        cont_layout = QVBoxLayout(self._graph_container); cont_layout.setContentsMargins(0,0,0,0); cont_layout.setSpacing(0)
-
-        self._graph = PlanVisualizerWidget(self._graph_container)
-        self._graph.installEventFilter(self)
-
-        cont_layout.addWidget(self._graph)
-        self._scroll.setWidget(self._graph_container)
-        gl.addWidget(self._scroll, 1)
-        root.addWidget(self._panel_graph, 0)
-
-        # tabella firme
-        self._tbl = QTableWidget(0, 4)
-        self._tbl.setHorizontalHeaderLabels(["Lunghezza (mm)", "Ang SX", "Ang DX", "Q.tà"])
-        hdr = self._tbl.horizontalHeader()
-        for i in range(4):
-            hdr.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        self._tbl.setMinimumHeight(self.TABLE_MIN_H)
-        root.addWidget(self._tbl, 1)
-
-        self._apply_toggles()
-
-    def eventFilter(self, obj, e):
-        if obj is self._graph and e.type() == QEvent.Type.Wheel and self._scroll:
-            QApplication.sendEvent(self._scroll.verticalScrollBar(), e)
-            return True
-        return super().eventFilter(obj, e)
-
-    def keyPressEvent(self, e: QKeyEvent):
-        if e.key() == Qt.Key_F7:
-            self.simulationRequested.emit(); e.accept(); return
-        if e.key() in (Qt.Key_F9, Qt.Key_Space):
-            self.startRequested.emit(); e.accept(); return
-        super().keyPressEvent(e)
-
-    def _apply_toggles(self):
-        self._panel_graph.setVisible(self._show_graph)
-
-    def _toggle_graph(self, on: bool):
-        self._show_graph = bool(on); self._apply_toggles()
-        if self._overlay_target is None:
-            cfg = dict(read_settings()); cfg["opt_show_graph"] = self._show_graph; write_settings(cfg)
-        self._resize_graph_area()
-
-    def _toggle_collapse_done(self, on: bool):
-        self._collapse_done_bars = bool(on)
-        cfg = dict(read_settings()); cfg["opt_collapse_done_bars"] = self._collapse_done_bars; write_settings(cfg)
-        self._refresh_graph_only()
-
-    def _open_summary(self):
-        dlg = OptimizationSummaryDialog(self, self.profile, self._bars, self._bars_residuals, self._stock)
-        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
-        dlg.show()
-
-    # ---------------- Helpers (data) ----------------
-    def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
-        pieces: List[Dict[str, float]] = []
-        for r in self._rows:
-            q = int(r.get("qty", 0)); L = float(r.get("length_mm", 0.0))
-            ax = float(r.get("ang_sx", 0.0)); ad = float(r.get("ang_dx", 0.0))
-            for _ in range(max(0, q)):
-                pieces.append({"len": L, "ax": ax, "ad": ad})
-        pieces.sort(key=lambda x: x["len"], reverse=True)
-        return pieces
-
-    def _pack_bfd(self, pieces: List[Dict[str, float]]) -> Tuple[List[List[Dict[str, float]]], List[float]]:
-        bars: List[List[Dict[str, float]]] = []
-        for p in pieces:
-            placed = False
-            for b in bars:
-                used = bar_used_length(b, self._kerf_base, self._ripasso,
-                                       self._reversible, self._thickness,
-                                       self._angle_tol, self._max_angle, self._max_factor)
-                extra = joint_consumption(b[-1], self._kerf_base, self._ripasso,
-                                          self._reversible, self._thickness,
-                                          self._angle_tol, self._max_angle, self._max_factor)[0] if b else 0.0
-                if used + p["len"] + extra <= self._stock + 1e-6:
-                    b.append(p); placed = True; break
-            if not placed:
-                bars.append([p])
-        rem = residuals(bars, self._stock, self._kerf_base, self._ripasso,
-                        self._reversible, self._thickness,
-                        self._angle_tol, self._max_angle, self._max_factor)
-        return bars, rem
-
-    def _compute_plan_once(self):
-        pieces = self._expand_rows_to_unit_pieces()
-
-        bars, rem = pack_bars_knapsack_ilp(
-            pieces=pieces,
-            stock=self._stock,
-            kerf_base=self._kerf_base,
-            ripasso_mm=self._ripasso,
-            conservative_angle_deg=float(read_settings().get("opt_knap_conservative_angle_deg", 45.0)),
-            max_angle=self._max_angle,
-            max_factor=self._max_factor,
-            reversible=self._reversible,
-            thickness_mm=self._thickness,
-            angle_tol=self._angle_tol,
-            per_bar_time_s=int(read_settings().get("opt_time_limit_s", 15))
-        )
-        if not bars:
-            bars, rem = self._pack_bfd(pieces)
-
+        self.orders_store = orders_store or OrdersStore()
+        self.optimized_plan = None
+        self.worker = None
+        self.worker_thread = None
+        
+        self.setWindowTitle("Ottimizzazione Piano di Taglio")
+        self.setModal(True)
+        self.resize(1000, 700)
+        
+        self._init_ui()
+        self._load_settings()
+        self._load_orders()
+        
+    def _init_ui(self):
+        """Inizializza l'interfaccia utente"""
+        layout = QVBoxLayout(self)
+        
+        # Stacked widget per le pagine
+        self.stack = QStackedWidget()
+        
+        # Pagina 1: Selezione ordini e stock
+        self.selection_page = self._create_selection_page()
+        self.stack.addWidget(self.selection_page)
+        
+        # Pagina 2: Configurazione ottimizzazione
+        self.config_page = self._create_config_page()
+        self.stack.addWidget(self.config_page)
+        
+        # Pagina 3: Esecuzione e risultati
+        self.results_page = self._create_results_page()
+        self.stack.addWidget(self.results_page)
+        
+        layout.addWidget(self.stack)
+        
+        # Pulsanti di navigazione
+        nav_layout = QHBoxLayout()
+        
+        self.btn_back = QPushButton("← Indietro")
+        self.btn_back.clicked.connect(self._go_back)
+        self.btn_back.setEnabled(False)
+        nav_layout.addWidget(self.btn_back)
+        
+        nav_layout.addStretch()
+        
+        self.btn_cancel = QPushButton("Annulla")
+        self.btn_cancel.clicked.connect(self.reject)
+        nav_layout.addWidget(self.btn_cancel)
+        
+        self.btn_next = QPushButton("Avanti →")
+        self.btn_next.clicked.connect(self._go_next)
+        nav_layout.addWidget(self.btn_next)
+        
+        layout.addLayout(nav_layout)
+        
+    def _create_selection_page(self) -> QWidget:
+        """Crea la pagina di selezione ordini e stock"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        
+        # Titolo
+        title = QLabel("Selezione Ordini e Stock")
+        title.setFont(QFont("Arial", 14, QFont.Bold))
+        layout.addWidget(title)
+        
+        # Splitter per ordini e stock
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # Pannello ordini
+        orders_group = QGroupBox("Ordini da Ottimizzare")
+        orders_layout = QVBoxLayout()
+        
+        # Lista ordini
+        self.orders_list = QListWidget()
+        self.orders_list.setSelectionMode(QListWidget.MultiSelection)
+        orders_layout.addWidget(self.orders_list)
+        
+        # Pulsanti ordini
+        orders_btn_layout = QHBoxLayout()
+        
+        self.btn_select_all = QPushButton("Seleziona Tutti")
+        self.btn_select_all.clicked.connect(self._select_all_orders)
+        orders_btn_layout.addWidget(self.btn_select_all)
+        
+        self.btn_deselect_all = QPushButton("Deseleziona Tutti")
+        self.btn_deselect_all.clicked.connect(self._deselect_all_orders)
+        orders_btn_layout.addWidget(self.btn_deselect_all)
+        
+        orders_layout.addLayout(orders_btn_layout)
+        
+        # Info ordini selezionati
+        self.orders_info = QLabel("0 ordini selezionati")
+        orders_layout.addWidget(self.orders_info)
+        
+        orders_group.setLayout(orders_layout)
+        splitter.addWidget(orders_group)
+        
+        # Pannello stock
+        stock_group = QGroupBox("Stock Disponibile")
+        stock_layout = QVBoxLayout()
+        
+        # Tabella stock
+        self.stock_table = QTableWidget()
+        self.stock_table.setColumnCount(4)
+        self.stock_table.setHorizontalHeaderLabels(["ID", "Lunghezza", "Quantità", "Usa"])
+        self.stock_table.horizontalHeader().setStretchLastSection(True)
+        stock_layout.addWidget(self.stock_table)
+        
+        # Aggiungi stock standard
+        self._add_standard_stock()
+        
+        # Pulsanti stock
+        stock_btn_layout = QHBoxLayout()
+        
+        self.btn_add_stock = QPushButton("+ Aggiungi")
+        self.btn_add_stock.clicked.connect(self._add_stock_row)
+        stock_btn_layout.addWidget(self.btn_add_stock)
+        
+        self.btn_remove_stock = QPushButton("- Rimuovi")
+        self.btn_remove_stock.clicked.connect(self._remove_stock_row)
+        stock_btn_layout.addWidget(self.btn_remove_stock)
+        
+        stock_layout.addLayout(stock_btn_layout)
+        
+        stock_group.setLayout(stock_layout)
+        splitter.addWidget(stock_group)
+        
+        layout.addWidget(splitter)
+        
+        return page
+        
+    def _create_config_page(self) -> QWidget:
+        """Crea la pagina di configurazione ottimizzazione"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        
+        # Titolo
+        title = QLabel("Configurazione Ottimizzazione")
+        title.setFont(QFont("Arial", 14, QFont.Bold))
+        layout.addWidget(title)
+        
+        # Gruppo algoritmo
+        algo_group = QGroupBox("Algoritmo di Ottimizzazione")
+        algo_layout = QGridLayout()
+        
+        algo_layout.addWidget(QLabel("Solver:"), 0, 0)
+        self.solver_combo = QComboBox()
+        self.solver_combo.addItems(["ILP (OR-Tools)", "BFD (Best Fit Decreasing)"])
+        algo_layout.addWidget(self.solver_combo, 0, 1)
+        
+        algo_layout.addWidget(QLabel("Timeout (s):"), 1, 0)
+        self.timeout_spin = QSpinBox()
+        self.timeout_spin.setRange(10, 300)
+        self.timeout_spin.setValue(60)
+        self.timeout_spin.setSuffix(" s")
+        algo_layout.addWidget(self.timeout_spin, 1, 1)
+        
+        algo_group.setLayout(algo_layout)
+        layout.addWidget(algo_group)
+        
+        # Gruppo parametri taglio
+        params_group = QGroupBox("Parametri di Taglio")
+        params_layout = QGridLayout()
+        
+        params_layout.addWidget(QLabel("Kerf (mm):"), 0, 0)
+        self.kerf_spin = QDoubleSpinBox()
+        self.kerf_spin.setRange(0.0, 10.0)
+        self.kerf_spin.setValue(3.0)
+        self.kerf_spin.setSingleStep(0.1)
+        params_layout.addWidget(self.kerf_spin, 0, 1)
+        
+        params_layout.addWidget(QLabel("Ripasso (mm):"), 1, 0)
+        self.ripasso_spin = QDoubleSpinBox()
+        self.ripasso_spin.setRange(0.0, 50.0)
+        self.ripasso_spin.setValue(5.0)
+        params_layout.addWidget(self.ripasso_spin, 1, 1)
+        
+        params_layout.addWidget(QLabel("Tolleranza (mm):"), 2, 0)
+        self.tolerance_spin = QDoubleSpinBox()
+        self.tolerance_spin.setRange(0.0, 5.0)
+        self.tolerance_spin.setValue(0.5)
+        self.tolerance_spin.setSingleStep(0.1)
+        params_layout.addWidget(self.tolerance_spin, 2, 1)
+        
+        params_group.setLayout(params_layout)
+        layout.addWidget(params_group)
+        
+        # Gruppo opzioni
+        options_group = QGroupBox("Opzioni")
+        options_layout = QVBoxLayout()
+        
+        self.enable_refining_check = QCheckBox("Abilita raffinamento del piano")
+        self.enable_refining_check.setChecked(True)
+        options_layout.addWidget(self.enable_refining_check)
+        
+        self.enable_sequencing_check = QCheckBox("Ottimizza sequenza di taglio")
+        self.enable_sequencing_check.setChecked(True)
+        options_layout.addWidget(self.enable_sequencing_check)
+        
+        self.recupero_check = QCheckBox("Abilita recupero sfridi")
+        self.recupero_check.setChecked(True)
+        options_layout.addWidget(self.recupero_check)
+        
+        self.group_by_angle_check = QCheckBox("Raggruppa per angolo")
+        self.group_by_angle_check.setChecked(False)
+        options_layout.addWidget(self.group_by_angle_check)
+        
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
+        
+        layout.addStretch()
+        
+        return page
+        
+    def _create_results_page(self) -> QWidget:
+        """Crea la pagina dei risultati"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        
+        # Titolo
+        title = QLabel("Risultati Ottimizzazione")
+        title.setFont(QFont("Arial", 14, QFont.Bold))
+        layout.addWidget(title)
+        
+        # Tab widget per risultati
+        self.results_tabs = QTabWidget()
+        
+        # Tab visualizzazione piano
+        viz_tab = QWidget()
+        viz_layout = QVBoxLayout(viz_tab)
+        
+        # Visualizzatore piano
+        self.plan_visualizer = PlanVisualizer()
+        viz_layout.addWidget(self.plan_visualizer)
+        
+        self.results_tabs.addTab(viz_tab, "Visualizzazione Piano")
+        
+        # Tab statistiche
+        stats_tab = QWidget()
+        stats_layout = QVBoxLayout(stats_tab)
+        
+        self.stats_text = QTextEdit()
+        self.stats_text.setReadOnly(True)
+        stats_layout.addWidget(self.stats_text)
+        
+        self.results_tabs.addTab(stats_tab, "Statistiche")
+        
+        # Tab log
+        log_tab = QWidget()
+        log_layout = QVBoxLayout(log_tab)
+        
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Consolas", 9))
+        log_layout.addWidget(self.log_text)
+        
+        self.results_tabs.addTab(log_tab, "Log")
+        
+        layout.addWidget(self.results_tabs)
+        
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+        
+        # Status
+        self.status_label = QLabel("Pronto")
+        layout.addWidget(self.status_label)
+        
+        # Pulsanti azione
+        action_layout = QHBoxLayout()
+        
+        self.btn_save_plan = QPushButton("💾 Salva Piano")
+        self.btn_save_plan.clicked.connect(self._save_plan)
+        self.btn_save_plan.setEnabled(False)
+        action_layout.addWidget(self.btn_save_plan)
+        
+        self.btn_export = QPushButton("📤 Esporta")
+        self.btn_export.clicked.connect(self._export_plan)
+        self.btn_export.setEnabled(False)
+        action_layout.addWidget(self.btn_export)
+        
+        action_layout.addStretch()
+        
+        self.btn_run = QPushButton("▶ Esegui Ottimizzazione")
+        self.btn_run.clicked.connect(self._run_optimization)
+        self.btn_run.setStyleSheet("""
+            QPushButton {
+                background-color: #28a745;
+                color: white;
+                font-weight: bold;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #218838;
+            }
+        """)
+        action_layout.addWidget(self.btn_run)
+        
+        layout.addLayout(action_layout)
+        
+        return page
+        
+    def _go_next(self):
+        """Vai alla pagina successiva"""
+        current = self.stack.currentIndex()
+        
+        if current == 0:  # Da selezione a configurazione
+            # Verifica selezione
+            if not self._get_selected_orders():
+                QMessageBox.warning(self, "Attenzione", "Seleziona almeno un ordine")
+                return
+            if not self._get_stock():
+                QMessageBox.warning(self, "Attenzione", "Definisci almeno una barra di stock")
+                return
+                
+        if current < self.stack.count() - 1:
+            self.stack.setCurrentIndex(current + 1)
+            self.btn_back.setEnabled(True)
+            
+            if current == 1:  # Arrivati ai risultati
+                self.btn_next.setText("Usa Piano")
+                self.btn_next.clicked.disconnect()
+                self.btn_next.clicked.connect(self.accept)
+                self.btn_next.setEnabled(False)
+                
+    def _go_back(self):
+        """Vai alla pagina precedente"""
+        current = self.stack.currentIndex()
+        if current > 0:
+            self.stack.setCurrentIndex(current - 1)
+            
+            if current == 2:  # Torniamo dalla pagina risultati
+                self.btn_next.setText("Avanti →")
+                self.btn_next.clicked.disconnect()
+                self.btn_next.clicked.connect(self._go_next)
+                self.btn_next.setEnabled(True)
+                
+        if self.stack.currentIndex() == 0:
+            self.btn_back.setEnabled(False)
+            
+    def _load_orders(self):
+        """Carica gli ordini disponibili"""
         try:
-            bars, rem = refine_tail_ilp(
-                bars, self._stock, self._kerf_base,
-                self._ripasso, self._reversible, self._thickness,
-                self._angle_tol, tail_bars=int(read_settings().get("opt_refine_tail_bars", 6)),
-                time_limit_s=int(read_settings().get("opt_refine_time_s", 25)),
-                max_angle=self._max_angle, max_factor=self._max_factor
-            )
-        except Exception:
-            pass
-
-        # ordina intra-barra per lunghezze decrescenti; barre per max lunghezza
-        for b in bars:
-            with contextlib.suppress(Exception):
-                b.sort(key=lambda p:(-float(p["len"]),float(p["ax"]),float(p["ad"])))
-        bars.sort(key=lambda b: max((float(p["len"]) for p in b), default=0.0), reverse=True)
-
-        self._bars = bars
-        self._bars_residuals = residuals(bars, self._stock, self._kerf_base, self._ripasso,
-                                         self._reversible, self._thickness,
-                                         self._angle_tol, self._max_angle, self._max_factor)
-
-    # ---------------- Views & state ----------------
-    def _init_done_state(self):
-        self._done_by_index = {i: [False]*len(b) for i, b in enumerate(self._bars)}
-        with contextlib.suppress(Exception):
-            self._graph.set_done_by_index(self._done_by_index)
-
-    def _effective_bars_for_view(self) -> List[List[Dict[str,float]]]:
-        if not self._collapse_done_bars:
-            return self._bars
-        out: List[List[Dict[str,float]]] = []
-        for i, b in enumerate(self._bars):
-            flags = self._done_by_index.get(i, [])
-            if not flags or not all(flags):
-                out.append(b)
-        return out
-
-    def _refresh_graph_only(self):
-        if not self._graph: return
-        bars_view = self._effective_bars_for_view()
-        with contextlib.suppress(Exception):
-            self._graph.set_data(
-                bars_view, stock_mm=self._stock,
-                kerf_base=self._kerf_base, ripasso_mm=self._ripasso,
-                reversible=self._reversible, thickness_mm=self._thickness,
-                angle_tol=self._angle_tol, max_angle=self._max_angle,
-                max_factor=self._max_factor, warn_threshold_mm=self._warn_thr
-            )
-            if not self._collapse_done_bars:
-                self._graph.set_done_by_index(self._done_by_index)
-        self._resize_graph_area()
-
-    def _refresh_views(self):
-        self._refresh_graph_only()
-        self._reload_table()
-
-    def _reload_table(self):
-        self._tbl.setRowCount(0)
-        for r in self._rows:
-            q = int(r.get("qty", 0))
-            row = self._tbl.rowCount(); self._tbl.insertRow(row)
-            self._tbl.setItem(row, 0, QTableWidgetItem(f"{float(r.get('length_mm',0.0)):.2f}"))
-            self._tbl.setItem(row, 1, QTableWidgetItem(f"{float(r.get('ang_sx',0.0)):.1f}"))
-            self._tbl.setItem(row, 2, QTableWidgetItem(f"{float(r.get('ang_dx',0.0)):.1f}"))
-            self._tbl.setItem(row, 3, QTableWidgetItem(str(q)))
-
-    # ---------------- Geometry / sizing ----------------
-    def _apply_geometry(self):
-        if self._overlay_target is not None:
-            try:
-                tl = self._overlay_target.mapToGlobal(self._overlay_target.rect().topLeft())
-                br = self._overlay_target.mapToGlobal(self._overlay_target.rect().bottomRight())
-                self.setGeometry(QRect(tl, br))
-            except Exception:
-                pass
+            orders = self.orders_store.get_all_orders()
+            self.orders_list.clear()
+            
+            for order in orders:
+                item_text = f"Ordine #{order.get('id', '')} - {order.get('description', '')} ({order.get('pieces', 0)} pz)"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.UserRole, order)
+                self.orders_list.addItem(item)
+                
+        except Exception as e:
+            logger.error(f"Errore nel caricamento ordini: {e}")
+            
+    def _add_standard_stock(self):
+        """Aggiunge stock standard"""
+        standard_bars = [
+            {"id": "STD-6000", "length": 6000, "quantity": 100},
+            {"id": "STD-7000", "length": 7000, "quantity": 50},
+        ]
+        
+        for bar in standard_bars:
+            self._add_stock_row(bar)
+            
+    def _add_stock_row(self, data: Dict = None):
+        """Aggiunge una riga alla tabella stock"""
+        row = self.stock_table.rowCount()
+        self.stock_table.insertRow(row)
+        
+        if data:
+            self.stock_table.setItem(row, 0, QTableWidgetItem(data.get('id', f'BAR-{row+1}')))
+            self.stock_table.setItem(row, 1, QTableWidgetItem(str(data.get('length', 6000))))
+            self.stock_table.setItem(row, 2, QTableWidgetItem(str(data.get('quantity', 1))))
         else:
-            screen = QApplication.primaryScreen()
-            if screen:
-                avail = screen.availableGeometry()
-                self.resize(max(980, self.width()), int(avail.height() - 32))
-                self.move(avail.x() + 12, avail.y() + 12)
-
-    def _remaining_bars_count(self) -> int:
-        rem = 0
-        for i, b in enumerate(self._bars):
-            done_list = self._done_by_index.get(i, [])
-            if not done_list or not all(done_list):
-                rem += 1
-        return rem
-
-    def _estimate_content_height(self) -> int:
-        n_bars = self._remaining_bars_count() if self._collapse_done_bars else len(self._bars)
-        if n_bars<=0: return 120
-        return n_bars * self.GRAPH_BAR_H + max(0, n_bars - 1) * self.GRAPH_V_GAP + 16
-
-    def _resize_graph_area(self):
-        if not (self._graph_container and self._graph): return
-        content_h = max(120, self._estimate_content_height())
-        self._graph_container.setMinimumHeight(int(content_h))
-        self._graph_container.setMaximumHeight(int(content_h))
-        self._graph.setMinimumHeight(int(content_h))
-        self._graph.setMaximumHeight(int(content_h))
-        with contextlib.suppress(Exception):
-            self._graph.update()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event); self._resize_graph_area()
-
-    # ---------------- Aggiornamenti dopo taglio ----------------
-    def _mark_done_local(self, length_mm: float, ang_sx: float, ang_dx: float):
-        tol_L = 1e-2; tol_A = 1e-2
-        for i, bar in enumerate(self._bars):
-            for j, p in enumerate(bar):
-                if self._done_by_index.get(i, [])[j]:
-                    continue
-                try:
-                    if abs(float(p.get("len",0.0)) - length_mm) <= tol_L and \
-                       abs(float(p.get("ax",0.0)) - ang_sx) <= tol_A and \
-                       abs(float(p.get("ad",0.0)) - ang_dx) <= tol_A:
-                        self._done_by_index[i][j] = True
-                        return
-                except Exception:
-                    continue
-
-    def update_after_cut(self, length_mm: float, ang_sx: float, ang_dx: float):
-        with contextlib.suppress(Exception):
-            self._graph.mark_done_by_signature(length_mm, ang_sx, ang_dx)
-        self._mark_done_local(length_mm, ang_sx, ang_dx)
-        self._refresh_graph_only()
-
-    # ---------------- Slot esterni (da AutomaticoPage) ----------------
+            self.stock_table.setItem(row, 0, QTableWidgetItem(f'BAR-{row+1}'))
+            self.stock_table.setItem(row, 1, QTableWidgetItem("6000"))
+            self.stock_table.setItem(row, 2, QTableWidgetItem("1"))
+            
+        # Checkbox per uso
+        check = QCheckBox()
+        check.setChecked(True)
+        self.stock_table.setCellWidget(row, 3, check)
+        
+    def _remove_stock_row(self):
+        """Rimuove la riga selezionata dalla tabella stock"""
+        current_row = self.stock_table.currentRow()
+        if current_row >= 0:
+            self.stock_table.removeRow(current_row)
+            
+    def _select_all_orders(self):
+        """Seleziona tutti gli ordini"""
+        for i in range(self.orders_list.count()):
+            self.orders_list.item(i).setSelected(True)
+        self._update_orders_info()
+        
+    def _deselect_all_orders(self):
+        """Deseleziona tutti gli ordini"""
+        self.orders_list.clearSelection()
+        self._update_orders_info()
+        
+    def _update_orders_info(self):
+        """Aggiorna info ordini selezionati"""
+        selected = len(self.orders_list.selectedItems())
+        total_pieces = sum(
+            item.data(Qt.UserRole).get('pieces', 0)
+            for item in self.orders_list.selectedItems()
+        )
+        self.orders_info.setText(f"{selected} ordini selezionati ({total_pieces} pezzi totali)")
+        
+    def _get_selected_orders(self) -> List[Dict]:
+        """Ottiene gli ordini selezionati"""
+        orders = []
+        for item in self.orders_list.selectedItems():
+            order_data = item.data(Qt.UserRole)
+            if order_data:
+                orders.append(order_data)
+        return orders
+        
+    def _get_stock(self) -> List[Dict]:
+        """Ottiene lo stock definito"""
+        stock = []
+        for row in range(self.stock_table.rowCount()):
+            check_widget = self.stock_table.cellWidget(row, 3)
+            if check_widget and check_widget.isChecked():
+                stock_item = {
+                    'id': self.stock_table.item(row, 0).text(),
+                    'length': float(self.stock_table.item(row, 1).text()),
+                    'quantity': int(self.stock_table.item(row, 2).text())
+                }
+                stock.append(stock_item)
+        return stock
+        
+    def _run_optimization(self):
+        """Esegue l'ottimizzazione"""
+        # Prepara i dati
+        orders = self._get_selected_orders()
+        stock = self._get_stock()
+        
+        # Converti ordini in jobs
+        jobs = []
+        for order in orders:
+            # TODO: Convertire ordine in lista di tagli
+            # Per ora usiamo dati di esempio
+            for i in range(order.get('pieces', 1)):
+                jobs.append({
+                    'id': f"{order['id']}-{i+1}",
+                    'length': 1500,  # Esempio
+                    'angle_sx': 90,
+                    'angle_dx': 90,
+                    'order_id': order['id']
+                })
+                
+        settings = {
+            'solver': 'ILP' if self.solver_combo.currentIndex() == 0 else 'BFD',
+            'time_limit': self.timeout_spin.value(),
+            'kerf': self.kerf_spin.value(),
+            'ripasso': self.ripasso_spin.value(),
+            'recupero': self.recupero_check.isChecked(),
+            'enable_refining': self.enable_refining_check.isChecked(),
+            'enable_sequencing': self.enable_sequencing_check.isChecked()
+        }
+        
+        # UI per esecuzione
+        self.btn_run.setEnabled(False)
+        self.btn_save_plan.setEnabled(False)
+        self.btn_export.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        
+        # Avvia worker
+        self._start_worker(jobs, stock, settings)
+        
+    def _start_worker(self, jobs: List[Dict], stock: List[Dict], settings: Dict):
+        """Avvia il worker thread per l'ottimizzazione"""
+        if self.worker_thread:
+            self._cleanup_worker()
+            
+        self.worker = OptimizationWorker(jobs, stock, settings)
+        self.worker_thread = QThread()
+        
+        # Connetti segnali
+        self.worker.moveToThread(self.worker_thread)
+        self.worker_thread.started.connect(self.worker.run)
+        
+        self.worker.progress.connect(self.progress_bar.setValue)
+        self.worker.status.connect(self.status_label.setText)
+        self.worker.log.connect(self._add_log)
+        self.worker.result.connect(self._on_optimization_complete)
+        self.worker.error.connect(self._on_optimization_error)
+        
+        # Avvia thread
+        self.worker_thread.start()
+        
+    def _cleanup_worker(self):
+        """Pulisce il worker thread"""
+        if self.worker:
+            self.worker.stop()
+            
+        if self.worker_thread:
+            self.worker_thread.quit()
+            self.worker_thread.wait()
+            
+        self.worker = None
+        self.worker_thread = None
+        
+    def _add_log(self, message: str):
+        """Aggiunge un messaggio al log"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.append(f"[{timestamp}] {message}")
+        
     @Slot(dict)
-    def onActivePieceChanged(self, piece: Dict[str,Any]):
-        L = float(piece.get("len", piece.get("length", 0.0)))
-        ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
-        ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
-        for meth in ("set_active_signature","highlight_active_signature","mark_active_by_signature","set_active_piece_by_signature"):
-            with contextlib.suppress(Exception):
-                getattr(self._graph, meth)(L, ax, ad)
-                break
-
-    @Slot(dict)
-    def onPieceCut(self, piece: Dict[str,Any]):
-        L = float(piece.get("len", piece.get("length", 0.0)))
-        ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
-        ad = float(piece.get("ad", piece.get("ang_dx", 0.0)))
-        self.update_after_cut(L, ax, ad)
+    def _on_optimization_complete(self, plan: Dict):
+        """Gestisce il completamento dell'ottimizzazione"""
+        self.optimized_plan = plan
+        
+        # Mostra risultati
+        self.plan_visualizer.load_plan(plan)
+        
+        # Mostra statistiche
+        stats = plan.get('stats', {})
+        stats_text = f"""
+        === STATISTICHE OTTIMIZZAZIONE ===
+        
+        Barre utilizzate: {stats.get('total_bars', 0)}
+        Tagli totali: {stats.get('total_cuts', 0)}
+        Lunghezza totale tagliata: {stats.get('total_length', 0):.1f} mm
+        Sfrido totale: {stats.get('total_waste', 0):.1f} mm
+        Efficienza: {stats.get('efficiency', 0):.1f}%
+        
+        Timestamp: {stats.get('timestamp', '')}
+        """
+        self.stats_text.setText(stats_text)
+        
+        # Abilita pulsanti
+        self.btn_run.setEnabled(True)
+        self.btn_save_plan.setEnabled(True)
+        self.btn_export.setEnabled(True)
+        self.btn_next.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        
+        self.status_label.setText("Ottimizzazione completata con successo")
+        self._add_log("Ottimizzazione completata!")
+        
+        # Cleanup
+        self._cleanup_worker()
+        
+    @Slot(str)
+    def _on_optimization_error(self, error_msg: str):
+        """Gestisce gli errori di ottimizzazione"""
+        QMessageBox.critical(self, "Errore", f"Errore durante l'ottimizzazione:\n{error_msg}")
+        
+        self.btn_run.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.status_label.setText("Errore nell'ottimizzazione")
+        
+        self._add_log(f"ERRORE: {error_msg}")
+        self._cleanup_worker()
+        
+    def _save_plan(self):
+        """Salva il piano ottimizzato"""
+        if not self.optimized_plan:
+            return
+            
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Salva Piano Ottimizzato",
+            f"piano_ottimizzato_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            "File JSON (*.json)"
+        )
+        
+        if filename:
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(self.optimized_plan, f, indent=2, ensure_ascii=False)
+                QMessageBox.information(self, "Successo", "Piano salvato con successo")
+            except Exception as e:
+                QMessageBox.critical(self, "Errore", f"Errore nel salvataggio:\n{str(e)}")
+                
+    def _export_plan(self):
+        """Esporta il piano in altri formati"""
+        # TODO: Implementare export in CSV, Excel, etc.
+        QMessageBox.information(self, "Info", "Funzionalità di export non ancora implementata")
+        
+    def _load_settings(self):
+        """Carica le impostazioni salvate"""
+        settings = load_settings()
+        opt_settings = settings.get('optimization', {})
+        
+        # Applica impostazioni
+        self.solver_combo.setCurrentIndex(0 if opt_settings.get('solver', 'ILP') == 'ILP' else 1)
+        self.timeout_spin.setValue(opt_settings.get('timeout', 60))
+        self.kerf_spin.setValue(opt_settings.get('kerf', 3.0))
+        self.ripasso_spin.setValue(opt_settings.get('ripasso', 5.0))
+        self.tolerance_spin.setValue(opt_settings.get('tolerance', 0.5))
+        self.enable_refining_check.setChecked(opt_settings.get('enable_refining', True))
+        self.enable_sequencing_check.setChecked(opt_settings.get('enable_sequencing', True))
+        self.recupero_check.setChecked(opt_settings.get('recupero', True))
+        self.group_by_angle_check.setChecked(opt_settings.get('group_by_angle', False))
+        
+    def save_settings(self):
+        """Salva le impostazioni correnti"""
+        settings = load_settings()
+        
+        settings['optimization'] = {
+            'solver': 'ILP' if self.solver_combo.currentIndex() == 0 else 'BFD',
+            'timeout': self.timeout_spin.value(),
+            'kerf': self.kerf_spin.value(),
+            'ripasso': self.ripasso_spin.value(),
+            'tolerance': self.tolerance_spin.value(),
+            'enable_refining': self.enable_refining_check.isChecked(),
+            'enable_sequencing': self.enable_sequencing_check.isChecked(),
+            'recupero': self.recupero_check.isChecked(),
+            'group_by_angle': self.group_by_angle_check.isChecked()
+        }
+        
+        save_settings(settings)
+        
+    def get_optimized_plan(self) -> Optional[Dict]:
+        """Restituisce il piano ottimizzato"""
+        return self.optimized_plan
+        
+    def closeEvent(self, event):
+        """Gestisce la chiusura del dialog"""
+        self.save_settings()
+        self._cleanup_worker()
+        event.accept()
