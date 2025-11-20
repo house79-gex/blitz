@@ -676,7 +676,7 @@ class JobsWidget(QWidget):
                     if current_x <= x <= current_x + job_width:
                         self.job_clicked.emit(self.bar_idx, idx)
                         break
-                        
+                    
                     current_x += job_width
                     
         super().mousePressEvent(event)
