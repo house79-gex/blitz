@@ -1,18 +1,33 @@
 """
-PlanVisualizerWidget (full width absolute)
-- Saturazione reale larghezza: calcola la larghezza massima disponibile risalendo la catena dei parent.
-- Barra riempie al 100% (meno margini minimi LEFT/RIGHT).
-- Trapezi realistici (offset = altezza * tan(angolo)).
-- Kerf proporzionale.
-- Debug mode (self._debug=True) mostra le larghezze usate.
+PlanVisualizerWidget (full width absolute) - FIX SizePolicy
 
-API invariata (come versioni precedenti).
+Correzioni principali:
+- Uso corretto di QSizePolicy invece di QWidget.SizePolicy (risolve AttributeError).
+- Saturazione reale larghezza (forza scalatura su tutto lo spazio disponibile).
+- Trapezi con angoli reali: offset = ROW_HEIGHT_PX * tan(angolo).
+- Spazi verticali aumentati (BAR_VERTICAL_GAP).
+- Redistribuzione pixel per riempire completamente la larghezza orizzontale senza lasciare ~25% vuoto.
+- Evidenzia solo pezzo attivo e pezzi completati singolarmente.
+
+API invariata:
+  set_data(...)
+  set_done_by_index(...)
+  mark_done_by_signature(...)
+  set_active_signature(...)
+  highlight_active_signature(...)
+  mark_active_by_signature(...)
+  set_active_piece_by_signature(...)
+  set_active_position(...)
+  set_active_piece_by_indices(...)
+  mark_done_at(...)
+
+Per debug imposta self._debug = True (mostra righe con dimensioni interne).
 """
 
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
 
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QSizePolicy
 from PySide6.QtCore import Qt, QRectF, QSize, QPointF
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
 
@@ -24,16 +39,16 @@ logger = logging.getLogger(__name__)
 # Parametri
 ROW_HEIGHT_PX        = 30
 BAR_VERTICAL_GAP     = 22
-LEFT_MARGIN_PX       = 4     # ridotti al minimo
+LEFT_MARGIN_PX       = 4
 RIGHT_MARGIN_PX      = 4
 TOP_MARGIN_PX        = 12
 MIN_PIECE_WIDTH_PX   = 20
 MIN_KERF_WIDTH_PX    = 3.0
 MAX_TAPER_RATIO      = 0.70
 ANGLE_CLAMP_VERTICAL = 89.0
-FORCE_FULL_WIDTH     = True   # sempre saturare
-REDISTRIBUTE_PIXELS  = True   # redistribuisce differenze di arrotondamento
-DEBUG_SHOW           = False  # puoi cambiare a True per vedere overlay debug
+FORCE_FULL_WIDTH     = True
+REDISTRIBUTE_PIXELS  = True
+DEBUG_SHOW           = False  # metti True per debug
 
 def _ext_len(p: Dict[str, Any]) -> float:
     return float(p.get("len", p.get("length_mm", p.get("length", 0.0))))
@@ -72,7 +87,8 @@ class PlanVisualizerWidget(QWidget):
 
         self._debug = DEBUG_SHOW
 
-        self.setSizePolicy(QWidget.SizePolicy.Expanding, QWidget.SizePolicy.Preferred)
+        # FIX: usare QSizePolicy
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._recalc_min_height()
 
     # ------------- API -------------
@@ -165,10 +181,8 @@ class PlanVisualizerWidget(QWidget):
     # ------------- Supporto larghezza effettiva -------------
     def _effective_inner_width(self) -> int:
         w_self = self.width()
-        # prova parent diretto
         parent = self.parent()
         w_parent = parent.width() if parent else w_self
-        # se dentro un contenitore superiore (scroll viewport o dialog)
         try:
             if parent and hasattr(parent, "parent") and parent.parent():
                 w_top = parent.parent().width()
@@ -176,10 +190,7 @@ class PlanVisualizerWidget(QWidget):
                 w_top = w_parent
         except Exception:
             w_top = w_parent
-        # scegli il massimo sensato
-        candidates = [w_self, w_parent, w_top]
-        eff = max(candidates)
-        # evita numeri assurdi < 200
+        eff = max(w_self, w_parent, w_top)
         if eff < 200:
             eff = w_self
         return eff
@@ -207,7 +218,6 @@ class PlanVisualizerWidget(QWidget):
             debug_lines=[]
 
             for bi, bar in enumerate(self._bars):
-                # totale mm = somma pezzi + kerf tra i pezzi
                 total_mm = sum(_ext_len(p) for p in bar)
                 if len(bar)>1:
                     total_mm += self._kerf_mm*(len(bar)-1)
@@ -221,57 +231,50 @@ class PlanVisualizerWidget(QWidget):
                     if w < MIN_PIECE_WIDTH_PX: w=MIN_PIECE_WIDTH_PX
                     raw_piece.append(w)
                     if pi < len(bar)-1:
-                        kw = self._kerf_mm*scale
-                        if kw < MIN_KERF_WIDTH_PX: kw = MIN_KERF_WIDTH_PX
+                        kw=self._kerf_mm*scale
+                        if kw < MIN_KERF_WIDTH_PX: kw=MIN_KERF_WIDTH_PX
                         raw_kerf.append(kw)
 
-                total_pixels = sum(raw_piece)+sum(raw_kerf)
-
+                total_pixels=sum(raw_piece)+sum(raw_kerf)
                 if FORCE_FULL_WIDTH and abs(total_pixels - inner_width) > 0.5:
-                    factor = inner_width / total_pixels
+                    factor=inner_width/total_pixels
                     raw_piece=[w*factor for w in raw_piece]
                     raw_kerf=[k*factor for k in raw_kerf]
-                    total_pixels = inner_width
+                    total_pixels=inner_width
 
-                # Arrotondamenti
-                piece_w = [int(round(w)) for w in raw_piece]
-                kerf_w  = [int(round(k)) for k in raw_kerf]
-                used = sum(piece_w)+sum(kerf_w)
-                diff = inner_width - used
+                piece_w=[int(round(w)) for w in raw_piece]
+                kerf_w=[int(round(k)) for k in raw_kerf]
+                used=sum(piece_w)+sum(kerf_w)
+                diff=inner_width - used
 
-                if REDISTRIBUTE_PIXELS and diff != 0:
-                    order = sorted(range(len(piece_w)), key=lambda i: piece_w[i], reverse=True)
-                    sign = 1 if diff>0 else -1
-                    idx=0
-                    attempts=0
-                    while diff != 0 and attempts < len(order)*6:
+                if REDISTRIBUTE_PIXELS and diff!=0:
+                    order=sorted(range(len(piece_w)), key=lambda i: piece_w[i], reverse=True)
+                    sign=1 if diff>0 else -1
+                    idx=0; attempts=0
+                    while diff!=0 and attempts < len(order)*6:
                         i=order[idx % len(order)]
-                        new_val = piece_w[i] + sign
-                        if new_val >= MIN_PIECE_WIDTH_PX:
+                        new_val=piece_w[i]+sign
+                        if new_val>=MIN_PIECE_WIDTH_PX:
                             piece_w[i]=new_val
                             diff -= sign
-                        idx+=1
-                        attempts+=1
+                        idx+=1; attempts+=1
 
-                # Ultimo controllo overflow
-                final_used = sum(piece_w)+sum(kerf_w)
-                if final_used > inner_width:
-                    overflow = final_used - inner_width
-                    order = sorted(range(len(piece_w)), key=lambda i: piece_w[i], reverse=True)
+                final_used=sum(piece_w)+sum(kerf_w)
+                if final_used>inner_width:
+                    overflow=final_used-inner_width
+                    order=sorted(range(len(piece_w)), key=lambda i: piece_w[i], reverse=True)
                     for i in order:
                         if overflow<=0: break
                         if piece_w[i] > MIN_PIECE_WIDTH_PX:
-                            take = min(overflow, piece_w[i]-MIN_PIECE_WIDTH_PX)
-                            piece_w[i] -= take
-                            overflow -= take
+                            take=min(overflow, piece_w[i]-MIN_PIECE_WIDTH_PX)
+                            piece_w[i]-=take
+                            overflow-=take
 
-                # Sfondo barra
                 bar_rect=QRectF(inner_left-3, y-4, inner_width+6, ROW_HEIGHT_PX+8)
                 painter.setPen(QPen(QColor("#d0d0d0"),1))
                 painter.setBrush(QColor("#fdfdfd"))
                 painter.drawRoundedRect(bar_rect,5,5)
 
-                # Etichetta
                 painter.setPen(QPen(QColor("#222"),1))
                 painter.drawText(QRectF(inner_left, y-2, 46, ROW_HEIGHT_PX+4),
                                  Qt.AlignLeft | Qt.AlignVCenter, f"B{bi+1}")
@@ -279,42 +282,40 @@ class PlanVisualizerWidget(QWidget):
                 x_cursor=inner_left
 
                 for pi,p in enumerate(bar):
-                    w_piece = piece_w[pi]
+                    w_piece=piece_w[pi]
                     ax, ad = _get_angles(p)
-                    off_sx = _offset_px_for_angle(ax, ROW_HEIGHT_PX)
-                    off_dx = _offset_px_for_angle(ad, ROW_HEIGHT_PX)
+                    off_sx=_offset_px_for_angle(ax, ROW_HEIGHT_PX)
+                    off_dx=_offset_px_for_angle(ad, ROW_HEIGHT_PX)
 
-                    taper_sum = off_sx + off_dx
-                    max_taper = w_piece * MAX_TAPER_RATIO
-                    if taper_sum > max_taper:
-                        ratio = max_taper/(taper_sum+1e-9)
-                        off_sx *= ratio
-                        off_dx *= ratio
-                        taper_sum = off_sx + off_dx
-                    bottom_w = max(4.0, w_piece - taper_sum)
+                    taper_sum=off_sx+off_dx
+                    max_taper=w_piece*MAX_TAPER_RATIO
+                    if taper_sum>max_taper:
+                        ratio=max_taper/(taper_sum+1e-9)
+                        off_sx*=ratio; off_dx*=ratio
+                        taper_sum=off_sx+off_dx
+                    bottom_w=max(4.0, w_piece - taper_sum)
 
-                    # clamp ultimo pezzo
-                    end_proj = x_cursor + w_piece
-                    limit = inner_left + inner_width
-                    if pi==len(bar)-1 and end_proj > limit:
+                    end_proj=x_cursor+w_piece
+                    limit=inner_left + inner_width
+                    if pi==len(bar)-1 and end_proj>limit:
                         excess=end_proj-limit
-                        w_piece -= excess
-                        if w_piece < 4: w_piece=4
-                        max_taper = w_piece*MAX_TAPER_RATIO
-                        if taper_sum > max_taper:
-                            ratio = max_taper/(taper_sum+1e-9)
+                        w_piece-=excess
+                        if w_piece<4: w_piece=4
+                        max_taper=w_piece*MAX_TAPER_RATIO
+                        if taper_sum>max_taper:
+                            ratio=max_taper/(taper_sum+1e-9)
                             off_sx*=ratio; off_dx*=ratio
                             taper_sum=off_sx+off_dx
-                        bottom_w = max(4.0, w_piece - taper_sum)
+                        bottom_w=max(4.0, w_piece - taper_sum)
 
-                    top_left = QPointF(x_cursor, y)
-                    top_right= QPointF(x_cursor + w_piece, y)
-                    bottom_left= QPointF(x_cursor + off_sx, y + ROW_HEIGHT_PX)
-                    bottom_right=QPointF(x_cursor + off_sx + bottom_w, y + ROW_HEIGHT_PX)
-                    poly = QPolygonF([top_left, top_right, bottom_right, bottom_left])
+                    top_left=QPointF(x_cursor,y)
+                    top_right=QPointF(x_cursor+w_piece,y)
+                    bottom_left=QPointF(x_cursor+off_sx, y+ROW_HEIGHT_PX)
+                    bottom_right=QPointF(x_cursor+off_sx+bottom_w, y+ROW_HEIGHT_PX)
+                    poly=QPolygonF([top_left, top_right, bottom_right, bottom_left])
 
-                    done = self._done_map.get(bi,[False]*len(bar))[pi]
-                    active = (self._active_pos == (bi,pi))
+                    done=self._done_map.get(bi,[False]*len(bar))[pi]
+                    active=(self._active_pos==(bi,pi))
 
                     if done:
                         fcol=QColor(115,215,115); ecol=QColor(70,160,70); tcol=QColor(255,255,255)
@@ -332,7 +333,7 @@ class PlanVisualizerWidget(QWidget):
                     if (axi!=0 or adi!=0) and w_piece>58:
                         txt+=f"\n{axi}/{adi}"
                     painter.setPen(QPen(tcol,1))
-                    painter.drawText(QRectF(x_cursor, y, w_piece, ROW_HEIGHT_PX),
+                    painter.drawText(QRectF(x_cursor,y,w_piece,ROW_HEIGHT_PX),
                                      Qt.AlignCenter, txt)
 
                     if active:
@@ -343,14 +344,14 @@ class PlanVisualizerWidget(QWidget):
 
                     if pi < len(bar)-1:
                         g = kerf_w[pi] if pi < len(kerf_w) else 0
-                        gap_end = x_cursor + g
-                        if gap_end > limit:
-                            g = limit - x_cursor
-                            if g < 2: g=2
-                        gap_rect=QRectF(x_cursor, y, g, ROW_HEIGHT_PX)
+                        gap_end=x_cursor+g
+                        if gap_end>limit:
+                            g=limit-x_cursor
+                            if g<2: g=2
+                        gap_rect=QRectF(x_cursor,y,g,ROW_HEIGHT_PX)
                         painter.setPen(Qt.NoPen); painter.setBrush(QColor(232,232,232)); painter.drawRect(gap_rect)
                         painter.setPen(QPen(QColor(180,180,180),1,Qt.DashLine)); painter.drawRect(gap_rect)
-                        x_cursor += g
+                        x_cursor+=g
 
                 if self._debug:
                     debug_lines.append(f"Bar {bi+1}: inner_width={inner_width} used={sum(piece_w)+sum(kerf_w)} scale={scale:.4f}")
@@ -359,10 +360,10 @@ class PlanVisualizerWidget(QWidget):
 
             if self._debug and debug_lines:
                 painter.setPen(QPen(QColor("#000"),1))
-                ydbg = 4
+                ydbg=4
                 for dl in debug_lines:
                     painter.drawText(QRectF(8,ydbg,self.width()-16,12), Qt.AlignLeft, dl)
-                    ydbg += 12
+                    ydbg+=12
 
         except Exception as e:
             logger.error(f"Errore paintEvent PlanVisualizer: {e}", exc_info=True)
