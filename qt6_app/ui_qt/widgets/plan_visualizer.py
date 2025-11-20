@@ -3,13 +3,13 @@ PlanVisualizerWidget compatibile con OptimizationRunDialog
 Rappresentazione grafica barre e pezzi:
 - Ogni pezzo come trapezio realistico: base superiore = lunghezza esterna (len),
   base inferiore = len - (offset_sx_mm + offset_dx_mm) dove offset = thickness_mm * tan(angolo).
-- Taper (offsets) convertiti in pixel con la stessa scala usata per la lunghezza.
-- Limite per evitare base inferiore negativa o trapezi eccessivi.
+- Offset convertiti in pixel con la stessa scala usata per la lunghezza.
+- Limiti per evitare base inferiore negativa / trapezi eccessivi.
 Colori:
   completato: verde
   attivo: arancione (SOLO il pezzo attivo)
   pendente: grigio
-Residuo: rettangolo alla fine barra (rosso chiaro, warn se sotto soglia).
+Residuo: rettangolo finale (rosso chiaro, warn se sotto soglia).
 Metodi supportati:
   set_data(...)
   set_done_by_index(...)
@@ -20,8 +20,9 @@ Metodi supportati:
 
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
+
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QRectF, QSize
+from PySide6.QtCore import Qt, QRectF, QSize, QPointF  # IMPORT POINTF
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF
 
 import math
@@ -47,7 +48,6 @@ def _effective_length(piece: Dict[str, Any], thickness_mm: float) -> float:
     return max(0.0, L - max(0.0,c_sx) - max(0.0,c_dx))
 
 def _angle_offsets_mm(piece: Dict[str, Any], thickness_mm: float) -> Tuple[float,float]:
-    """Offset (mm) dovuti agli angoli sinistro e destro per rappresentazione grafica."""
     if thickness_mm <= 0:
         return 0.0, 0.0
     ax = abs(float(piece.get("ax", piece.get("ang_sx", 0.0))))
@@ -181,158 +181,152 @@ class PlanVisualizerWidget(QWidget):
     def paintEvent(self, ev):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        W = self.width()
-        y = 8
-        font = QFont()
-        font.setPointSize(8)
-        painter.setFont(font)
+        try:
+            W = self.width()
+            y = 8
+            font = QFont()
+            font.setPointSize(8)
+            painter.setFont(font)
 
-        if not self._bars:
-            painter.setPen(QPen(QColor("#444"),1))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Nessun piano")
-            return
+            if not self._bars:
+                painter.setPen(QPen(QColor("#444"),1))
+                painter.drawText(self.rect(), Qt.AlignCenter, "Nessun piano")
+                return
 
-        left_margin = 160
-        usable_w = max(120, W - left_margin - 32)
+            left_margin = 160
+            usable_w = max(120, W - left_margin - 32)
 
-        for bi, bar in enumerate(self._bars):
-            bar_rect = QRectF(10, y, W-20, self._bar_height)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor("#fcfcfd"))
-            painter.drawRoundedRect(bar_rect, 6, 6)
-            painter.setPen(QPen(QColor("#bbbbbb"),1))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRoundedRect(bar_rect, 6, 6)
-
-            effs=[_effective_length(p,self._thickness_mm) for p in bar]
-            total_eff = sum(effs)
-            joints = 0.0
-            if len(bar)>1:
-                joints = (self._kerf_base + max(0.0,self._ripasso_mm))*(len(bar)-1)
-            used_len = total_eff + joints
-            residual = max(0.0, self._stock_mm - used_len)
-
-            painter.setPen(QPen(QColor("#222"),1))
-            title = f"Barra {bi+1}  Usato eff.: {used_len:.1f} mm  Residuo: {residual:.1f} mm"
-            if residual <= self._warn_thr + 1e-6:
-                title += " [WARN]"
-            painter.drawText(QRectF(14,y+4,left_margin-8,14), Qt.AlignLeft|Qt.AlignVCenter, title)
-
-            x_piece = left_margin
-            top_piece = y + 18
-            h_piece = self._bar_height - 26
-
-            # Scala basata su lunghezza effettiva totale (visual comparabile a consumo)
-            scale = (usable_w / max(used_len, self._stock_mm)) if used_len>0 else 0.0
-
-            for pi,p in enumerate(bar):
-                eff=_effective_length(p,self._thickness_mm)
-                ext=_external_length(p)
-                # width basata sull'effettivo consumo (eff)
-                piece_w = max(self._piece_min_w_px, eff*scale)
-                joint_w = 0.0
-                if pi < len(bar)-1:
-                    joint_w = (self._kerf_base + max(0.0,self._ripasso_mm))*scale
-
-                sig=_sig(p)
-                done = (bi in self._done_map and pi < len(self._done_map[bi]) and self._done_map[bi][pi]) or sig in self._done_signatures
-                active = (self._active_pos == (bi,pi))
-
-                if done:
-                    col_fill = QColor(115,215,115)
-                    col_edge = QColor(75,165,75)
-                    txt_color = Qt.white
-                elif active:
-                    col_fill = QColor(255,195,110)
-                    col_edge = QColor(255,140,0)
-                    txt_color = Qt.black
-                else:
-                    col_fill = QColor(205,205,205)
-                    col_edge = QColor(150,150,150)
-                    txt_color = Qt.black
-
-                # Calcolo offset angoli realistici (mm → px)
-                off_sx_mm, off_dx_mm = _angle_offsets_mm(p, self._thickness_mm)
-                off_total_mm = off_sx_mm + off_dx_mm
-                # Larghezza superiore (rappresenta ext) scalata a piece_w * (ext/eff) se eff>0
-                top_w = piece_w
-                if eff > 0 and ext >= eff:
-                    top_w = piece_w * (ext / eff)
-                # pixel offset
-                off_sx_px = off_sx_mm * scale
-                off_dx_px = off_dx_mm * scale
-
-                # Limiti: non più del 65% della larghezza superiore
-                max_taper_px = top_w * 0.65
-                if off_sx_px + off_dx_px > max_taper_px:
-                    ratio = max_taper_px / (off_sx_px + off_dx_px + 1e-9)
-                    off_sx_px *= ratio
-                    off_dx_px *= ratio
-
-                # base inferiore width
-                bottom_w = max(4.0, top_w - (off_sx_px + off_dx_px))
-
-                # coordinate trapezio
-                top_left_x = x_piece
-                top_right_x = x_piece + top_w
-                bottom_left_x = x_piece + off_sx_px
-                bottom_right_x = bottom_left_x + bottom_w
-
-                poly = QPolygonF([
-                    QPointF(top_left_x, top_piece),
-                    QPointF(top_right_x, top_piece),
-                    QPointF(bottom_right_x, top_piece + h_piece),
-                    QPointF(bottom_left_x, top_piece + h_piece)
-                ])
-
+            for bi, bar in enumerate(self._bars):
+                bar_rect = QRectF(10, y, W-20, self._bar_height)
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(col_fill)
-                painter.drawPolygon(poly)
-                painter.setPen(QPen(col_edge,1))
-                painter.drawPolygon(poly)
+                painter.setBrush(QColor("#fcfcfd"))
+                painter.drawRoundedRect(bar_rect, 6, 6)
+                painter.setPen(QPen(QColor("#bbbbbb"),1))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRoundedRect(bar_rect, 6, 6)
 
-                # testo
-                painter.setPen(QPen(txt_color,1))
-                length_text = f"{sig[0]:.0f}"
-                ax_val = int(round(sig[1]))
-                ad_val = int(round(sig[2]))
-                if (ax_val!=0 or ad_val!=0) and top_w > 55:
-                    length_text += f"\n{ax_val}/{ad_val}"
-                text_rect = QRectF(top_left_x, top_piece, top_w, h_piece)
-                painter.drawText(text_rect, Qt.AlignCenter, length_text)
+                effs=[_effective_length(p,self._thickness_mm) for p in bar]
+                total_eff = sum(effs)
+                joints = 0.0
+                if len(bar)>1:
+                    joints = (self._kerf_base + max(0.0,self._ripasso_mm))*(len(bar)-1)
+                used_len = total_eff + joints
+                residual = max(0.0, self._stock_mm - used_len)
 
-                # evidenzia attivo
-                if active:
-                    painter.setPen(QPen(QColor(255,100,0),2))
-                    painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor("#222"),1))
+                title = f"Barra {bi+1}  Usato eff.: {used_len:.1f} mm  Residuo: {residual:.1f} mm"
+                if residual <= self._warn_thr + 1e-6:
+                    title += " [WARN]"
+                painter.drawText(QRectF(14,y+4,left_margin-8,14), Qt.AlignLeft|Qt.AlignVCenter, title)
+
+                x_piece = left_margin
+                top_piece = y + 18
+                h_piece = self._bar_height - 26
+
+                scale = (usable_w / max(used_len, self._stock_mm)) if used_len>0 else 0.0
+
+                for pi,p in enumerate(bar):
+                    eff=_effective_length(p,self._thickness_mm)
+                    ext=_external_length(p)
+                    piece_w = max(self._piece_min_w_px, eff*scale)
+                    joint_w = 0.0
+                    if pi < len(bar)-1:
+                        joint_w = (self._kerf_base + max(0.0,self._ripasso_mm))*scale
+
+                    sig=_sig(p)
+                    done = (bi in self._done_map and pi < len(self._done_map[bi]) and self._done_map[bi][pi]) or sig in self._done_signatures
+                    active = (self._active_pos == (bi,pi))
+
+                    if done:
+                        col_fill = QColor(115,215,115)
+                        col_edge = QColor(75,165,75)
+                        txt_color = Qt.white
+                    elif active:
+                        col_fill = QColor(255,195,110)
+                        col_edge = QColor(255,140,0)
+                        txt_color = Qt.black
+                    else:
+                        col_fill = QColor(205,205,205)
+                        col_edge = QColor(150,150,150)
+                        txt_color = Qt.black
+
+                    off_sx_mm, off_dx_mm = _angle_offsets_mm(p, self._thickness_mm)
+                    top_w = piece_w
+                    if eff > 0 and ext >= eff:
+                        top_w = piece_w * (ext / eff)
+                    off_sx_px = off_sx_mm * scale
+                    off_dx_px = off_dx_mm * scale
+
+                    max_taper_px = top_w * 0.65
+                    if off_sx_px + off_dx_px > max_taper_px:
+                        ratio = max_taper_px / (off_sx_px + off_dx_px + 1e-9)
+                        off_sx_px *= ratio
+                        off_dx_px *= ratio
+
+                    bottom_w = max(4.0, top_w - (off_sx_px + off_dx_px))
+
+                    top_left_x = x_piece
+                    top_right_x = x_piece + top_w
+                    bottom_left_x = x_piece + off_sx_px
+                    bottom_right_x = bottom_left_x + bottom_w
+
+                    poly = QPolygonF([
+                        QPointF(top_left_x, top_piece),
+                        QPointF(top_right_x, top_piece),
+                        QPointF(bottom_right_x, top_piece + h_piece),
+                        QPointF(bottom_left_x, top_piece + h_piece)
+                    ])
+
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(col_fill)
+                    painter.drawPolygon(poly)
+                    painter.setPen(QPen(col_edge,1))
                     painter.drawPolygon(poly)
 
-                # avanza x usando consumo effettivo (piece_w) + giunzione (joint_w)
-                x_piece += piece_w
-                if joint_w > 0:
-                    r_joint = QRectF(x_piece, top_piece + h_piece*0.25, joint_w, h_piece*0.50)
-                    painter.setPen(Qt.NoPen)
-                    painter.setBrush(QColor(235,235,235))
-                    painter.drawRect(r_joint)
-                    painter.setPen(QPen(QColor(180,180,180),1,Qt.DashLine))
-                    painter.drawRect(r_joint)
-                    x_piece += joint_w
+                    painter.setPen(QPen(txt_color,1))
+                    length_text = f"{sig[0]:.0f}"
+                    ax_val = int(round(sig[1]))
+                    ad_val = int(round(sig[2]))
+                    if (ax_val!=0 or ad_val!=0) and top_w > 55:
+                        length_text += f"\n{ax_val}/{ad_val}"
+                    text_rect = QRectF(top_left_x, top_piece, top_w, h_piece)
+                    painter.drawText(text_rect, Qt.AlignCenter, length_text)
 
-            # residuo
-            if residual>0:
-                res_w = residual*scale
-                if res_w > 4:
-                    r_res = QRectF(x_piece, top_piece, max(4,res_w), h_piece)
-                    warn = residual <= self._warn_thr + 1e-6
-                    painter.setPen(Qt.NoPen)
-                    painter.setBrush(QColor(255,210,210) if warn else QColor(255,232,232))
-                    painter.drawRoundedRect(r_res,4,4)
-                    painter.setPen(QPen(QColor(200,90 if warn else 120,90),1))
-                    painter.drawRoundedRect(r_res,4,4)
-                    painter.setPen(QPen(Qt.black,1))
-                    painter.drawText(r_res, Qt.AlignCenter, f"{residual:.0f}")
+                    if active:
+                        painter.setPen(QPen(QColor(255,100,0),2))
+                        painter.setBrush(Qt.NoBrush)
+                        painter.drawPolygon(poly)
 
-            y += self._bar_height + self._bar_v_space
+                    x_piece += piece_w
+                    if joint_w > 0:
+                        r_joint = QRectF(x_piece, top_piece + h_piece*0.25, joint_w, h_piece*0.50)
+                        painter.setPen(Qt.NoPen)
+                        painter.setBrush(QColor(235,235,235))
+                        painter.drawRect(r_joint)
+                        painter.setPen(QPen(QColor(180,180,180),1,Qt.DashLine))
+                        painter.drawRect(r_joint)
+                        x_piece += joint_w
+
+                if residual>0:
+                    res_w = residual*scale
+                    if res_w > 4:
+                        r_res = QRectF(x_piece, top_piece, max(4,res_w), h_piece)
+                        warn = residual <= self._warn_thr + 1e-6
+                        painter.setPen(Qt.NoPen)
+                        painter.setBrush(QColor(255,210,210) if warn else QColor(255,232,232))
+                        painter.drawRoundedRect(r_res,4,4)
+                        painter.setPen(QPen(QColor(200,90 if warn else 120,90),1))
+                        painter.drawRoundedRect(r_res,4,4)
+                        painter.setPen(QPen(Qt.black,1))
+                        painter.drawText(r_res, Qt.AlignCenter, f"{residual:.0f}")
+
+                y += self._bar_height + self._bar_v_space
+        except Exception as e:
+            logger.error(f"Errore paintEvent PlanVisualizer: {e}", exc_info=True)
+        finally:
+            # QPainter creato con il widget si chiude automatico alla fine del metodo;
+            # il try/finally impedisce che eccezioni interrompano la dismissione corretta.
+            pass
 
     def mousePressEvent(self, ev):
         super().mousePressEvent(ev)
