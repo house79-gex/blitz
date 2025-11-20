@@ -23,7 +23,7 @@ from ui_qt.services.orders_store import OrdersStore
 from ui_qt.dialogs.orders_manager_qt import OrdersManagerDialog
 from ui_qt.dialogs.optimization_run_qt import OptimizationRunDialog
 
-# Import nuovo refiner completo
+# Refiner (versione completa aggiornata con funzioni avanzate)
 from ui_qt.logic.refiner import (
     pack_bars_knapsack_ilp,
     refine_tail_ilp,
@@ -69,6 +69,7 @@ except AttributeError:
 PANEL_W = 420
 
 
+# ---------------- Dialog configurazione ottimizzazione ----------------
 class OptimizationConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -112,7 +113,7 @@ class OptimizationConfigDialog(QDialog):
         self.ed_angle_tol = add("Tolleranza angolo reversibile (°):", QLineEdit(angle_tol))
         self.ed_warn_over = add("Warn overflow soglia (mm):", QLineEdit(warn_over))
         self.chk_auto_cont = QCheckBox("Auto-continue pezzi identici (stessa barra)"); self.chk_auto_cont.setChecked(auto_cont); form.addRow(self.chk_auto_cont)
-        self.chk_auto_across = QCheckBox("Consenti auto-continue su barra successiva"); self.chk_auto_across.setChecked(auto_across); form.addRow(self.chk_auto_across)
+        self.chk_auto_across = QCheckBox("Auto-continue su barra successiva"); self.chk_auto_across.setChecked(auto_across); form.addRow(self.chk_auto_across)
         self.chk_strict_seq = QCheckBox("Sequenza stretta per barra"); self.chk_strict_seq.setChecked(strict_seq); form.addRow(self.chk_strict_seq)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
@@ -148,6 +149,7 @@ class OptimizationConfigDialog(QDialog):
         write_settings(cfg); self.accept()
 
 
+# ---------------- Dialog taglio manuale ----------------
 class ManualCutDialog(QDialog):
     def __init__(self, parent=None, preset: Optional[Dict[str,Any]] = None):
         super().__init__(parent)
@@ -181,6 +183,7 @@ class ManualCutDialog(QDialog):
         }
 
 
+# ---------------- Stampa etichette ----------------
 class LabelPrinter:
     def __init__(self, settings: Dict[str, Any], toast_cb=None):
         self.toast = toast_cb
@@ -198,8 +201,6 @@ class LabelPrinter:
             from PIL import Image, ImageDraw, ImageFont
             self._ql={"BrotherQLRaster":BrotherQLRaster,"backend_factory":backend_factory}
             self._pil={"Image":Image,"ImageDraw":ImageDraw,"ImageFont":ImageFont}
-        with contextlib.suppress(Exception):
-            import qrcode
 
     def update_settings(self,s:Dict[str,Any]):
         self.enabled=bool(s.get("label_enabled",False))
@@ -250,6 +251,7 @@ class LabelPrinter:
             return False
 
 
+# ---------------- Pagina Automatico ----------------
 class AutomaticoPage(QWidget):
     activePieceChanged = Signal(dict)
     pieceCut = Signal(dict)
@@ -621,8 +623,7 @@ class AutomaticoPage(QWidget):
         self._open_opt_dialog(prof)
 
     def _open_opt_dialog(self,profile:str):
-        if self._mode != "plan":
-            return
+        if self._mode != "plan": return
         prof=(profile or "").strip()
         rows=[]
         for r in range(self.tbl_cut.rowCount()):
@@ -666,8 +667,7 @@ class AutomaticoPage(QWidget):
                     pieces.append({"len":float(L),"ax":float(ax),"ad":float(ad),
                                    "profile":prof,"element":element_name,"meta":dict(meta)})
                 sig_totals[(prof,L,round(ax,1),round(ad,1))]+=max(0,q)
-        if not pieces:
-            return
+        if not pieces: return
         cfg=read_settings()
         stock_nom=float(cfg.get("opt_stock_mm",6500.0))
         stock_usable=float(cfg.get("opt_stock_usable_mm",0.0))
@@ -730,13 +730,24 @@ class AutomaticoPage(QWidget):
         if 0<=nxt<len(self._seq_plan): return self._seq_plan[nxt]
         return None
 
-    # ---------------- Firma confronto (stessa misura) ----------------
+    # ---------------- Firma confronto ----------------
     def _same_sig(self, a: Dict[str,Any], b: Dict[str,Any]) -> bool:
         if not a or not b: return False
         if (a.get("profile","") or "") != (b.get("profile","") or ""): return False
         return (abs(float(a.get("len",0.0))-float(b.get("len",0.0))) <= 0.15 and
                 abs(float(a.get("ax",0.0))-float(b.get("ax",0.0))) <= 0.15 and
                 abs(float(a.get("ad",0.0))-float(b.get("ad",0.0))) <= 0.15)
+
+    def _auto_continue_possible(self) -> bool:
+        if not self._auto_continue_enabled: return False
+        if self._mode != "plan": return False
+        nxt=self._next_seq_piece()
+        cur=self._seq_plan[self._seq_pos] if (0<=self._seq_pos<len(self._seq_plan)) else None
+        if not cur or not nxt: return False
+        if not self._same_sig(cur,nxt): return False
+        # stessa barra oppure consentito across bars
+        if cur.get("bar")==nxt.get("bar"): return True
+        return self._auto_continue_across_bars
 
     # ---------------- Avanzamento piano ----------------
     def _advance_to_next_piece(self, skip_move: bool = False):
@@ -780,13 +791,15 @@ class AutomaticoPage(QWidget):
             return
         next_piece=self._next_seq_piece()
         prev_piece=self._seq_plan[self._seq_pos] if (0<=self._seq_pos<len(self._seq_plan)) else None
-        if prev_piece and next_piece and prev_piece.get("bar")==next_piece.get("bar") and self._same_sig(prev_piece,next_piece):
-            # stesso pezzo: non sblocca, non riposiziona
+        if prev_piece and next_piece and self._same_sig(prev_piece,next_piece) and (
+            prev_piece.get("bar")==next_piece.get("bar") or self._auto_continue_across_bars
+        ):
             self._advance_to_next_piece(skip_move=True)
             return
         self._unlock_brake()
         self._advance_to_next_piece(skip_move=False)
 
+    # ---------------- Taglio manuale ----------------
     def _trigger_manual_cut(self):
         self._unlock_brake()
         r=self._current_or_next_piece_row()
@@ -814,10 +827,11 @@ class AutomaticoPage(QWidget):
         self._move_and_arm(piece["len"],piece["ax"],piece["ad"],piece["profile"],piece["element"])
         if self._mode=="idle": self._mode="manual"
 
-    # ---------------- Simulazione taglio ----------------
+    # ---------------- Simulazione da dialog ----------------
     def simulate_cut_from_dialog(self):
         self._simulate_cut_once()
 
+    # ---------------- Simulazione taglio piano ----------------
     def _simulate_cut_once(self):
         if self._mode in ("manual","idle"):
             self._simulate_manual_cut(); return
@@ -858,9 +872,15 @@ class AutomaticoPage(QWidget):
         if new_done>=tgt:
             with contextlib.suppress(Exception):
                 setattr(self.machine,"semi_auto_target_pieces",0); setattr(self.machine,"semi_auto_count_done",0)
-            # freno rimane bloccato: operatore preme Start → logica di continuità o riposizionamento
+            # AUTO-CONTINUE immediato
+            if self._auto_continue_possible():
+                self._advance_to_next_piece(skip_move=True)
+                with contextlib.suppress(Exception):
+                    setattr(self.machine,"semi_auto_target_pieces",1)
+                    setattr(self.machine,"semi_auto_count_done",0)
         self._update_counters_ui()
 
+    # ---------------- Simulazione manuale ----------------
     def _simulate_manual_cut(self):
         piece=self._manual_current_piece
         if not piece: return
