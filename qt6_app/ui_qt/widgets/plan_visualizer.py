@@ -1,28 +1,27 @@
 """
-PlanVisualizerWidget compatibile con OptimizationRunDialog
-Rappresentazione grafica barre e pezzi:
-- Ogni pezzo come trapezio realistico: base superiore = lunghezza esterna (len),
-  base inferiore = len - (offset_sx_mm + offset_dx_mm) dove offset = thickness_mm * tan(angolo).
-- Offset convertiti in pixel con la stessa scala usata per la lunghezza.
-- Limiti per evitare base inferiore negativa / trapezi eccessivi.
-Colori:
-  completato: verde
-  attivo: arancione (SOLO il pezzo attivo)
-  pendente: grigio
-Residuo: rettangolo finale (rosso chiaro, warn se sotto soglia).
-Metodi supportati:
+PlanVisualizerWidget compatibile con OptimizationRunDialog.
+Rappresentazione grafica:
+- Pezzi come trapezi realistici: base superiore = lunghezza esterna, base inferiore = lunghezza effettiva.
+  Gli offset (spalle) derivano da thickness_mm * tan(angolo) convertiti in pixel (con minimo visivo).
+- Solo il pezzo attivo è evidenziato (arancione). Completati verdi, pendenti grigi.
+- Residuo visualizzato alla fine (rosso chiaro con warning).
+Metodi supportati (chiamati dal dialog / pagina):
   set_data(...)
   set_done_by_index(...)
   mark_done_by_signature(...)
-  set_active_signature(...), highlight_active_signature, mark_active_by_signature,
-  set_active_piece_by_signature, set_active_position
+  set_active_signature(...)
+  highlight_active_signature(...)
+  mark_active_by_signature(...)
+  set_active_piece_by_signature(...)
+  set_active_position(bar_idx, piece_idx)
+  set_active_piece_by_indices(bar_idx, piece_idx)
 """
 
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QRectF, QSize, QPointF  # IMPORT POINTF
+from PySide6.QtCore import Qt, QRectF, QSize, QPointF
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF
 
 import math
@@ -30,11 +29,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ----------------------------------------------------------------------
-# Utility calcoli
-# ----------------------------------------------------------------------
+# Amplificazione offset angoli (se troppo piccoli) e min pixel
+OFFSET_BOOST = 1.0     # puoi aumentare se vuoi trapezi più evidenti (es. 1.5)
+OFFSET_PIX_MIN = 2.0   # minimo pixel per lato se angolo > 0°
+
+
 def _external_length(piece: Dict[str, Any]) -> float:
     return float(piece.get("len", piece.get("length_mm", piece.get("length", 0.0))))
+
 
 def _effective_length(piece: Dict[str, Any], thickness_mm: float) -> float:
     L = _external_length(piece)
@@ -47,6 +49,7 @@ def _effective_length(piece: Dict[str, Any], thickness_mm: float) -> float:
     except Exception: c_dx = 0.0
     return max(0.0, L - max(0.0,c_sx) - max(0.0,c_dx))
 
+
 def _angle_offsets_mm(piece: Dict[str, Any], thickness_mm: float) -> Tuple[float,float]:
     if thickness_mm <= 0:
         return 0.0, 0.0
@@ -58,6 +61,7 @@ def _angle_offsets_mm(piece: Dict[str, Any], thickness_mm: float) -> Tuple[float
     except Exception: off_dx = 0.0
     return max(0.0, off_sx), max(0.0, off_dx)
 
+
 def _sig(piece: Dict[str, Any]) -> Tuple[float,float,float,str]:
     L = _external_length(piece)
     ax = float(piece.get("ax", piece.get("ang_sx", 0.0)))
@@ -65,7 +69,7 @@ def _sig(piece: Dict[str, Any]) -> Tuple[float,float,float,str]:
     prof = str(piece.get("profile","")).strip()
     return (round(L,2), round(ax,1), round(ad,1), prof)
 
-# ----------------------------------------------------------------------
+
 class PlanVisualizerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -83,7 +87,9 @@ class PlanVisualizerWidget(QWidget):
         self._done_map: Dict[int,List[bool]] = {}
         self._done_signatures: set[Tuple[float,float,float,str]] = set()
 
+        # Posizione attiva preferenziale (bar, idx)
         self._active_pos: Optional[Tuple[int,int]] = None
+        # Firma attiva solo per fallback
         self._active_sig: Optional[Tuple[float,float,float,str]] = None
 
         self._bar_v_space = 14
@@ -169,6 +175,8 @@ class PlanVisualizerWidget(QWidget):
             self._active_sig=None
             self.update()
 
+    set_active_piece_by_indices = set_active_position
+
     # ---------------- Dimensionamento ----------------
     def _recalc_min_height(self):
         h = len(self._bars)* (self._bar_height + self._bar_v_space) + 40
@@ -251,11 +259,19 @@ class PlanVisualizerWidget(QWidget):
                         txt_color = Qt.black
 
                     off_sx_mm, off_dx_mm = _angle_offsets_mm(p, self._thickness_mm)
+                    off_sx_mm *= OFFSET_BOOST
+                    off_dx_mm *= OFFSET_BOOST
+
                     top_w = piece_w
                     if eff > 0 and ext >= eff:
                         top_w = piece_w * (ext / eff)
-                    off_sx_px = off_sx_mm * scale
-                    off_dx_px = off_dx_mm * scale
+
+                    off_sx_px = off_sx_mm * scale if off_sx_mm > 0 else 0.0
+                    off_dx_px = off_dx_mm * scale if off_dx_mm > 0 else 0.0
+                    if off_sx_px > 0 and off_sx_px < OFFSET_PIX_MIN:
+                        off_sx_px = OFFSET_PIX_MIN
+                    if off_dx_px > 0 and off_dx_px < OFFSET_PIX_MIN:
+                        off_dx_px = OFFSET_PIX_MIN
 
                     max_taper_px = top_w * 0.65
                     if off_sx_px + off_dx_px > max_taper_px:
@@ -324,12 +340,9 @@ class PlanVisualizerWidget(QWidget):
         except Exception as e:
             logger.error(f"Errore paintEvent PlanVisualizer: {e}", exc_info=True)
         finally:
-            # QPainter creato con il widget si chiude automatico alla fine del metodo;
-            # il try/finally impedisce che eccezioni interrompano la dismissione corretta.
             pass
 
     def mousePressEvent(self, ev):
         super().mousePressEvent(ev)
 
-# Alias compatibilità
 PlanVisualizer = PlanVisualizerWidget
