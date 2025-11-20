@@ -1,426 +1,646 @@
 """
-Modulo per il raffinamento del piano di taglio
+Modulo di ottimizzazione / raffinamento piano di taglio
 File: qt6_app/ui_qt/logic/refiner.py
 Date: 2025-11-20
 Author: house79-gex
+
+Contiene:
+- pack_bars_knapsack_ilp: packing di pezzi in barre (usa ILP se disponibile, fallback greedy).
+- refine_tail_ilp: raffinamento delle ultime barre (ri-ottimizzazione locale).
+- joint_consumption: consumo tra due pezzi consecutivi (kerf, ripasso).
+- bar_used_length / residuals: calcolo lunghezze utilizzate e sfridi.
+- compute_bar_breakdown: breakdown dettagliato consumi per una barra.
+- Funzioni di utilità già presenti in versione semplificata (refine_plan, ecc.).
+
+Tutte le funzioni sono pensate per essere “side-effect free”.
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Dict, List, Any
+import math
+import time
+from typing import Dict, List, Tuple, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Parametri di default (possono essere sovrascritti dai settings esterni)
+# ---------------------------------------------------------------------------
+DEFAULT_KERF_MM = 3.0
+DEFAULT_RIPASSO_MM = 0.0
 
-def refine_plan(plan: Dict, kerf: float = 3.0, ripasso: float = 5.0, recupero: bool = True) -> Dict:
+# ---------------------------------------------------------------------------
+# Utility di base per pezzi
+# Ogni pezzo è un dict atteso con chiavi: len, ax, ad, (opzionali profile, element, meta)
+# ---------------------------------------------------------------------------
+
+def _effective_piece_length(piece: Dict[str, Any],
+                            thickness_mm: float = 0.0) -> float:
     """
-    Raffina il piano di taglio applicando parametri di taglio reali
-    
-    Args:
-        plan: Piano di taglio grezzo
-        kerf: Larghezza della lama in mm
-        ripasso: Lunghezza di ripasso per garantire il taglio completo
-        recupero: Se True, tenta di recuperare gli sfridi utilizzabili
-        
-    Returns:
-        Piano raffinato con parametri di taglio applicati
+    Calcola la lunghezza efficace di posizionamento tenendo conto degli angoli e dello spessore (taglio obliquo).
+    Se thickness_mm <= 0, ritorna semplicemente piece['len'].
+    """
+    L = float(piece.get("len", 0.0))
+    if thickness_mm <= 0.0:
+        return max(0.0, L)
+    ax = abs(float(piece.get("ax", 0.0)))
+    ad = abs(float(piece.get("ad", 0.0)))
+    try:
+        c_sx = thickness_mm * math.tan(math.radians(ax))
+    except Exception:
+        c_sx = 0.0
+    try:
+        c_dx = thickness_mm * math.tan(math.radians(ad))
+    except Exception:
+        c_dx = 0.0
+    return max(0.0, L - max(0.0, c_sx) - max(0.0, c_dx))
+
+def _angles_signature(piece: Dict[str, Any]) -> Tuple[float, float]:
+    return (float(piece.get("ax", 0.0)), float(piece.get("ad", 0.0)))
+
+
+# ---------------------------------------------------------------------------
+# joint_consumption
+# ---------------------------------------------------------------------------
+def joint_consumption(prev_piece: Dict[str, Any],
+                      kerf_base: float,
+                      ripasso_mm: float,
+                      reversible: bool,
+                      thickness_mm: float,
+                      angle_tol: float,
+                      max_angle: float,
+                      max_factor: float) -> Tuple[float, Dict[str, Any]]:
+    """
+    Calcola il consumo aggiuntivo tra il precedente pezzo e il successivo:
+    - kerf “di separazione” (base o aumentato se angoli >= soglia).
+    - ripasso (se >0).
+    Ritorna (consumo_mm, dettagli).
+    """
+    if not prev_piece:
+        return 0.0, {"kerf": 0.0, "ripasso": 0.0, "factor": 1.0}
+
+    ax, ad = _angles_signature(prev_piece)
+    # Fattore di aumento kerf se l'angolo supera max_angle (semplificato)
+    factor = 1.0
+    if abs(ax) > max_angle or abs(ad) > max_angle:
+        factor = min(max_factor, 1.0 + (abs(ax) + abs(ad) - 2.0 * max_angle) / 180.0)
+
+    kerf_here = kerf_base * factor
+    consumo = kerf_here + max(0.0, ripasso_mm)
+    return consumo, {"kerf": kerf_here, "ripasso": ripasso_mm, "factor": factor}
+
+
+# ---------------------------------------------------------------------------
+# bar_used_length
+# ---------------------------------------------------------------------------
+def bar_used_length(bar: List[Dict[str, Any]],
+                    kerf_base: float,
+                    ripasso_mm: float,
+                    reversible: bool,
+                    thickness_mm: float,
+                    angle_tol: float,
+                    max_angle: float,
+                    max_factor: float) -> float:
+    """
+    Lunghezza usata (somma lunghezze efficaci + consumi di giunzione).
+    """
+    if not bar:
+        return 0.0
+    total = 0.0
+    prev = None
+    for piece in bar:
+        eff_len = _effective_piece_length(piece, thickness_mm)
+        total += eff_len
+        if prev is not None:
+            add, _ = joint_consumption(prev, kerf_base, ripasso_mm,
+                                       reversible, thickness_mm,
+                                       angle_tol, max_angle, max_factor)
+            total += add
+        prev = piece
+    return total
+
+
+# ---------------------------------------------------------------------------
+# residuals
+# ---------------------------------------------------------------------------
+def residuals(bars: List[List[Dict[str, Any]]],
+              stock: float,
+              kerf_base: float,
+              ripasso_mm: float,
+              reversible: bool,
+              thickness_mm: float,
+              angle_tol: float,
+              max_angle: float,
+              max_factor: float) -> List[float]:
+    """
+    Calcola gli sfridi (residual) per ciascuna barra.
+    """
+    res = []
+    for bar in bars:
+        used = bar_used_length(bar, kerf_base, ripasso_mm,
+                               reversible, thickness_mm,
+                               angle_tol, max_angle, max_factor)
+        res.append(max(0.0, stock - used))
+    return res
+
+
+# ---------------------------------------------------------------------------
+# compute_bar_breakdown
+# ---------------------------------------------------------------------------
+def compute_bar_breakdown(bar: List[Dict[str, Any]],
+                          kerf_base: float,
+                          ripasso_mm: float,
+                          reversible: bool,
+                          thickness_mm: float,
+                          angle_tol: float,
+                          max_angle: float,
+                          max_factor: float) -> Dict[str, Any]:
+    """
+    Ritorna breakdown dettagliato consumi:
+    - used_total
+    - kerf_proj_sum (somma solo kerf "giunzione")
+    - ripasso_sum (somma ripassi)
+    - recovery_sum (semplice: differenza da sum(len) - used? qui non praticato -> 0)
+    """
+    used_total = 0.0
+    kerf_proj_sum = 0.0
+    ripasso_sum = 0.0
+    recovery_sum = 0.0
+
+    prev = None
+    for piece in bar:
+        eff_len = _effective_piece_length(piece, thickness_mm)
+        used_total += eff_len
+        if prev is not None:
+            add, detail = joint_consumption(prev, kerf_base, ripasso_mm,
+                                            reversible, thickness_mm,
+                                            angle_tol, max_angle, max_factor)
+            used_total += add
+            kerf_proj_sum += detail.get("kerf", 0.0)
+            ripasso_sum += detail.get("ripasso", 0.0)
+        prev = piece
+
+    return {
+        "used_total": used_total,
+        "kerf_proj_sum": kerf_proj_sum,
+        "ripasso_sum": ripasso_sum,
+        "recovery_sum": recovery_sum,
+    }
+
+
+# ---------------------------------------------------------------------------
+# pack_bars_knapsack_ilp
+# ---------------------------------------------------------------------------
+def pack_bars_knapsack_ilp(pieces: List[Dict[str, Any]],
+                           stock: float,
+                           kerf_base: float,
+                           ripasso_mm: float,
+                           conservative_angle_deg: float,
+                           max_angle: float,
+                           max_factor: float,
+                           reversible: bool,
+                           thickness_mm: float,
+                           angle_tol: float,
+                           per_bar_time_s: int = 15) -> Tuple[List[List[Dict[str, Any]]], List[float]]:
+    """
+    Packing di pezzi in barre:
+    - Prova un modello knapsack iterativo (riempie una barra, poi rimuove i pezzi usati).
+    - Fallback greedy se pulp non disponibile o errori.
+
+    Ogni iterazione:
+    - variabile x_i (0/1) se il pezzo i entra nella barra
+    - constraint: somma(eff_len_i + kerf_incrementi) <= stock
+      (approssimiamo kerf: kerf_base * (n_selected - 1) + ripasso_mm * (n_selected - 1))
+    - obiettivo: massimizzare somma(eff_len_i)
+
+    L’approssimazione è sufficiente per scenario base.
+    """
+
+    if not pieces:
+        return [], []
+
+    try:
+        import pulp
+        use_ilp = True
+    except Exception:
+        use_ilp = False
+
+    # Precalcolo lunghezze efficaci
+    eff_lengths = [ _effective_piece_length(p, thickness_mm) for p in pieces ]
+
+    remaining_indices = list(range(len(pieces)))
+    bars: List[List[Dict[str, Any]]] = []
+    start_time_global = time.time()
+
+    while remaining_indices:
+        if use_ilp:
+            try:
+                # Tempo limite grezzo
+                timeout = max(5, per_bar_time_s)
+                model = pulp.LpProblem("BAR_PACK", pulp.LpMaximize)
+                x_vars = {
+                    i: pulp.LpVariable(f"x_{i}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                    for i in remaining_indices
+                }
+                # Approccio: sum(eff_len_i * x_i) + (kerf_base + ripasso_mm)*(sum(x_i)-1) <= stock
+                # => sum(eff_len_i * x_i) + (kerf_base + ripasso_mm)*sum(x_i) - (kerf_base + ripasso_mm) <= stock
+                M = kerf_base + max(0.0, ripasso_mm)
+
+                model += pulp.lpSum([eff_lengths[i] * x_vars[i] for i in remaining_indices]), "MaxEffLen"
+
+                model += (pulp.lpSum([eff_lengths[i] * x_vars[i] for i in remaining_indices])
+                          + M * pulp.lpSum([x_vars[i] for i in remaining_indices])
+                          - M) <= stock, "StockConstraintApprox"
+
+                # Risoluzione
+                solver = pulp.PULP_CBC_CMD(timeLimit=timeout, msg=False)
+                model.solve(solver)
+
+                selected = [i for i in remaining_indices if pulp.value(x_vars[i]) >= 0.9]
+
+                if not selected:
+                    # Nessun pezzo entrato -> prendi il più lungo come fallback
+                    sel_longest = max(remaining_indices, key=lambda idx: eff_lengths[idx])
+                    selected = [sel_longest]
+
+                bar_pieces = [pieces[i] for i in selected]
+                bars.append(bar_pieces)
+                # Rimuovi selected
+                remaining_indices = [i for i in remaining_indices if i not in selected]
+                continue
+            except Exception as e:
+                logger.warning(f"ILP packing error, fallback greedy: {e}")
+                use_ilp = False  # ripiega al greedy
+
+        # Greedy fallback: ordina per lunghezza effettiva desc
+        remaining_indices.sort(key=lambda i: eff_lengths[i], reverse=True)
+        current_bar = []
+        used_len = 0.0
+        prev_piece = None
+        to_drop = []
+        for i in remaining_indices:
+            eff = eff_lengths[i]
+            extra = 0.0
+            if prev_piece is not None:
+                add, _ = joint_consumption(prev_piece, kerf_base, ripasso_mm,
+                                           reversible, thickness_mm, angle_tol,
+                                           max_angle, max_factor)
+                extra = add
+            if used_len + eff + (extra if prev_piece else 0.0) <= stock + 1e-6:
+                if prev_piece is not None:
+                    used_len += extra
+                used_len += eff
+                current_bar.append(pieces[i])
+                prev_piece = pieces[i]
+                to_drop.append(i)
+        if not current_bar:
+            # Prendi almeno il primo pezzo rimanente
+            first = remaining_indices[0]
+            current_bar = [pieces[first]]
+            to_drop = [first]
+        bars.append(current_bar)
+        remaining_indices = [i for i in remaining_indices if i not in to_drop]
+
+        # Safety break
+        if time.time() - start_time_global > 60:
+            logger.warning("Packing interrotto per timeout globale (60s).")
+            break
+
+    res = residuals(bars, stock, kerf_base, ripasso_mm, reversible, thickness_mm, angle_tol, max_angle, max_factor)
+    return bars, res
+
+
+# ---------------------------------------------------------------------------
+# refine_tail_ilp
+# ---------------------------------------------------------------------------
+def refine_tail_ilp(bars: List[List[Dict[str, Any]]],
+                    stock: float,
+                    kerf_base: float,
+                    ripasso_mm: float,
+                    reversible: bool,
+                    thickness_mm: float,
+                    angle_tol: float,
+                    tail_bars: int,
+                    time_limit_s: int,
+                    max_angle: float,
+                    max_factor: float) -> Tuple[List[List[Dict[str, Any]]], List[float]]:
+    """
+    Raffina soltanto le ultime 'tail_bars' barre:
+    - Prende i pezzi dalle ultime barre
+    - Li rimette in un pool
+    - Fa un repacking (uso pack_bars_knapsack_ilp in mini)
+    - Sostituisce le ultime barre con il nuovo risultato se migliore.
+    """
+    if tail_bars <= 0 or not bars:
+        return bars, residuals(bars, stock, kerf_base, ripasso_mm, reversible, thickness_mm, angle_tol, max_angle, max_factor)
+
+    n = len(bars)
+    start_tail = max(0, n - tail_bars)
+    tail_segment = bars[start_tail:]
+    flat_pieces = []
+    for b in tail_segment:
+        flat_pieces.extend(b)
+
+    if not flat_pieces:
+        return bars, residuals(bars, stock, kerf_base, ripasso_mm, reversible, thickness_mm, angle_tol, max_angle, max_factor)
+
+    # Repack solo quei pezzi (limitando tempo)
+    new_bars, _ = pack_bars_knapsack_ilp(
+        pieces=flat_pieces,
+        stock=stock,
+        kerf_base=kerf_base,
+        ripasso_mm=ripasso_mm,
+        conservative_angle_deg=45.0,
+        max_angle=max_angle,
+        max_factor=max_factor,
+        reversible=reversible,
+        thickness_mm=thickness_mm,
+        angle_tol=angle_tol,
+        per_bar_time_s=min(time_limit_s, 10)  # riduco tempo per singolo pass
+    )
+
+    # Valuta se migliorano (somma sfridi totale)
+    old_res = sum(residuals(tail_segment, stock, kerf_base, ripasso_mm,
+                            reversible, thickness_mm, angle_tol, max_angle, max_factor))
+    new_res = sum(residuals(new_bars, stock, kerf_base, ripasso_mm,
+                            reversible, thickness_mm, angle_tol, max_angle, max_factor))
+
+    if new_res <= old_res + 1e-6:
+        # Miglioramento (o uguale) → sostituisci
+        bars = bars[:start_tail] + new_bars
+        logger.info(f"Raffinamento tail: sfrido tail da {old_res:.2f} a {new_res:.2f} mm.")
+    else:
+        logger.info(f"Raffinamento tail scartato (nuovo sfrido {new_res:.2f} > {old_res:.2f}).")
+
+    final_res = residuals(bars, stock, kerf_base, ripasso_mm,
+                          reversible, thickness_mm, angle_tol, max_angle, max_factor)
+    return bars, final_res
+
+
+# ---------------------------------------------------------------------------
+# Funzioni di raffinamento “descrittivo” (compatibilità con versione semplificata)
+# ---------------------------------------------------------------------------
+def refine_plan(plan: Dict, kerf: float = DEFAULT_KERF_MM, ripasso: float = DEFAULT_RIPASSO_MM, recupero: bool = True) -> Dict:
+    """
+    Raffina un piano “strutturato” (schema: {bars:[{length:int, jobs:[{length, angle_sx, angle_dx}]}]} )
+    Aggiunge attributi: waste, efficiency, recoverable_pieces ecc.
     """
     if not plan or 'bars' not in plan:
         return plan
-        
-    refined_plan = plan.copy()
+
+    out = plan.copy()
     refined_bars = []
-    total_waste = 0
-    recoverable_pieces = []
-    
-    for bar in plan.get('bars', []):
-        refined_bar = refine_bar(bar, kerf, ripasso)
-        
-        # Calcola lo sfrido
-        bar_length = refined_bar.get('length', 0)
-        used_length = calculate_used_length(refined_bar, kerf)
-        waste = bar_length - used_length
-        
-        refined_bar['waste'] = waste
-        refined_bar['used_length'] = used_length
-        refined_bar['efficiency'] = (used_length / bar_length * 100) if bar_length > 0 else 0
-        
-        # Se il recupero è abilitato e lo sfrido è significativo
-        if recupero and waste > 100:  # Minimo 100mm per essere recuperabile
-            recoverable_pieces.append({
-                'bar_id': refined_bar.get('id'),
-                'length': waste - kerf,  # Considera il kerf per il taglio di separazione
-                'type': 'scrap'
+    total_waste = 0.0
+    recoverable = []
+
+    for b in plan.get("bars", []):
+        # copia
+        rb = b.copy()
+        jobs_ref = []
+        for job in b.get("jobs", []):
+            rj = job.copy()
+            original = rj.get("length", 0.0)
+            rj["original_length"] = original
+            rj["actual_length"] = original + ripasso
+            rj["kerf"] = kerf
+            jobs_ref.append(rj)
+        rb["jobs"] = jobs_ref
+
+        used = calculate_used_length(rb, kerf)
+        Lbar = float(rb.get("length", 0.0))
+        waste = max(0.0, Lbar - used)
+        rb["used_length"] = used
+        rb["waste"] = waste
+        rb["efficiency"] = (used / Lbar * 100.0) if Lbar > 0 else 0.0
+        if recupero and waste >= 100.0:
+            recoverable.append({
+                "bar_id": rb.get("id"),
+                "length": waste - kerf,
+                "type": "scrap"
             })
-            
-        refined_bars.append(refined_bar)
+
         total_waste += waste
-        
-    refined_plan['bars'] = refined_bars
-    refined_plan['total_waste'] = total_waste
-    refined_plan['recoverable_pieces'] = recoverable_pieces
-    
-    # Aggiungi statistiche di raffinamento
-    refined_plan['refinement_params'] = {
-        'kerf': kerf,
-        'ripasso': ripasso,
-        'recupero': recupero
+        refined_bars.append(rb)
+
+    out["bars"] = refined_bars
+    out["total_waste"] = total_waste
+    out["recoverable_pieces"] = recoverable
+    out["refinement_params"] = {
+        "kerf": kerf,
+        "ripasso": ripasso,
+        "recupero": recupero
     }
-    
-    logger.info(f"Piano raffinato: {len(refined_bars)} barre, sfrido totale: {total_waste:.1f}mm")
-    
-    return refined_plan
+    return out
 
 
 def refine_bar(bar: Dict, kerf: float, ripasso: float) -> Dict:
     """
-    Raffina una singola barra applicando kerf e ripasso
-    
-    Args:
-        bar: Dati della barra
-        kerf: Larghezza della lama
-        ripasso: Lunghezza di ripasso
-        
-    Returns:
-        Barra raffinata
+    Raffina una singola barra (compatibilità).
     """
-    refined_bar = bar.copy()
-    refined_jobs = []
-    
-    for job in bar.get('jobs', []):
-        refined_job = job.copy()
-        
-        # Applica il ripasso alla lunghezza
-        original_length = refined_job.get('length', 0)
-        refined_job['original_length'] = original_length
-        refined_job['actual_length'] = original_length + ripasso
-        
-        # Aggiungi informazioni sul kerf
-        refined_job['kerf'] = kerf
-        refined_job['ripasso'] = ripasso
-        
-        # Calcola posizioni di taglio considerando il kerf
-        refined_job['cut_compensation'] = calculate_cut_compensation(
-            refined_job.get('angle_sx', 90),
-            refined_job.get('angle_dx', 90),
-            kerf
+    rb = bar.copy()
+    new_jobs = []
+    for job in bar.get("jobs", []):
+        rj = job.copy()
+        orig = rj.get("length", 0.0)
+        rj["original_length"] = orig
+        rj["actual_length"] = orig + ripasso
+        rj["kerf"] = kerf
+        rj["ripasso"] = ripasso
+        rj["cut_compensation"] = calculate_cut_compensation(
+            rj.get("angle_sx", 90), rj.get("angle_dx", 90), kerf
         )
-        
-        refined_jobs.append(refined_job)
-        
-    refined_bar['jobs'] = refined_jobs
-    return refined_bar
+        new_jobs.append(rj)
+    rb["jobs"] = new_jobs
+    return rb
 
 
 def calculate_used_length(bar: Dict, kerf: float) -> float:
     """
-    Calcola la lunghezza effettivamente utilizzata in una barra
-    
-    Args:
-        bar: Dati della barra
-        kerf: Larghezza della lama
-        
-    Returns:
-        Lunghezza utilizzata in mm
+    Calcolo semplificato (compatibilità).
     """
-    jobs = bar.get('jobs', [])
-    if not jobs:
-        return 0
-        
-    total_length = 0
-    
+    jobs = bar.get("jobs", [])
+    total = 0.0
     for i, job in enumerate(jobs):
-        # Lunghezza del pezzo
-        total_length += job.get('actual_length', job.get('length', 0))
-        
-        # Aggiungi il kerf tra i pezzi (non dopo l'ultimo)
+        total += job.get("actual_length", job.get("length", 0.0))
         if i < len(jobs) - 1:
-            total_length += kerf
-            
-    return total_length
+            total += kerf
+    return total
 
 
-def calculate_cut_compensation(angle_sx: float, angle_dx: float, kerf: float) -> Dict:
+def calculate_cut_compensation(angle_sx: float, angle_dx: float, kerf: float) -> Dict[str, float]:
     """
-    Calcola la compensazione per tagli angolati
-    
-    Args:
-        angle_sx: Angolo sinistro in gradi
-        angle_dx: Angolo destro in gradi
-        kerf: Larghezza della lama
-        
-    Returns:
-        Dizionario con compensazioni calcolate
+    Compensazione semplificata per tagli obliqui.
     """
-    import math
-    
-    compensation = {
-        'sx': 0,
-        'dx': 0
-    }
-    
-    # Per tagli non perpendicolari, calcola la compensazione
-    if angle_sx != 90:
-        # Compensazione per angolo sinistro
-        rad = math.radians(angle_sx)
-        compensation['sx'] = kerf / (2 * math.sin(rad)) if math.sin(rad) != 0 else 0
-        
-    if angle_dx != 90:
-        # Compensazione per angolo destro
-        rad = math.radians(angle_dx)
-        compensation['dx'] = kerf / (2 * math.sin(rad)) if math.sin(rad) != 0 else 0
-        
-    return compensation
+    comp = {"sx": 0.0, "dx": 0.0}
+    try:
+        if angle_sx != 90:
+            comp["sx"] = kerf / (2 * math.sin(math.radians(angle_sx))) if math.sin(math.radians(angle_sx)) != 0 else 0.0
+    except Exception:
+        comp["sx"] = 0.0
+    try:
+        if angle_dx != 90:
+            comp["dx"] = kerf / (2 * math.sin(math.radians(angle_dx))) if math.sin(math.radians(angle_dx)) != 0 else 0.0
+    except Exception:
+        comp["dx"] = 0.0
+    return comp
 
 
 def optimize_for_material(plan: Dict, material_type: str = 'aluminum') -> Dict:
     """
-    Ottimizza il piano per il tipo di materiale specifico
-    
-    Args:
-        plan: Piano di taglio
-        material_type: Tipo di materiale (aluminum, steel, wood, etc.)
-        
-    Returns:
-        Piano ottimizzato per il materiale
+    Ottimizzazione base per parametri di materiale.
     """
     material_params = {
-        'aluminum': {
-            'cutting_speed': 100,
-            'feed_rate': 50,
-            'coolant': True,
-            'blade_type': 'carbide'
-        },
-        'steel': {
-            'cutting_speed': 50,
-            'feed_rate': 25,
-            'coolant': True,
-            'blade_type': 'hss'
-        },
-        'wood': {
-            'cutting_speed': 150,
-            'feed_rate': 75,
-            'coolant': False,
-            'blade_type': 'wood'
-        }
+        'aluminum': dict(cutting_speed=100, feed_rate=50, coolant=True, blade_type='carbide'),
+        'steel': dict(cutting_speed=50, feed_rate=25, coolant=True, blade_type='hss'),
+        'wood': dict(cutting_speed=150, feed_rate=75, coolant=False, blade_type='wood'),
     }
-    
     params = material_params.get(material_type, material_params['aluminum'])
-    
-    optimized_plan = plan.copy()
-    optimized_plan['material'] = material_type
-    optimized_plan['cutting_params'] = params
-    
-    # Calcola tempi di taglio stimati
-    total_time = 0
-    for bar in optimized_plan.get('bars', []):
-        for job in bar.get('jobs', []):
-            length = job.get('length', 0)
-            # Tempo = lunghezza / velocità di avanzamento
-            cut_time = (length / params['feed_rate']) * 60  # in secondi
-            job['estimated_time'] = cut_time
-            total_time += cut_time
-            
-    optimized_plan['total_estimated_time'] = total_time
-    
-    return optimized_plan
+    out = plan.copy()
+    out['material'] = material_type
+    out['cutting_params'] = params
+    total_time = 0.0
+    for bar in out.get("bars", []):
+        for job in bar.get("jobs", []):
+            L = float(job.get("length", 0.0))
+            feed = float(params['feed_rate'])
+            t = (L / feed) * 60.0 if feed > 0 else 0.0
+            job['estimated_time'] = t
+            total_time += t
+    out['total_estimated_time'] = total_time
+    return out
 
 
 def group_by_angle(plan: Dict) -> Dict:
     """
-    Raggruppa i tagli per angolo per minimizzare i cambi testa
-    
-    Args:
-        plan: Piano di taglio
-        
-    Returns:
-        Piano con tagli raggruppati per angolo
+    Raggruppa i tagli di ogni barra per tuple di angoli (sx, dx).
     """
-    grouped_plan = plan.copy()
-    
-    for bar in grouped_plan.get('bars', []):
-        jobs = bar.get('jobs', [])
-        
-        # Raggruppa per combinazione di angoli
-        angle_groups = {}
+    out = plan.copy()
+    for bar in out.get("bars", []):
+        jobs = list(bar.get("jobs", []))
+        groups: Dict[Tuple[float, float], List[Dict[str, Any]]] = {}
         for job in jobs:
-            angle_key = (job.get('angle_sx', 90), job.get('angle_dx', 90))
-            if angle_key not in angle_groups:
-                angle_groups[angle_key] = []
-            angle_groups[angle_key].append(job)
-            
-        # Riordina i jobs raggruppati
-        grouped_jobs = []
-        for angle_key in sorted(angle_groups.keys()):
-            grouped_jobs.extend(angle_groups[angle_key])
-            
-        bar['jobs'] = grouped_jobs
-        bar['angle_changes'] = len(angle_groups) - 1
-        
-    return grouped_plan
+            k = (float(job.get("angle_sx", 90)), float(job.get("angle_dx", 90)))
+            groups.setdefault(k, []).append(job)
+        ordered = []
+        for k in sorted(groups.keys()):
+            ordered.extend(groups[k])
+        bar["jobs"] = ordered
+        bar["angle_changes"] = max(0, len(groups) - 1)
+    return out
 
 
 def add_setup_operations(plan: Dict) -> Dict:
     """
-    Aggiunge operazioni di setup tra i tagli
-    
-    Args:
-        plan: Piano di taglio
-        
-    Returns:
-        Piano con operazioni di setup
+    Aggiunge operazioni di setup (cambio angolo) tra jobs.
     """
-    setup_plan = plan.copy()
-    
-    for bar in setup_plan.get('bars', []):
-        jobs_with_setup = []
-        last_angles = (90, 90)
-        
-        for job in bar.get('jobs', []):
-            current_angles = (job.get('angle_sx', 90), job.get('angle_dx', 90))
-            
-            # Se gli angoli sono diversi, aggiungi operazione di setup
-            if current_angles != last_angles:
-                setup_op = {
-                    'type': 'setup',
-                    'operation': 'angle_change',
-                    'from_angles': last_angles,
-                    'to_angles': current_angles,
-                    'estimated_time': 30  # secondi
+    out = plan.copy()
+    for bar in out.get("bars", []):
+        new_list = []
+        last_angles = (90.0, 90.0)
+        for job in bar.get("jobs", []):
+            angles = (float(job.get("angle_sx", 90)), float(job.get("angle_dx", 90)))
+            if angles != last_angles:
+                setup = {
+                    "type": "setup",
+                    "operation": "angle_change",
+                    "from_angles": last_angles,
+                    "to_angles": angles,
+                    "estimated_time": 30
                 }
-                jobs_with_setup.append(setup_op)
-                
-            jobs_with_setup.append(job)
-            last_angles = current_angles
-            
-        bar['jobs_with_setup'] = jobs_with_setup
-        
-    return setup_plan
+                new_list.append(setup)
+            new_list.append(job)
+            last_angles = angles
+        bar["jobs_with_setup"] = new_list
+    return out
 
 
-def validate_plan(plan: Dict) -> tuple[bool, List[str]]:
+def validate_plan(plan: Dict) -> Tuple[bool, List[str]]:
     """
-    Valida un piano di taglio
-    
-    Args:
-        plan: Piano da validare
-        
-    Returns:
-        Tupla (valido, lista_errori)
+    Validazione base del piano (presenza barre, lunghezze > 0, ecc.).
     """
-    errors = []
-    
+    errors: List[str] = []
     if not plan:
-        errors.append("Piano vuoto")
-        return False, errors
-        
-    if 'bars' not in plan:
-        errors.append("Piano senza barre")
-        return False, errors
-        
-    bars = plan.get('bars', [])
-    
+        return False, ["Piano vuoto"]
+    bars = plan.get("bars")
+    if bars is None:
+        return False, ["Piano senza barre"]
     if not bars:
-        errors.append("Nessuna barra nel piano")
-        return False, errors
-        
+        return False, ["Nessuna barra nel piano"]
     for i, bar in enumerate(bars):
-        # Controlla che la barra abbia una lunghezza
-        if 'length' not in bar or bar['length'] <= 0:
+        if float(bar.get("length", 0.0)) <= 0.0:
             errors.append(f"Barra {i+1}: lunghezza non valida")
-            
-        # Controlla i jobs
-        jobs = bar.get('jobs', [])
+        jobs = bar.get("jobs", [])
         if not jobs:
             errors.append(f"Barra {i+1}: nessun taglio definito")
-            
-        total_length = 0
+        tot_len = 0.0
         for j, job in enumerate(jobs):
-            if 'length' not in job or job['length'] <= 0:
-                errors.append(f"Barra {i+1}, Taglio {j+1}: lunghezza non valida")
-                
-            total_length += job.get('length', 0)
-            
-            # Controlla angoli
-            angle_sx = job.get('angle_sx', 90)
-            angle_dx = job.get('angle_dx', 90)
-            
-            if not (0 < angle_sx <= 180):
-                errors.append(f"Barra {i+1}, Taglio {j+1}: angolo sinistro non valido")
-                
-            if not (0 < angle_dx <= 180):
-                errors.append(f"Barra {i+1}, Taglio {j+1}: angolo destro non valido")
-                
-        # Controlla che i tagli non superino la lunghezza della barra
-        if total_length > bar.get('length', 0):
-            errors.append(f"Barra {i+1}: lunghezza tagli ({total_length}) supera lunghezza barra ({bar.get('length', 0)})")
-            
+            L = float(job.get("length", 0.0))
+            if L <= 0.0:
+                errors.append(f"Barra {i+1} Taglio {j+1}: lunghezza non valida")
+            tot_len += L
+            ax = float(job.get("angle_sx", 90))
+            ad = float(job.get("angle_dx", 90))
+            if not (0.0 < ax <= 180.0):
+                errors.append(f"Barra {i+1} Taglio {j+1}: angolo SX non valido")
+            if not (0.0 < ad <= 180.0):
+                errors.append(f"Barra {i+1} Taglio {j+1}: angolo DX non valido")
+        if tot_len > float(bar.get("length", 0.0)) + 1e-6:
+            errors.append(f"Barra {i+1}: somma tagli ({tot_len}) > lunghezza barra ({bar.get('length', 0.0)})")
     return len(errors) == 0, errors
 
 
-def merge_small_scraps(plan: Dict, min_length: float = 100) -> Dict:
+def merge_small_scraps(plan: Dict, min_length: float = 100.0) -> Dict:
     """
-    Unisce gli sfridi piccoli per creare pezzi recuperabili
-    
-    Args:
-        plan: Piano di taglio
-        min_length: Lunghezza minima per considerare uno sfrido recuperabile
-        
-    Returns:
-        Piano con sfridi ottimizzati
+    Unisce sfridi piccoli in gruppi recuperabili.
     """
-    merged_plan = plan.copy()
+    out = plan.copy()
     scraps = []
-    
-    # Raccogli tutti gli sfridi
-    for bar in merged_plan.get('bars', []):
-        waste = bar.get('waste', 0)
+    for bar in out.get("bars", []):
+        waste = float(bar.get("waste", 0.0))
         if waste > 0:
-            scraps.append({
-                'bar_id': bar.get('id'),
-                'length': waste
-            })
-            
-    # Ordina per lunghezza decrescente
-    scraps.sort(key=lambda x: x['length'], reverse=True)
-    
-    # Unisci sfridi piccoli
-    merged_scraps = []
-    current_group = []
-    current_total = 0
-    
-    for scrap in scraps:
-        if scrap['length'] >= min_length:
-            # Sfrido già utilizzabile
-            merged_scraps.append(scrap)
+            scraps.append({"bar_id": bar.get("id"), "length": waste})
+    scraps.sort(key=lambda x: x["length"], reverse=True)
+    merged = []
+    group = []
+    total = 0.0
+    for sc in scraps:
+        if sc["length"] >= min_length:
+            merged.append(sc)
         else:
-            # Aggiungi al gruppo corrente
-            current_group.append(scrap)
-            current_total += scrap['length']
-            
-            if current_total >= min_length:
-                # Gruppo utilizzabile
-                merged_scraps.append({
-                    'bar_ids': [s['bar_id'] for s in current_group],
-                    'length': current_total,
-                    'type': 'merged_scrap'
+            group.append(sc)
+            total += sc["length"]
+            if total >= min_length:
+                merged.append({
+                    "bar_ids": [g["bar_id"] for g in group],
+                    "length": total,
+                    "type": "merged_scrap"
                 })
-                current_group = []
-                current_total = 0
-                
-    merged_plan['optimized_scraps'] = merged_scraps
-    
-    return merged_plan
+                group = []
+                total = 0.0
+    out["optimized_scraps"] = merged
+    return out
 
 
-# Esporta tutte le funzioni pubbliche
+# ---------------------------------------------------------------------------
+# __all__
+# ---------------------------------------------------------------------------
 __all__ = [
-    'refine_plan',
-    'refine_bar',
-    'calculate_used_length',
-    'calculate_cut_compensation',
-    'optimize_for_material',
-    'group_by_angle',
-    'add_setup_operations',
-    'validate_plan',
-    'merge_small_scraps'
+    # Packing / raffinamento avanzato
+    "pack_bars_knapsack_ilp",
+    "refine_tail_ilp",
+    "joint_consumption",
+    "bar_used_length",
+    "residuals",
+    "compute_bar_breakdown",
+    # Compatibilità funzioni semplificate
+    "refine_plan",
+    "refine_bar",
+    "calculate_used_length",
+    "calculate_cut_compensation",
+    "optimize_for_material",
+    "group_by_angle",
+    "add_setup_operations",
+    "validate_plan",
+    "merge_small_scraps",
 ]
