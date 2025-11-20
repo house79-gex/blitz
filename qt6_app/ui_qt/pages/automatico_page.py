@@ -91,6 +91,7 @@ class OptimizationConfigDialog(QDialog):
         auto_cont = bool(cfg.get("opt_auto_continue_enabled", False))
         auto_across = bool(cfg.get("opt_auto_continue_across_bars", False))
         strict_seq = bool(cfg.get("opt_strict_bar_sequence", True))
+        refine_enabled = bool(cfg.get("opt_enable_tail_refine", True))
 
         form = QFormLayout(self)
         def add(lbl, w): form.addRow(lbl, w); return w
@@ -111,16 +112,18 @@ class OptimizationConfigDialog(QDialog):
         self.ed_angle_tol = add("Tolleranza angolo reversibile (°):", QLineEdit(angle_tol))
         self.ed_warn_over = add("Warn overflow soglia (mm):", QLineEdit(warn_over))
         self.chk_auto_cont = QCheckBox("Auto-continue pezzi identici (stessa barra)"); self.chk_auto_cont.setChecked(auto_cont); form.addRow(self.chk_auto_cont)
-        self.chk_auto_across = QCheckBox("Auto-continue su barra successiva"); self.chk_auto_across.setChecked(auto_across); form.addRow(self.chk_auto_across)
-        self.chk_strict_seq = QCheckBox("Mantieni ordine barre (no resort)"); self.chk_strict_seq.setChecked(strict_seq); form.addRow(self.chk_strict_seq)
+        self.chk_auto_across = QCheckBox("Auto-continue anche su barra successiva"); self.chk_auto_across.setChecked(auto_across); form.addRow(self.chk_auto_across)
+        self.chk_strict_seq = QCheckBox("Sequenza stretta (no riordino barre)"); self.chk_strict_seq.setChecked(strict_seq); form.addRow(self.chk_strict_seq)
+        self.chk_tail_refine = QCheckBox("Usa refine tail (ottimizzazione finale)"); self.chk_tail_refine.setChecked(refine_enabled); form.addRow(self.chk_tail_refine)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
         btns.accepted.connect(self._save_and_close); btns.rejected.connect(self.reject)
         form.addRow(btns)
-        self.resize(560,700)
+        self.resize(560,720)
 
     def _save_and_close(self):
-        cfg = dict(read_settings())
+        old = dict(read_settings())
+        cfg = dict(old)  # merge
         def f(t,d):
             try: return float((t or "").replace(",", "."))
             except Exception: return d
@@ -144,7 +147,9 @@ class OptimizationConfigDialog(QDialog):
         cfg["opt_auto_continue_enabled"] = bool(self.chk_auto_cont.isChecked())
         cfg["opt_auto_continue_across_bars"] = bool(self.chk_auto_across.isChecked())
         cfg["opt_strict_bar_sequence"] = bool(self.chk_strict_seq.isChecked())
-        write_settings(cfg); self.accept()
+        cfg["opt_enable_tail_refine"] = bool(self.chk_tail_refine.isChecked())
+        write_settings(cfg)
+        self.accept()
 
 
 # ---------------- Dialog taglio manuale ----------------
@@ -296,6 +301,10 @@ class AutomaticoPage(QWidget):
         self._lock_on_inpos=False
         self._poll: Optional[QTimer]=None
 
+        # Sequencing state
+        self._pending_active_piece: Optional[Dict[str,Any]] = None
+        self._positioning_in_progress=False
+
         cfg=read_settings()
         self._kerf_max_angle_deg=float(cfg.get("opt_kerf_max_angle_deg",60.0))
         self._kerf_max_factor=float(cfg.get("opt_kerf_max_factor",2.0))
@@ -305,6 +314,7 @@ class AutomaticoPage(QWidget):
         self._auto_continue_enabled=bool(cfg.get("opt_auto_continue_enabled",False))
         self._auto_continue_across_bars=bool(cfg.get("opt_auto_continue_across_bars",False))
         self._strict_bar_sequence=bool(cfg.get("opt_strict_bar_sequence",True))
+        self._tail_refine_enabled=bool(cfg.get("opt_enable_tail_refine",True))
         self._fq_offset_mm=float(cfg.get("semi_offset_mm",120.0)) if "semi_offset_mm" in cfg else 120.0
         self._extshort_safe_mm=float(cfg.get("auto_extshort_safe_pos_mm",400.0)) if "auto_extshort_safe_pos_mm" in cfg else 400.0
         self._kerf_base_mm=float(cfg.get("opt_kerf_mm",3.0)) if "opt_kerf_mm" in cfg else 3.0
@@ -364,7 +374,6 @@ class AutomaticoPage(QWidget):
         root.addWidget(Header(self.appwin,"AUTOMATICO",mode="default",
                               on_home=self._nav_home,on_reset=self._reset_and_home))
         self.banner=QLabel(""); self.banner.setVisible(False); self.banner.setAlignment(Qt.AlignCenter)
-        self.banner.setStyleSheet("QLabel { background:#ffe7ba; color:#1b1b1b; font-size:18px; font-weight:800; padding:8px 12px; border:1px solid #c49a28; border-radius:6px; }")
         root.addWidget(self.banner)
 
         top=QHBoxLayout()
@@ -392,7 +401,6 @@ class AutomaticoPage(QWidget):
         self.tbl_cut.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_cut.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_cut.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tbl_cut.setStyleSheet("QTableWidget::item:selected { outline: none; }")
         self.tbl_cut.cellDoubleClicked.connect(self._on_cell_double_clicked)
         self.tbl_cut.cellEntered.connect(self._on_cell_entered)
         self.tbl_cut.currentCellChanged.connect(self._on_current_cell_changed)
@@ -516,6 +524,7 @@ class AutomaticoPage(QWidget):
             self._auto_continue_enabled = bool(cfg.get("opt_auto_continue_enabled",False))
             self._auto_continue_across_bars = bool(cfg.get("opt_auto_continue_across_bars",False))
             self._strict_bar_sequence = bool(cfg.get("opt_strict_bar_sequence",True))
+            self._tail_refine_enabled = bool(cfg.get("opt_enable_tail_refine",True))
 
     # ---------------- Import cutlist ----------------
     def _import_cutlist(self):
@@ -668,7 +677,6 @@ class AutomaticoPage(QWidget):
         max_angle=self._kerf_max_angle_deg
         max_factor=self._kerf_max_factor
 
-        # NON riordinare se strict_bar_sequence True
         if solver in ("ILP_KNAP","ILP"):
             bars, rem=pack_bars_knapsack_ilp(pieces=pieces,stock=stock,kerf_base=kerf_base,
                                              ripasso_mm=self._ripasso_mm, conservative_angle_deg=self._knap_cons_angle_deg,
@@ -679,10 +687,18 @@ class AutomaticoPage(QWidget):
                 bars, rem=self._pack_bfd(pieces,stock,kerf_base,reversible_now,thickness_mm,angle_tol,max_angle,max_factor)
         else:
             bars, rem=self._pack_bfd(pieces,stock,kerf_base,reversible_now,thickness_mm,angle_tol,max_angle,max_factor)
-        with contextlib.suppress(Exception):
-            bars, rem=refine_tail_ilp(bars,stock,kerf_base,self._ripasso_mm,reversible_now,thickness_mm,
-                                      angle_tol,tail_bars=tail_n,time_limit_s=tail_t,
-                                      max_angle=max_angle,max_factor=max_factor)
+
+        if self._tail_refine_enabled:
+            with contextlib.suppress(Exception):
+                bars_ref, rem2=refine_tail_ilp(bars,stock,kerf_base,self._ripasso_mm,reversible_now,thickness_mm,
+                                               angle_tol,tail_bars=tail_n,time_limit_s=tail_t,
+                                               max_angle=max_angle,max_factor=max_factor)
+                # Mantieni ordine originale: sostituisci solo i pezzi nelle stesse barre
+                if bars_ref and len(bars_ref)==len(bars):
+                    for i in range(len(bars)):
+                        # conserva ordine originale -> no sort
+                        bars[i]=bars_ref[i]
+
         if not self._strict_bar_sequence:
             for b in bars:
                 with contextlib.suppress(Exception):
@@ -702,13 +718,12 @@ class AutomaticoPage(QWidget):
     def _build_sequential_plan(self):
         self._seq_plan.clear(); seq_id=1
         for bi,bar in enumerate(self._bars):
-            # ordine interno invariato
             for pi,p in enumerate(bar):
                 self._seq_plan.append({
                     "seq_id":seq_id,"bar":bi,"idx":pi,
                     "len":float(p["len"]),"ax":float(p["ax"]),"ad":float(p["ad"]),
                     "profile":p.get("profile",self._plan_profile),
-                    "element":p.get("element",f"B{bi+1} #{pi+1}"),
+                    "element":p.get("element",f"BAR {bi+1} #{pi+1}"),
                     "meta":dict(p.get("meta") or {})
                 }); seq_id+=1
 
@@ -721,9 +736,10 @@ class AutomaticoPage(QWidget):
     def _same_sig(self, a: Dict[str,Any], b: Dict[str,Any]) -> bool:
         if not a or not b: return False
         if (a.get("profile","") or "") != (b.get("profile","") or ""): return False
-        return (abs(float(a.get("len",0.0))-float(b.get("len",0.0))) <= 0.15 and
-                abs(float(a.get("ax",0.0))-float(b.get("ax",0.0))) <= 0.15 and
-                abs(float(a.get("ad",0.0))-float(b.get("ad",0.0))) <= 0.15)
+        # tolleranze più strette per robustezza
+        return (abs(float(a.get("len",0.0))-float(b.get("len",0.0))) <= 0.05 and
+                abs(float(a.get("ax",0.0))-float(b.get("ax",0.0))) <= 0.05 and
+                abs(float(a.get("ad",0.0))-float(b.get("ad",0.0))) <= 0.05)
 
     def _auto_continue_if_possible(self):
         if not self._auto_continue_enabled: return
@@ -732,21 +748,19 @@ class AutomaticoPage(QWidget):
         if not cur or not nxt: return
         if not self._same_sig(cur, nxt): return
         same_bar = (cur.get("bar")==nxt.get("bar"))
-        if (not same_bar) and (not self._auto_continue_across_bars): return
-        # Avanza
-        if same_bar:
-            # mantieni freno e non riposizionare
-            self._advance_to_next_piece(skip_move=True)
-        else:
-            # cambia barra: sblocca freno per riposizionare
+        if self._strict_bar_sequence and not same_bar:
+            return
+        if not same_bar and not self._auto_continue_across_bars:
+            return
+        # Avanzare direttamente
+        if not same_bar:
             self._unlock_brake()
-            self._advance_to_next_piece(skip_move=False)
-        with contextlib.suppress(Exception):
-            setattr(self.machine,"semi_auto_target_pieces",1)
-            setattr(self.machine,"semi_auto_count_done",0)
+        self._advance_to_next_piece(skip_move=same_bar)
 
     # ---------------- Avanzamento piano ----------------
     def _advance_to_next_piece(self, skip_move: bool = False):
+        if self._positioning_in_progress:
+            return
         nxt=self._seq_pos+1
         if nxt>=len(self._seq_plan):
             self._toast("Piano completato","ok")
@@ -761,19 +775,30 @@ class AutomaticoPage(QWidget):
         with contextlib.suppress(Exception):
             setattr(self.machine,"semi_auto_target_pieces",1)
             setattr(self.machine,"semi_auto_count_done",0)
-        if not skip_move:
+        self._pending_active_piece={
+            "profile":p["profile"],"len":p["len"],"ax":p["ax"],"ad":p["ad"],
+            "element":p["element"],"seq_id":p["seq_id"],"mode":"plan",
+            "bar":p.get("bar"),"idx":p.get("idx")
+        }
+        self._positioning_in_progress = not skip_move
+        if skip_move:
+            # nessun movimento: freno già bloccato → emetti subito
+            self._emit_pending_active_piece()
+        else:
             self._set_pressers(False,False)
             self._position_machine_exact(
                 self._effective_position_length(p["len"],p["ax"],p["ad"],self._get_profile_thickness(p["profile"])),
                 p["ax"],p["ad"],p["profile"],p["element"]
             )
         self._apply_active_row(self._find_row_for_piece_tol(p["profile"],p["len"],p["ax"],p["ad"]))
-        self.activePieceChanged.emit({
-            "profile":p["profile"],"len":p["len"],"ax":p["ax"],"ad":p["ad"],
-            "element":p["element"],"seq_id":p["seq_id"],"mode":"plan",
-            "bar":p.get("bar"),"idx":p.get("idx")
-        })
         self._update_counters_ui()
+
+    def _emit_pending_active_piece(self):
+        if not self._pending_active_piece:
+            return
+        piece=self._pending_active_piece
+        self._pending_active_piece=None
+        self.activePieceChanged.emit(piece)
 
     # ---------------- Start trigger ----------------
     def _handle_start_trigger(self):
@@ -785,12 +810,14 @@ class AutomaticoPage(QWidget):
         done=int(getattr(self.machine,"semi_auto_count_done",0) or 0)
         if self._brake_locked and tgt>0 and done<tgt:
             return
-        next_piece=self._next_seq_piece()
+        if self._positioning_in_progress:
+            return
         prev_piece=self._seq_plan[self._seq_pos] if (0<=self._seq_pos<len(self._seq_plan)) else None
+        next_piece=self._next_seq_piece()
         if prev_piece and next_piece and self._same_sig(prev_piece,next_piece):
-            # se identico → non riposizionare se stessa barra, altrimenti sì
             same_bar = prev_piece.get("bar")==next_piece.get("bar")
-            if not same_bar: self._unlock_brake()
+            if not same_bar:
+                self._unlock_brake()
             self._advance_to_next_piece(skip_move=same_bar)
             return
         self._unlock_brake()
@@ -803,12 +830,13 @@ class AutomaticoPage(QWidget):
         piece=self._get_row_piece(r) if r is not None else None
         if piece:
             self._apply_active_row(r)
-            self.activePieceChanged.emit({**piece,"mode":"manual"})
+            self._pending_active_piece={**piece,"mode":"manual"}
+            self._positioning_in_progress=True
             with contextlib.suppress(Exception):
                 setattr(self.machine,"semi_auto_target_pieces",1); setattr(self.machine,"semi_auto_count_done",0)
             self._manual_current_piece=piece
             self._set_pressers(False,False)
-            self._move_and_arm(piece["len"],piece["ax"],piece["ad"],piece["profile"],piece["element"])
+            self._position_machine_exact(piece["len"],piece["ax"],piece["ad"],piece["profile"],piece["element"])
             if self._mode=="idle": self._mode="manual"
             return
         dlg=ManualCutDialog(self,preset=None)
@@ -816,12 +844,13 @@ class AutomaticoPage(QWidget):
         data=dlg.get_data()
         piece={"profile":data["profile"],"element":data["element"],
                "len":data["len"],"ax":data["ax"],"ad":data["ad"],"seq_id":0,"meta":{}}
-        self.activePieceChanged.emit({**piece,"mode":"manual"})
+        self._pending_active_piece={**piece,"mode":"manual"}
+        self._positioning_in_progress=True
         with contextlib.suppress(Exception):
             setattr(self.machine,"semi_auto_target_pieces",1); setattr(self.machine,"semi_auto_count_done",0)
         self._manual_current_piece=piece
         self._set_pressers(False,False)
-        self._move_and_arm(piece["len"],piece["ax"],piece["ad"],piece["profile"],piece["element"])
+        self._position_machine_exact(piece["len"],piece["ax"],piece["ad"],piece["profile"],piece["element"])
         if self._mode=="idle": self._mode="manual"
 
     # ---------------- Simulazione da dialog ----------------
@@ -869,7 +898,6 @@ class AutomaticoPage(QWidget):
         if new_done>=tgt:
             with contextlib.suppress(Exception):
                 setattr(self.machine,"semi_auto_target_pieces",0); setattr(self.machine,"semi_auto_count_done",0)
-            # Tenta auto-continue
             self._auto_continue_if_possible()
         self._update_counters_ui()
 
@@ -1046,7 +1074,8 @@ class AutomaticoPage(QWidget):
     def _maybe_force_lock(self):
         if not self._brake_locked:
             in_mov = bool(getattr(self.machine,"positioning_active",False))
-            if not in_mov: self._lock_brake()
+            if not in_mov:
+                self._lock_brake()
 
     def _try_lock_on_inpos(self):
         if not self._lock_on_inpos: return
@@ -1063,6 +1092,9 @@ class AutomaticoPage(QWidget):
                 self._inpos_since=now; return
             if (now-self._inpos_since)<0.10: return
             self._lock_brake(); self._lock_on_inpos=False
+            # Posizionamento concluso: emetti pezzo attivo
+            self._positioning_in_progress=False
+            self._emit_pending_active_piece()
 
     def _lock_brake(self):
         with contextlib.suppress(Exception):
@@ -1133,12 +1165,13 @@ class AutomaticoPage(QWidget):
         if not piece: return
         self._unlock_brake()
         self._apply_active_row(row)
-        self.activePieceChanged.emit({**piece,"mode":"manual"})
+        self._pending_active_piece={**piece,"mode":"manual"}
+        self._positioning_in_progress=True
         with contextlib.suppress(Exception):
             setattr(self.machine,"semi_auto_target_pieces",1); setattr(self.machine,"semi_auto_count_done",0)
         self._manual_current_piece=piece
         self._set_pressers(False,False)
-        self._move_and_arm(piece["len"],piece["ax"],piece["ad"],piece["profile"],piece["element"])
+        self._position_machine_exact(piece["len"],piece["ax"],piece["ad"],piece["profile"],piece["element"])
         if self._mode=="idle": self._mode="manual"
         self._update_counters_ui()
 
@@ -1152,9 +1185,7 @@ class AutomaticoPage(QWidget):
 
     def _on_current_cell_changed(self,cur_row:int,_cur_col:int,_prev_row:int,_prev_col:int):
         try:
-            if cur_row is None or cur_row<0:
-                self._current_profile_thickness=0.0; self._update_counters_ui(); return
-            if self._row_is_header(cur_row):
+            if cur_row is None or cur_row<0 or self._row_is_header(cur_row):
                 self._current_profile_thickness=0.0; self._update_counters_ui(); return
             prof_item=self.tbl_cut.item(cur_row,1)
             name=(prof_item.text() or "").strip() if prof_item else ""
@@ -1255,6 +1286,8 @@ class AutomaticoPage(QWidget):
         self._move_target_mm=0.0
         self._inpos_since=0.0
         self._lock_on_inpos=False
+        self._pending_active_piece=None
+        self._positioning_in_progress=False
         self._sig_total_counts.clear()
         self._cur_sig=None
         self._fq_state={"active":False,"phase":"","final_target":0.0,"ax":0.0,"ad":0.0,"profile":"","element":"","min_q":0.0}
