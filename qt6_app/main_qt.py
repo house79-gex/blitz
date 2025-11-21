@@ -1,9 +1,4 @@
-"""
-MainWindow aggiornato:
-- Usa MachineAdapter + SimulationMachine (o RealMachine con flag --real).
-- Nessun DummyMachine: la simulazione fa homing a 250 mm con homing_in_progress.
-- StatusPanel resta compatibile (legge dal raw). Pagine usano l'adapter.
-"""
+# File completo (versione aggiornata). Sostituisci l’intero se vuoi mantenere questa struttura.
 
 import sys
 import logging
@@ -11,19 +6,15 @@ import traceback
 from typing import Optional
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QStatusBar, QSizePolicy
-from PySide6.QtCore import Qt
 
-# Tema/stili
 try:
     from ui_qt.theme import apply_global_stylesheet
 except Exception:
-    apply_global_stylesheet = lambda app: None  # no-op
+    apply_global_stylesheet = lambda app: None
 
-# Stack che non impone minime in alto
 from ui_qt.widgets.min_stack import MinimalStacked
 from ui_qt.widgets.size_ignorer import SizeIgnorer
 
-# Adapter + macchine
 try:
     from ui_qt.machine.machine_adapter import MachineAdapter
     from ui_qt.machine.simulation_machine import SimulationMachine
@@ -32,7 +23,6 @@ except Exception:
     MachineAdapter = None
     SimulationMachine = None
     RealMachine = None
-
 
 def _setup_logging():
     try:
@@ -45,7 +35,6 @@ def _setup_logging():
 
     logger = logging.getLogger("blitz")
     logger.setLevel(logging.INFO)
-
     if not logger.handlers:
         fmt = logging.Formatter(
             fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -55,7 +44,6 @@ def _setup_logging():
         sh.setLevel(logging.INFO)
         sh.setFormatter(fmt)
         logger.addHandler(sh)
-
         if log_file is not None:
             try:
                 fh = logging.FileHandler(log_file, encoding="utf-8")
@@ -78,7 +66,6 @@ def _setup_logging():
         sys.excepthook = _global_excepthook
     return logger
 
-
 class _Toast:
     def __init__(self, win: QMainWindow):
         self._win = win
@@ -87,7 +74,6 @@ class _Toast:
             self._win.statusBar().showMessage(msg, ms)
         except Exception:
             pass
-
 
 class MainWindow(QMainWindow):
     def __init__(self, simulation: bool = True):
@@ -98,14 +84,12 @@ class MainWindow(QMainWindow):
 
         self.machine, self.machine_adapter = self._make_machine(simulation)
 
-        # Stack centrale
         self.stack = MinimalStacked(self)
         self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.stack.setMinimumSize(0, 0)
         self.setCentralWidget(self.stack)
         self._pages: dict[str, tuple[object, int, object]] = {}
 
-        # Pagine
         from ui_qt.pages.home_page import HomePage
         self.add_page("home", HomePage(self))
         self._try_add_page("manuale", "ui_qt.pages.manuale_page", "ManualePage")
@@ -126,30 +110,38 @@ class MainWindow(QMainWindow):
 
     def _make_machine(self, simulation: bool):
         logger = logging.getLogger("blitz")
-        if not simulation and RealMachine and MachineAdapter:
-            try:
-                raw = RealMachine()
-                logger.info("Macchina reale avviata.")
-                return raw, MachineAdapter(raw)
-            except Exception as e:
-                logger.warning(f"RealMachine non disponibile, fallback a SimulationMachine: {e}")
-
-        if SimulationMachine and MachineAdapter:
+        if simulation and SimulationMachine and MachineAdapter:
             raw = SimulationMachine()
             logger.info("Avvio SimulationMachine.")
             return raw, MachineAdapter(raw)
 
-        # Fallback di emergenza (non dovrebbe servire)
+        if not simulation and RealMachine and MachineAdapter:
+            try:
+                raw = RealMachine()
+                logger.info("Avvio RealMachine.")
+                return raw, MachineAdapter(raw)
+            except Exception as e:
+                logger.warning(f"RealMachine non disponibile, fallback: {e}")
+
         class _Fallback:
             min_distance = 250.0
             max_cut_length = 4000.0
             machine_homed = False
             homing_in_progress = False
             encoder_position = 250.0
+            emergency_active = False
+            brake_active = False
             def get_position(self): return self.encoder_position
             def is_positioning_active(self): return False
             def tick(self): pass
-            def get_state(self): return {"homed": self.machine_homed, "position_mm": self.encoder_position}
+            def get_state(self):
+                return {
+                    "homed": self.machine_homed,
+                    "position_mm": self.encoder_position,
+                    "homing_in_progress": self.homing_in_progress,
+                    "brake_active": self.brake_active,
+                    "emergency_active": self.emergency_active
+                }
             def close(self): pass
             def do_homing(self, callback=None):
                 import threading, time
@@ -161,7 +153,15 @@ class MainWindow(QMainWindow):
                     self.homing_in_progress = False
                     if callback: callback(success=True, msg="HOMING OK")
                 threading.Thread(target=seq, daemon=True).start()
+            def reset(self):
+                self.machine_homed = False
+                self.homing_in_progress = False
+                self.encoder_position = self.min_distance
+                self.brake_active = False
+                self.emergency_active = False
+
         raw = _Fallback()
+
         class _Adapter:
             def __init__(self, r): self._r = r
             def get_position(self): return self._r.get_position()
@@ -170,14 +170,18 @@ class MainWindow(QMainWindow):
             def get_state(self): return self._r.get_state()
             def close(self): self._r.close()
             def command_move(self, *a, **k): return False
-            def command_lock_brake(self): return True
-            def command_release_brake(self): return True
+            def command_lock_brake(self): self._r.brake_active = True; return True
+            def command_release_brake(self): self._r.brake_active = False; return True
             def command_set_head_angles(self, sx, dx): return True
             def command_set_pressers(self, l, r): return True
             def command_set_blade_inhibit(self, left=None, right=None): return True
             def command_sim_cut_pulse(self): pass
             def command_sim_start_pulse(self): pass
             def command_sim_dx_blade_out(self, on): pass
+            def get_input(self, name): return False
+            def do_homing(self, callback=None): self._r.do_homing(callback)
+            def reset_machine(self): self._r.reset()
+
         logger.info("Avvio Fallback machine.")
         return raw, _Adapter(raw)
 
@@ -217,40 +221,32 @@ class MainWindow(QMainWindow):
             try:
                 page.on_show()
             except Exception:
-                logger.exception(f"Errore in on_show() della pagina '{key}'")
+                logger.exception(f"Errore in on_show() pagina '{key}'")
                 try:
-                    self.toast.show(f"Errore on_show in '{key}' (vedi log)", "warn", 3000)
+                    self.toast.show(f"Errore on_show '{key}'", "warn", 3000)
                 except Exception:
                     pass
 
-    # Alias navigazione
     def go_home(self): self.show_page("home")
     def show_home(self): self.show_page("home")
     def navigate_home(self): self.show_page("home")
     def home(self): self.show_page("home")
 
-    def reset_current_page(self):
-        logger = logging.getLogger("blitz")
-        raw = self.machine
-        if hasattr(raw, "reset") and callable(getattr(raw, "reset")):
-            try:
-                raw.reset()
-                self.toast.show("Reset eseguito", "ok", 1500)
-                logger.info("Reset macchina eseguito")
-            except Exception:
-                logger.exception("Errore durante reset macchina")
-
     def reset_all(self):
-        self.reset_current_page()
+        if hasattr(self.machine, "reset"):
+            try:
+                self.machine.reset()
+            except Exception:
+                pass
         self.show_page("home")
-
+        if hasattr(self.toast, "show"):
+            self.toast.show("Reset eseguito (uniforme)", "ok", 2000)
 
 def main():
     _setup_logging()
     logger = logging.getLogger("blitz")
     logger.info("Avvio BLITZ 3")
 
-    # Flag --real per tentare la macchina reale
     simulation = True
     for a in sys.argv[1:]:
         if a.strip().lower() in ("--real", "--hardware", "--hw"):
@@ -271,7 +267,6 @@ def main():
     except Exception:
         pass
     sys.exit(rc)
-
 
 if __name__ == "__main__":
     main()
