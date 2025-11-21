@@ -5,7 +5,6 @@ from typing import Dict, Any, Optional, List
 from ui_qt.machine.interfaces import MachineIO
 from ui_qt.machine.rs485_modbus import ModbusRTUClient
 
-# (Opzionale) per generare impulsi step/dir con pigpio
 try:
     import pigpio
 except Exception:
@@ -13,11 +12,13 @@ except Exception:
 
 class RealMachine(MachineIO):
     """
-    Implementazione macchina reale:
-    - RS485 Modbus per relè / ingressi (due dispositivi).
-    - Pulse/Dir servo (Leadshine DCS810).
-    - Posizione stimata da impulsi inviati (fase 1).
+    Macchina reale (prima implementazione):
+    - RS485 Modbus: due dispositivi (addr_a per freno/presser/clutch, addr_b per inibizioni lame).
+    - Pulse/Dir generati via GPIO (pigpio) per il drive.
+    - Posizione stimata da impulsi (fase iniziale).
+    - Espone chiavi richieste da StatusPanel: brake_active, clutch_active, left_blade_inhibit, right_blade_inhibit.
     """
+
     def __init__(self,
                  serial_port: str = "/dev/ttyUSB0",
                  rs485_addr_a: int = 1,
@@ -27,10 +28,12 @@ class RealMachine(MachineIO):
                  dir_gpio: int = 23,
                  enable_gpio: int = 24,
                  poll_interval_ms: int = 80):
+        # Modbus
         self._client = ModbusRTUClient(port=serial_port, baudrate=115200)
         self.addr_a = rs485_addr_a
         self.addr_b = rs485_addr_b
 
+        # Motion
         self.mm_per_pulse = mm_per_pulse
         self._position_mm = 0.0
         self._target_mm: Optional[float] = None
@@ -40,31 +43,29 @@ class RealMachine(MachineIO):
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
 
-        # Stato logico coil cache
-        self._coils_a: List[bool] = [False]*8
-        self._coils_b: List[bool] = [False]*8
-
-        # Ingressi cache
+        # Cache coils / inputs
+        self._coils_a: List[bool] = [False]*8   # 0 brake, 1 clutch, 2 left_presser, 3 right_presser
+        self._coils_b: List[bool] = [False]*8   # 0 left_blade_inhibit, 1 right_blade_inhibit
         self._inputs_a: List[bool] = [False]*8
         self._inputs_b: List[bool] = [False]*8
 
-        # Flags
+        # Flag
         self.machine_homed = True
         self.emergency_active = False
 
-        # Pulse generator (semplificato; per alta velocità preferire pigpio waves)
+        # pigpio init
         self.pi = None
+        self.pulse_gpio = pulse_gpio
+        self.dir_gpio = dir_gpio
+        self.enable_gpio = enable_gpio
         if pigpio:
             try:
                 self.pi = pigpio.pi()
                 if self.pi.connected:
-                    self.pi.set_mode(pulse_gpio, pigpio.OUTPUT)
-                    self.pi.set_mode(dir_gpio, pigpio.OUTPUT)
-                    self.pi.set_mode(enable_gpio, pigpio.OUTPUT)
-                    self.pulse_gpio = pulse_gpio
-                    self.dir_gpio = dir_gpio
-                    self.enable_gpio = enable_gpio
-                    self.pi.write(enable_gpio, 1)  # abilita drive
+                    self.pi.set_mode(self.pulse_gpio, pigpio.OUTPUT)
+                    self.pi.set_mode(self.dir_gpio, pigpio.OUTPUT)
+                    self.pi.set_mode(self.enable_gpio, pigpio.OUTPUT)
+                    self.pi.write(self.enable_gpio, 1)  # enable drive
                 else:
                     self.pi = None
             except Exception:
@@ -73,8 +74,6 @@ class RealMachine(MachineIO):
         self._poll_interval = poll_interval_ms / 1000.0
         self._last_poll = 0.0
         self._lock = threading.Lock()
-
-        # Thread background (opzionale) – puoi invece richiamare tick() da QTimer
         self._closed = False
 
     # --- MachineIO ---
@@ -86,7 +85,7 @@ class RealMachine(MachineIO):
 
     def get_input(self, name: str) -> bool:
         if name == "blade_pulse":
-            return self._inputs_a[3]
+            return self._inputs_a[3]  # es: DI3 = impulso taglio (personalizza se diverso)
         if name == "start_pressed":
             return self._inputs_a[0]
         if name == "dx_blade_out":
@@ -104,8 +103,7 @@ class RealMachine(MachineIO):
             self.left_head_angle = float(ang_sx)
             self.right_head_angle = float(ang_dx)
             self._moving = True
-            # Sblocca freno (coil 0) se attivo
-            self._write_coil_a(0, False)
+            self._write_coil_a(0, False)  # sblocca freno
         return True
 
     def command_lock_brake(self) -> bool:
@@ -126,15 +124,17 @@ class RealMachine(MachineIO):
         self._write_coil_a(3, bool(right_locked))
         return True
 
-    def command_sim_cut_pulse(self) -> None:
-        # in reale non forzare sensore; per debug puoi latcheare coil fittizia
-        pass
+    def command_set_blade_inhibit(self, left: Optional[bool]=None, right: Optional[bool]=None) -> bool:
+        if left is not None:
+            self._write_coil_b(0, bool(left))
+        if right is not None:
+            self._write_coil_b(1, bool(right))
+        return True
 
-    def command_sim_start_pulse(self) -> None:
-        pass
-
-    def command_sim_dx_blade_out(self, on: bool) -> None:
-        pass
+    # Simulazioni non applicate in reale
+    def command_sim_cut_pulse(self) -> None: pass
+    def command_sim_start_pulse(self) -> None: pass
+    def command_sim_dx_blade_out(self, on: bool) -> None: pass
 
     def tick(self) -> None:
         now = time.time()
@@ -142,20 +142,17 @@ class RealMachine(MachineIO):
             self._poll_rs485()
             self._last_poll = now
 
-        # Movimento (software pulses)
         with self._lock:
             if self._moving and self._target_mm is not None:
                 diff = self._target_mm - self._position_mm
                 direction = 1 if diff >= 0 else -1
-                step_mm = 5.0  # mm per tick (approccio grezzo; sostituire con profilo)
+                step_mm = 5.0  # mm per tick grezzo (sostituire con profilo)
                 if abs(diff) <= step_mm:
                     self._position_mm = self._target_mm
                     self._moving = False
-                    # Lock brake automatically
-                    self._write_coil_a(0, True)
+                    self._write_coil_a(0, True)  # auto lock freno
                 else:
                     self._position_mm += direction * step_mm
-                    # Genera impulsi (grezzo)
                     if self.pi:
                         self.pi.write(self.dir_gpio, 1 if direction > 0 else 0)
                         pulses = int(abs(step_mm / self.mm_per_pulse))
@@ -163,14 +160,12 @@ class RealMachine(MachineIO):
                             self.pi.write(self.pulse_gpio, 1)
                             self.pi.write(self.pulse_gpio, 0)
 
-        # Emergency aggiornato da ingressi
         self.emergency_active = self.get_input("emergency_active")
         if self.emergency_active:
-            # stop movimento
             with self._lock:
                 self._moving = False
                 self._target_mm = self._position_mm
-            self._write_coil_a(0, True)  # freno
+            self._write_coil_a(0, True)
 
     def get_state(self) -> Dict[str, Any]:
         return {
@@ -178,11 +173,14 @@ class RealMachine(MachineIO):
             "target_mm": self._target_mm,
             "moving": self._moving,
             "brake_active": self._coils_a[0],
+            "clutch_active": self._coils_a[1],
             "pressers": {
                 "left": self._coils_a[2],
                 "right": self._coils_a[3]
             },
             "head_angles": {"sx": self.left_head_angle, "dx": self.right_head_angle},
+            "left_blade_inhibit": self._coils_b[0],
+            "right_blade_inhibit": self._coils_b[1],
             "inputs_a": list(self._inputs_a),
             "inputs_b": list(self._inputs_b),
             "emergency_active": self.emergency_active,
@@ -213,15 +211,15 @@ class RealMachine(MachineIO):
     def _write_coil_a(self, index: int, value: bool):
         if 0 <= index < 8:
             try:
-                self._client.write_single_coil(self.addr_a, index, value)
-                self._coils_a[index] = value
+                ok=self._client.write_single_coil(self.addr_a, index, value)
+                if ok: self._coils_a[index] = value
             except Exception:
                 pass
 
     def _write_coil_b(self, index: int, value: bool):
         if 0 <= index < 8:
             try:
-                self._client.write_single_coil(self.addr_b, index, value)
-                self._coils_b[index] = value
+                ok=self._client.write_single_coil(self.addr_b, index, value)
+                if ok: self._coils_b[index] = value
             except Exception:
                 pass
