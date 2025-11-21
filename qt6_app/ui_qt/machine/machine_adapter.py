@@ -3,15 +3,9 @@ from typing import Optional, Dict, Any
 from ui_qt.machine.interfaces import MachineIO
 
 class MachineAdapter:
-    """
-    Adatta l'oggetto 'raw_machine' (SimulationMachine o RealMachine)
-    ad eventuali accessi legacy e fornisce comodo wrapper.
-    Le pagine useranno SEMPRE l'istanza di MachineAdapter (mio) anziché il raw.
-    """
     def __init__(self, raw_machine: MachineIO):
         self._raw = raw_machine
 
-    # Accessi diretti unificati
     def get_position(self) -> Optional[float]:
         return self._raw.get_position()
 
@@ -19,7 +13,10 @@ class MachineAdapter:
         return self._raw.is_positioning_active()
 
     def get_input(self, name: str) -> bool:
-        return self._raw.get_input(name)
+        try:
+            return self._raw.get_input(name)
+        except Exception:
+            return False
 
     def command_move(self, length_mm: float, ang_sx: float = 0.0, ang_dx: float = 0.0,
                      profile: str = "", element: str = "") -> bool:
@@ -37,7 +34,9 @@ class MachineAdapter:
     def command_set_pressers(self, left_locked: bool, right_locked: bool) -> bool:
         return self._raw.command_set_pressers(left_locked, right_locked)
 
-    # Simulazioni
+    def command_set_blade_inhibit(self, left: Optional[bool] = None, right: Optional[bool] = None) -> bool:
+        return self._raw.command_set_blade_inhibit(left, right)
+
     def command_sim_cut_pulse(self) -> None:
         self._raw.command_sim_cut_pulse()
 
@@ -47,11 +46,31 @@ class MachineAdapter:
     def command_sim_dx_blade_out(self, on: bool) -> None:
         self._raw.command_sim_dx_blade_out(on)
 
+    def do_homing(self, callback=None) -> None:
+        if hasattr(self._raw, "do_homing"):
+            self._raw.do_homing(callback=callback)
+
+    def reset_machine(self) -> None:
+        if hasattr(self._raw, "reset"):
+            try:
+                self._raw.reset()
+            except Exception:
+                pass
+
     def tick(self) -> None:
-        self._raw.tick()
+        try:
+            self._raw.tick()
+        except Exception:
+            pass
 
     def get_state(self) -> Dict[str, Any]:
-        return self._raw.get_state()
+        try:
+            return self._raw.get_state()
+        except Exception:
+            return {}
 
     def close(self) -> None:
-        self._raw.close()
+        try:
+            self._raw.close()
+        except Exception:
+            pass
