@@ -11,14 +11,6 @@ except Exception:
     pigpio = None
 
 class RealMachine(MachineIO):
-    """
-    Macchina reale (prima implementazione):
-    - RS485 Modbus: due dispositivi (addr_a per freno/presser/clutch, addr_b per inibizioni lame).
-    - Pulse/Dir generati via GPIO (pigpio) per il drive.
-    - Posizione stimata da impulsi (fase iniziale).
-    - Espone chiavi richieste da StatusPanel: brake_active, clutch_active, left_blade_inhibit, right_blade_inhibit.
-    """
-
     def __init__(self,
                  serial_port: str = "/dev/ttyUSB0",
                  rs485_addr_a: int = 1,
@@ -28,32 +20,28 @@ class RealMachine(MachineIO):
                  dir_gpio: int = 23,
                  enable_gpio: int = 24,
                  poll_interval_ms: int = 80):
-        # Modbus
         self._client = ModbusRTUClient(port=serial_port, baudrate=115200)
         self.addr_a = rs485_addr_a
         self.addr_b = rs485_addr_b
 
-        # Motion
         self.mm_per_pulse = mm_per_pulse
         self._position_mm = 0.0
         self._target_mm: Optional[float] = None
         self._moving = False
 
-        # Angoli teste
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
 
-        # Cache coils / inputs
-        self._coils_a: List[bool] = [False]*8   # 0 brake, 1 clutch, 2 left_presser, 3 right_presser
-        self._coils_b: List[bool] = [False]*8   # 0 left_blade_inhibit, 1 right_blade_inhibit
+        # Coils device A: 0 brake, 1 clutch, 2 left_presser, 3 right_presser
+        self._coils_a: List[bool] = [False]*8
+        # Coils device B: 0 left_blade_inhibit, 1 right_blade_inhibit
+        self._coils_b: List[bool] = [False]*8
         self._inputs_a: List[bool] = [False]*8
         self._inputs_b: List[bool] = [False]*8
 
-        # Flag
         self.machine_homed = True
         self.emergency_active = False
 
-        # pigpio init
         self.pi = None
         self.pulse_gpio = pulse_gpio
         self.dir_gpio = dir_gpio
@@ -65,7 +53,7 @@ class RealMachine(MachineIO):
                     self.pi.set_mode(self.pulse_gpio, pigpio.OUTPUT)
                     self.pi.set_mode(self.dir_gpio, pigpio.OUTPUT)
                     self.pi.set_mode(self.enable_gpio, pigpio.OUTPUT)
-                    self.pi.write(self.enable_gpio, 1)  # enable drive
+                    self.pi.write(self.enable_gpio, 1)
                 else:
                     self.pi = None
             except Exception:
@@ -76,7 +64,6 @@ class RealMachine(MachineIO):
         self._lock = threading.Lock()
         self._closed = False
 
-    # --- MachineIO ---
     def get_position(self) -> Optional[float]:
         return self._position_mm
 
@@ -85,7 +72,7 @@ class RealMachine(MachineIO):
 
     def get_input(self, name: str) -> bool:
         if name == "blade_pulse":
-            return self._inputs_a[3]  # es: DI3 = impulso taglio (personalizza se diverso)
+            return self._inputs_a[3]
         if name == "start_pressed":
             return self._inputs_a[0]
         if name == "dx_blade_out":
@@ -103,7 +90,7 @@ class RealMachine(MachineIO):
             self.left_head_angle = float(ang_sx)
             self.right_head_angle = float(ang_dx)
             self._moving = True
-            self._write_coil_a(0, False)  # sblocca freno
+            self._write_coil_a(0, False)  # release brake
         return True
 
     def command_lock_brake(self) -> bool:
@@ -131,7 +118,6 @@ class RealMachine(MachineIO):
             self._write_coil_b(1, bool(right))
         return True
 
-    # Simulazioni non applicate in reale
     def command_sim_cut_pulse(self) -> None: pass
     def command_sim_start_pulse(self) -> None: pass
     def command_sim_dx_blade_out(self, on: bool) -> None: pass
@@ -146,11 +132,11 @@ class RealMachine(MachineIO):
             if self._moving and self._target_mm is not None:
                 diff = self._target_mm - self._position_mm
                 direction = 1 if diff >= 0 else -1
-                step_mm = 5.0  # mm per tick grezzo (sostituire con profilo)
+                step_mm = 5.0
                 if abs(diff) <= step_mm:
                     self._position_mm = self._target_mm
                     self._moving = False
-                    self._write_coil_a(0, True)  # auto lock freno
+                    self._write_coil_a(0, True)  # auto-lock brake
                 else:
                     self._position_mm += direction * step_mm
                     if self.pi:
@@ -174,13 +160,11 @@ class RealMachine(MachineIO):
             "moving": self._moving,
             "brake_active": self._coils_a[0],
             "clutch_active": self._coils_a[1],
-            "pressers": {
-                "left": self._coils_a[2],
-                "right": self._coils_a[3]
-            },
-            "head_angles": {"sx": self.left_head_angle, "dx": self.right_head_angle},
+            "left_presser_locked": self._coils_a[2],
+            "right_presser_locked": self._coils_a[3],
             "left_blade_inhibit": self._coils_b[0],
             "right_blade_inhibit": self._coils_b[1],
+            "head_angles": {"sx": self.left_head_angle, "dx": self.right_head_angle},
             "inputs_a": list(self._inputs_a),
             "inputs_b": list(self._inputs_b),
             "emergency_active": self.emergency_active,
@@ -195,7 +179,7 @@ class RealMachine(MachineIO):
             try: self.pi.stop()
             except Exception: pass
 
-    # --- Interni RS485 ---
+    # --- RS485 internals ---
     def _poll_rs485(self):
         try:
             self._coils_a = self._client.read_coils(self.addr_a, 0, 8)
