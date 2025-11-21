@@ -1,28 +1,32 @@
 from __future__ import annotations
-import time
-import threading
-from typing import Dict, Any, Optional, List
+import time, threading
+from typing import Dict, Any, Optional
 from ui_qt.machine.interfaces import MachineIO
-from ui_qt.machine.rs485_modbus import ModbusRTUClient
+from ui_qt.machine.modbus_bus import ModbusBus
+from ui_qt.machine.drive_serial import DriveSerial
 
 try:
     import pigpio
 except Exception:
     pigpio = None
 
-class RealMachine(MachineIO):
+class RealMachineMultiPort(MachineIO):
+    """
+    Variante RealMachine che usa:
+    - RS485 (ModbusBus) per relè/ingressi
+    - RS232 (DriveSerial) per DCS810
+    - GPIO per motion (pulse/dir)
+    """
     def __init__(self,
-                 serial_port: str = "/dev/ttyUSB0",
-                 rs485_addr_a: int = 1,
-                 rs485_addr_b: int = 2,
+                 rs232_port: str = "/dev/ft4232_rs232",
+                 rs485_port: str = "/dev/ft4232_rs485",
                  mm_per_pulse: float = 0.01,
                  pulse_gpio: int = 18,
                  dir_gpio: int = 23,
                  enable_gpio: int = 24,
                  poll_interval_ms: int = 80):
-        self._client = ModbusRTUClient(port=serial_port, baudrate=115200)
-        self.addr_a = rs485_addr_a
-        self.addr_b = rs485_addr_b
+        self.bus = ModbusBus(port=rs485_port)
+        self.drive = DriveSerial(port=rs232_port, line_callback=self._on_drive_line)
 
         self.mm_per_pulse = mm_per_pulse
         self._position_mm = 0.0
@@ -32,15 +36,15 @@ class RealMachine(MachineIO):
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
 
-        # Coils device A: 0 brake, 1 clutch, 2 left_presser, 3 right_presser
-        self._coils_a: List[bool] = [False]*8
-        # Coils device B: 0 left_blade_inhibit, 1 right_blade_inhibit
-        self._coils_b: List[bool] = [False]*8
-        self._inputs_a: List[bool] = [False]*8
-        self._inputs_b: List[bool] = [False]*8
-
         self.machine_homed = True
         self.emergency_active = False
+
+        self._poll_interval = poll_interval_ms / 1000.0
+        self._last_poll = 0.0
+        self._lock = threading.Lock()
+
+        self._drive_buffer = []
+        self._closed = False
 
         self.pi = None
         self.pulse_gpio = pulse_gpio
@@ -59,11 +63,16 @@ class RealMachine(MachineIO):
             except Exception:
                 self.pi = None
 
-        self._poll_interval = poll_interval_ms / 1000.0
-        self._last_poll = 0.0
-        self._lock = threading.Lock()
-        self._closed = False
+    def _on_drive_line(self, line: str):
+        """
+        Callback linee RS232 dal drive: puoi parsare errori, stato, posizione reale (se disponibile).
+        Esempio: 'ALARM:OVERCURRENT', 'POS:123.45'.
+        """
+        self._drive_buffer.append((time.time(), line))
+        if line.startswith("ALARM"):
+            self.emergency_active = True
 
+    # --- MachineIO ---
     def get_position(self) -> Optional[float]:
         return self._position_mm
 
@@ -71,14 +80,13 @@ class RealMachine(MachineIO):
         return self._moving
 
     def get_input(self, name: str) -> bool:
-        if name == "blade_pulse":
-            return self._inputs_a[3]
-        if name == "start_pressed":
-            return self._inputs_a[0]
-        if name == "dx_blade_out":
-            return self._inputs_a[2]
-        if name == "emergency_active":
-            return self._inputs_a[1]
+        # Mappa inputs dal Modbus bus
+        st = self.bus.state
+        # Esempio mapping:
+        if name == "blade_pulse": return st["inputs_a"][3]
+        if name == "start_pressed": return st["inputs_a"][0]
+        if name == "dx_blade_out": return st["inputs_a"][2]
+        if name == "emergency_active": return st["inputs_a"][1] or self.emergency_active
         return False
 
     def command_move(self, length_mm: float, ang_sx: float = 0.0, ang_dx: float = 0.0,
@@ -90,15 +98,15 @@ class RealMachine(MachineIO):
             self.left_head_angle = float(ang_sx)
             self.right_head_angle = float(ang_dx)
             self._moving = True
-            self._write_coil_a(0, False)  # release brake
+            self.bus.write_coil_a(0, False)  # brake release
         return True
 
     def command_lock_brake(self) -> bool:
-        self._write_coil_a(0, True)
+        self.bus.write_coil_a(0, True)
         return True
 
     def command_release_brake(self) -> bool:
-        self._write_coil_a(0, False)
+        self.bus.write_coil_a(0, False)
         return True
 
     def command_set_head_angles(self, sx: float, dx: float) -> bool:
@@ -107,15 +115,13 @@ class RealMachine(MachineIO):
         return True
 
     def command_set_pressers(self, left_locked: bool, right_locked: bool) -> bool:
-        self._write_coil_a(2, bool(left_locked))
-        self._write_coil_a(3, bool(right_locked))
+        self.bus.write_coil_a(2, bool(left_locked))
+        self.bus.write_coil_a(3, bool(right_locked))
         return True
 
     def command_set_blade_inhibit(self, left: Optional[bool]=None, right: Optional[bool]=None) -> bool:
-        if left is not None:
-            self._write_coil_b(0, bool(left))
-        if right is not None:
-            self._write_coil_b(1, bool(right))
+        if left is not None: self.bus.write_coil_b(0, bool(left))
+        if right is not None: self.bus.write_coil_b(1, bool(right))
         return True
 
     def command_sim_cut_pulse(self) -> None: pass
@@ -125,7 +131,7 @@ class RealMachine(MachineIO):
     def tick(self) -> None:
         now = time.time()
         if now - self._last_poll >= self._poll_interval:
-            self._poll_rs485()
+            self.bus.poll()
             self._last_poll = now
 
         with self._lock:
@@ -136,7 +142,7 @@ class RealMachine(MachineIO):
                 if abs(diff) <= step_mm:
                     self._position_mm = self._target_mm
                     self._moving = False
-                    self._write_coil_a(0, True)  # auto-lock brake
+                    self.bus.write_coil_a(0, True)  # auto lock brake
                 else:
                     self._position_mm += direction * step_mm
                     if self.pi:
@@ -146,64 +152,39 @@ class RealMachine(MachineIO):
                             self.pi.write(self.pulse_gpio, 1)
                             self.pi.write(self.pulse_gpio, 0)
 
-        self.emergency_active = self.get_input("emergency_active")
-        if self.emergency_active:
+        # Aggiorna emergency se input dedicato
+        if self.get_input("emergency_active"):
+            self.emergency_active = True
             with self._lock:
                 self._moving = False
                 self._target_mm = self._position_mm
-            self._write_coil_a(0, True)
+            self.bus.write_coil_a(0, True)
 
     def get_state(self) -> Dict[str, Any]:
+        st = self.bus.state
         return {
             "position_mm": self._position_mm,
             "target_mm": self._target_mm,
             "moving": self._moving,
-            "brake_active": self._coils_a[0],
-            "clutch_active": self._coils_a[1],
-            "left_presser_locked": self._coils_a[2],
-            "right_presser_locked": self._coils_a[3],
-            "left_blade_inhibit": self._coils_b[0],
-            "right_blade_inhibit": self._coils_b[1],
+            "brake_active": st["coils_a"][0],
+            "clutch_active": st["coils_a"][1],
+            "left_presser_locked": st["coils_a"][2],
+            "right_presser_locked": st["coils_a"][3],
+            "left_blade_inhibit": st["coils_b"][0],
+            "right_blade_inhibit": st["coils_b"][1],
             "head_angles": {"sx": self.left_head_angle, "dx": self.right_head_angle},
-            "inputs_a": list(self._inputs_a),
-            "inputs_b": list(self._inputs_b),
+            "inputs_a": st["inputs_a"],
+            "inputs_b": st["inputs_b"],
             "emergency_active": self.emergency_active,
-            "homed": self.machine_homed
+            "homed": self.machine_homed,
+            "drive_buffer_tail": self._drive_buffer[-5:]  # ultime 5 linee drive
         }
 
     def close(self) -> None:
-        self._closed = True
-        try: self._client.close()
+        try: self.bus.close()
+        except Exception: pass
+        try: self.drive.close()
         except Exception: pass
         if self.pi:
             try: self.pi.stop()
             except Exception: pass
-
-    # --- RS485 internals ---
-    def _poll_rs485(self):
-        try:
-            self._coils_a = self._client.read_coils(self.addr_a, 0, 8)
-            self._inputs_a = self._client.read_discrete_inputs(self.addr_a, 0, 8)
-        except Exception:
-            pass
-        try:
-            self._coils_b = self._client.read_coils(self.addr_b, 0, 8)
-            self._inputs_b = self._client.read_discrete_inputs(self.addr_b, 0, 8)
-        except Exception:
-            pass
-
-    def _write_coil_a(self, index: int, value: bool):
-        if 0 <= index < 8:
-            try:
-                ok=self._client.write_single_coil(self.addr_a, index, value)
-                if ok: self._coils_a[index] = value
-            except Exception:
-                pass
-
-    def _write_coil_b(self, index: int, value: bool):
-        if 0 <= index < 8:
-            try:
-                ok=self._client.write_single_coil(self.addr_b, index, value)
-                if ok: self._coils_b[index] = value
-            except Exception:
-                pass
