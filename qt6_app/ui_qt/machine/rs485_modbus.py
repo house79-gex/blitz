@@ -1,101 +1,49 @@
-from __future__ import annotations
-import serial
-import struct
-import threading
-from typing import List, Dict, Any
+from ui_qt.machine.rs485_modbus import ModbusRTUClient
+from typing import Dict, Any
 
-def _crc16(data: bytes) -> int:
-    crc = 0xFFFF
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            if crc & 0x0001:
-                crc = (crc >> 1) ^ 0xA001
-            else:
-                crc >>= 1
-    return crc & 0xFFFF
-
-class ModbusRTUClient:
+class ModbusBus:
     """
-    Client leggero Modbus RTU (solo funzioni base 0x01,0x02,0x05,0x0F).
-    Attenzione: non thread-safe per scritture concorrenti → usa lock interno.
+    Wrapper alto livello su ModbusRTUClient per gestione canale RS485.
+    Permette mapping coils/inputs su nome logico.
     """
-    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.05):
-        self._ser = serial.Serial(port=port, baudrate=baudrate, bytesize=8, parity='N', stopbits=1, timeout=timeout)
-        self._lock = threading.Lock()
+    def __init__(self, port: str, addr_relays: int = 1, addr_inputs: int = 2):
+        self.client = ModbusRTUClient(port=port, baudrate=115200)
+        self.addr_relays = addr_relays
+        self.addr_inputs = addr_inputs
+        self.state: Dict[str, Any] = {
+            "coils_a": [False]*8,
+            "inputs_a": [False]*8,
+            "coils_b": [False]*8,
+            "inputs_b": [False]*8,
+            "online": True
+        }
 
-    def _tx_rx(self, pkt: bytes) -> bytes:
-        with self._lock:
-            self._ser.write(pkt)
-            # lettura minimale: leggi almeno header + lunghezza stimata
-            # per semplicità leggi tutto fino a timeout
-            return self._ser.read(256)
+    def poll(self) -> None:
+        try:
+            self.state["coils_a"] = self.client.read_coils(self.addr_relays, 0, 8)
+            self.state["inputs_a"] = self.client.read_discrete_inputs(self.addr_relays, 0, 8)
+        except Exception:
+            self.state["online"] = False
+        try:
+            self.state["coils_b"] = self.client.read_coils(self.addr_inputs, 0, 8)
+            self.state["inputs_b"] = self.client.read_discrete_inputs(self.addr_inputs, 0, 8)
+        except Exception:
+            self.state["online"] = False
 
-    def read_coils(self, addr: int, start: int, count: int) -> List[bool]:
-        fn = 0x01
-        pdu = struct.pack(">B B H H", addr, fn, start, count)
-        crc = _crc16(pdu[0:6])
-        frame = pdu + struct.pack("<H", crc)
-        resp = self._tx_rx(frame)
-        # risposta: addr fn bytecount data... crc
-        if len(resp) < 5 or resp[0] != addr or resp[1] != fn:
-            return [False]*count
-        bytecount = resp[2]
-        bits = []
-        for i in range(count):
-            byte_index = 3 + (i // 8)
-            bit_index = i % 8
-            if byte_index < 3+bytecount:
-                val = (resp[byte_index] >> bit_index) & 0x01
-                bits.append(bool(val))
-            else:
-                bits.append(False)
-        return bits
+    def write_coil_a(self, index: int, value: bool):
+        try:
+            if self.client.write_single_coil(self.addr_relays, index, value):
+                self.state["coils_a"][index] = value
+        except Exception:
+            self.state["online"] = False
 
-    def read_discrete_inputs(self, addr: int, start: int, count: int) -> List[bool]:
-        fn = 0x02
-        pdu = struct.pack(">B B H H", addr, fn, start, count)
-        crc = _crc16(pdu[0:6])
-        frame = pdu + struct.pack("<H", crc)
-        resp = self._tx_rx(frame)
-        if len(resp) < 5 or resp[0] != addr or resp[1] != fn:
-            return [False]*count
-        bytecount = resp[2]
-        bits = []
-        for i in range(count):
-            byte_index = 3 + (i // 8)
-            bit_index = i % 8
-            if byte_index < 3+bytecount:
-                val = (resp[byte_index] >> bit_index) & 0x01
-                bits.append(bool(val))
-            else:
-                bits.append(False)
-        return bits
-
-    def write_single_coil(self, addr: int, coil: int, value: bool) -> bool:
-        fn = 0x05
-        out = 0xFF00 if value else 0x0000
-        pdu = struct.pack(">B B H H", addr, fn, coil, out)
-        crc = _crc16(pdu[0:6])
-        frame = pdu + struct.pack("<H", crc)
-        resp = self._tx_rx(frame)
-        return len(resp) >= 8 and resp[0:6] == pdu[0:6]
-
-    def write_multiple_coils(self, addr: int, start: int, values: List[bool]) -> bool:
-        fn = 0x0F
-        count = len(values)
-        nbytes = (count + 7) // 8
-        data_bytes = bytearray(nbytes)
-        for i, v in enumerate(values):
-            if v:
-                data_bytes[i // 8] |= (1 << (i % 8))
-        header = struct.pack(">B B H H B", addr, fn, start, count, nbytes)
-        pdu = header + bytes(data_bytes)
-        crc = _crc16(pdu)
-        frame = pdu + struct.pack("<H", crc)
-        resp = self._tx_rx(frame)
-        return len(resp) >= 8 and resp[0] == addr and resp[1] == fn
+    def write_coil_b(self, index: int, value: bool):
+        try:
+            if self.client.write_single_coil(self.addr_inputs, index, value):
+                self.state["coils_b"][index] = value
+        except Exception:
+            self.state["online"] = False
 
     def close(self):
-        try: self._ser.close()
+        try: self.client.close()
         except Exception: pass
