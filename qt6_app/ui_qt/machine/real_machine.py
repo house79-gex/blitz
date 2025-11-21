@@ -12,10 +12,10 @@ except Exception:
 
 class RealMachine(MachineIO):
     """
-    Implementazione “base” macchina reale:
-    - RS485 Modbus: due dispositivi (addr_a per freno/frizione/pressori, addr_b per inibizioni).
+    Implementazione base “reale”:
+    - RS485 Modbus: due dispositivi (addr_a: freno/frizione/pressori, addr_b: inibizioni).
     - Pulse/Dir (GPIO) per movimento open-loop stimato.
-    - Homing simulato (sostituire con routine vera: finecorsa / drive).
+    - Homing placeholder con homing_in_progress: porta la posizione a 250 mm.
     """
 
     def __init__(
@@ -29,8 +29,8 @@ class RealMachine(MachineIO):
         enable_gpio: int = 24,
         poll_interval_ms: int = 80
     ):
-        # Range macchina (impostare ai valori reali)
-        self.min_distance = 250.0
+        # Range macchina
+        self.min_distance = 250.0        # zero macchina
         self.max_cut_length = 4000.0
 
         # Modbus
@@ -55,7 +55,8 @@ class RealMachine(MachineIO):
         self._inputs_b: List[bool] = [False]*8
 
         # Flag
-        self.machine_homed = False   # non azzerata all'avvio
+        self.machine_homed = False
+        self.homing_in_progress = False
         self.emergency_active = False
 
         # GPIO pigpio
@@ -107,7 +108,7 @@ class RealMachine(MachineIO):
         profile: str = "",
         element: str = ""
     ) -> bool:
-        if self.emergency_active or not self.machine_homed:
+        if self.emergency_active or not self.machine_homed or self.homing_in_progress:
             return False
         with self._lock:
             self._target_mm = max(self.min_distance, min(float(length_mm), self.max_cut_length))
@@ -153,21 +154,27 @@ class RealMachine(MachineIO):
 
     def do_homing(self, callback: Optional[Callable[..., None]] = None) -> None:
         """
-        Homing 'placeholder':
-        - In reale: qui dovresti muovere verso finecorsa, attendere, azzerare encoder.
-        - Ora: simula ritardo e imposta position a min_distance.
+        Homing placeholder:
+        - setta homing_in_progress True
+        - (qui andrebbe la sequenza reale verso il finecorsa)
+        - posiziona a 250 mm
+        - setta machine_homed True
+        - homing_in_progress False
         """
         import threading, time
         def seq():
             if self.emergency_active:
                 if callback: callback(success=False, msg="EMERGENZA")
                 return
+            self.homing_in_progress = True
+            self._moving = False
             time.sleep(1.0)
             with self._lock:
                 self._position_mm = self.min_distance
                 self._target_mm = self.min_distance
                 self._moving = False
                 self.machine_homed = True
+                self.homing_in_progress = False
                 # Rilascia freno a fine homing
                 self._write_coil_a(0, False)
             if callback: callback(success=True, msg="HOMING OK")
@@ -180,7 +187,7 @@ class RealMachine(MachineIO):
             self._last_poll = now
 
         with self._lock:
-            if self._moving and self._target_mm is not None:
+            if self._moving and self._target_mm is not None and not self.homing_in_progress:
                 diff = self._target_mm - self._position_mm
                 direction = 1 if diff >= 0 else -1
                 step_mm = 5.0  # mm per tick (grezzo)
@@ -221,6 +228,7 @@ class RealMachine(MachineIO):
             "inputs_b": list(self._inputs_b),
             "emergency_active": self.emergency_active,
             "homed": self.machine_homed,
+            "homing_in_progress": self.homing_in_progress,
             "min_distance": self.min_distance,
             "max_cut_length": self.max_cut_length
         }
