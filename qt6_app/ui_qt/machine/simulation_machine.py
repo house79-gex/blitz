@@ -4,23 +4,15 @@ from typing import Dict, Any, Optional
 from ui_qt.machine.interfaces import MachineIO
 
 class SimulationMachine(MachineIO):
-    """
-    Macchina simulata:
-    - Movimento lineare verso target (speed configurabile).
-    - Simulazione freno / pressori / teste / inibizioni lama.
-    - Impulsi monofronto: blade_pulse, start_pressed.
-    """
-
     def __init__(self, speed_mm_s: float = 2500.0):
-        # Posizione
         self.encoder_position: float = 0.0
         self._target: Optional[float] = None
         self._speed_mm_s = speed_mm_s
         self._moving = False
 
-        # Stati logici base
+        # Stati base
         self.brake_active = False
-        self.clutch_active = True  # aggiunto per coerenza con StatusPanel
+        self.clutch_active = True
         self.left_presser_locked = False
         self.right_presser_locked = False
 
@@ -28,15 +20,15 @@ class SimulationMachine(MachineIO):
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
 
-        # Inibizioni lame (nuove chiavi richieste da StatusPanel)
+        # Inibizioni lama
         self.left_blade_inhibit = False
         self.right_blade_inhibit = False
 
         # Flag globali
         self.emergency_active = False
-        self.machine_homed = True   # assumiamo già homed in simulazione
+        self.machine_homed = True
 
-        # Inputs simulati monofronto
+        # Inputs simulati
         self._inputs: Dict[str, bool] = {
             "blade_pulse": False,
             "start_pressed": False,
@@ -45,7 +37,6 @@ class SimulationMachine(MachineIO):
 
         self._last_tick = time.time()
 
-    # --- Interfaccia MachineIO ---
     def get_position(self) -> Optional[float]:
         return self.encoder_position
 
@@ -112,16 +103,15 @@ class SimulationMachine(MachineIO):
             if abs(diff) <= step:
                 self.encoder_position = self._target
                 self._moving = False
-                self.brake_active = True  # auto-lock dopo arrivo
+                self.brake_active = True
             else:
                 self.encoder_position += direction * step
 
-        # Resetta impulsi monofronto
+        # Reset impulsi monofronto
         if self._inputs.get("blade_pulse"):
             self._inputs["blade_pulse"] = False
         if self._inputs.get("start_pressed"):
             self._inputs["start_pressed"] = False
-        # dx_blade_out resta latched finché non chiami command_sim_dx_blade_out(False)
 
     def get_state(self) -> Dict[str, Any]:
         return {
@@ -130,16 +120,14 @@ class SimulationMachine(MachineIO):
             "moving": self._moving,
             "brake_active": self.brake_active,
             "clutch_active": self.clutch_active,
-            "pressers": {
-                "left": self.left_presser_locked,
-                "right": self.right_presser_locked
-            },
+            "left_presser_locked": self.left_presser_locked,
+            "right_presser_locked": self.right_presser_locked,
+            "left_blade_inhibit": self.left_blade_inhibit,
+            "right_blade_inhibit": self.right_blade_inhibit,
             "head_angles": {
                 "sx": self.left_head_angle,
                 "dx": self.right_head_angle
             },
-            "left_blade_inhibit": self.left_blade_inhibit,
-            "right_blade_inhibit": self.right_blade_inhibit,
             "inputs": dict(self._inputs),
             "emergency_active": self.emergency_active,
             "homed": self.machine_homed
