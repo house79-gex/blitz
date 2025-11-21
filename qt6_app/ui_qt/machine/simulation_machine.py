@@ -7,14 +7,14 @@ class SimulationMachine(MachineIO):
     """
     Macchina simulata:
     - Movimento lineare semplice verso un target.
-    - Stati per freno, frizione, pressori, inibizioni lama.
+    - Stati: freno, frizione, pressori, inibizioni lama.
     - Impulsi simulati (blade_pulse, start_pressed, dx_blade_out).
-    - Homing simulato (do_homing): posiziona alla minima dopo un breve ritardo.
+    - Homing simulato con flag homing_in_progress: porta la posizione alla minima (250 mm).
     """
 
     def __init__(self, speed_mm_s: float = 2500.0):
-        # Range macchina (ora esplicito per testa grafica e homing)
-        self.min_distance = 250.0
+        # Range macchina (espliciti)
+        self.min_distance = 250.0       # zero macchina
         self.max_cut_length = 4000.0
 
         # Posizione / movimento
@@ -39,7 +39,8 @@ class SimulationMachine(MachineIO):
 
         # Flag globali
         self.emergency_active = False
-        self.machine_homed = False  # inizialmente NON azzerata per mostrare banner
+        self.machine_homed = False            # all'avvio non è azzerata
+        self.homing_in_progress = False       # nuovo flag
 
         # Inputs simulati monofronto
         self._inputs: Dict[str, bool] = {
@@ -68,7 +69,7 @@ class SimulationMachine(MachineIO):
         profile: str = "",
         element: str = ""
     ) -> bool:
-        if self.emergency_active or not self.machine_homed:
+        if self.emergency_active or not self.machine_homed or self.homing_in_progress:
             return False
         self._target = max(self.min_distance, min(float(length_mm), self.max_cut_length))
         self._moving = True
@@ -113,21 +114,27 @@ class SimulationMachine(MachineIO):
 
     def do_homing(self, callback: Optional[Callable[..., None]] = None) -> None:
         """
-        Simula la sequenza di homing: piccolo ritardo, posizione fissata alla minima,
-        rilascio freno, frizione inserita, flag machine_homed True.
+        Simula l'homing:
+        - setta homing_in_progress True
+        - attende un breve tempo
+        - posiziona alla min_distance (250 mm)
+        - setta machine_homed True
+        - homing_in_progress False
         """
         import threading, time
         def seq():
             if self.emergency_active:
                 if callback: callback(success=False, msg="EMERGENZA")
                 return
+            self.homing_in_progress = True
+            self._moving = False
             time.sleep(0.6)
             self.encoder_position = self.min_distance
             self._target = self.min_distance
-            self._moving = False
             self.brake_active = False
             self.clutch_active = True
             self.machine_homed = True
+            self.homing_in_progress = False
             if callback: callback(success=True, msg="HOMING OK")
         threading.Thread(target=seq, daemon=True).start()
 
@@ -136,7 +143,7 @@ class SimulationMachine(MachineIO):
         dt = max(1e-4, now - self._last_tick)
         self._last_tick = now
 
-        if self._moving and self._target is not None:
+        if self._moving and self._target is not None and not self.homing_in_progress:
             diff = self._target - self.encoder_position
             direction = 1.0 if diff >= 0 else -1.0
             step = self._speed_mm_s * dt
@@ -171,6 +178,7 @@ class SimulationMachine(MachineIO):
             "inputs": dict(self._inputs),
             "emergency_active": self.emergency_active,
             "homed": self.machine_homed,
+            "homing_in_progress": self.homing_in_progress,
             "min_distance": self.min_distance,
             "max_cut_length": self.max_cut_length
         }
