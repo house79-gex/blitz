@@ -5,27 +5,38 @@ from ui_qt.machine.interfaces import MachineIO
 
 class SimulationMachine(MachineIO):
     """
-    Simulazione completa:
+    Macchina simulata:
     - Movimento lineare verso target (speed configurabile).
-    - Generazione impulsi monofronto (cut/start).
-    - Simulazione freno / pressori / angoli.
+    - Simulazione freno / pressori / teste / inibizioni lama.
+    - Impulsi monofronto: blade_pulse, start_pressed.
     """
+
     def __init__(self, speed_mm_s: float = 2500.0):
+        # Posizione
         self.encoder_position: float = 0.0
         self._target: Optional[float] = None
         self._speed_mm_s = speed_mm_s
         self._moving = False
 
-        # Stati logici
+        # Stati logici base
         self.brake_active = False
+        self.clutch_active = True  # aggiunto per coerenza con StatusPanel
         self.left_presser_locked = False
         self.right_presser_locked = False
+
+        # Angoli teste
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
-        self.emergency_active = False
-        self.machine_homed = True   # per test: assumiamo già homed
 
-        # Inputs simulati (monofronto)
+        # Inibizioni lame (nuove chiavi richieste da StatusPanel)
+        self.left_blade_inhibit = False
+        self.right_blade_inhibit = False
+
+        # Flag globali
+        self.emergency_active = False
+        self.machine_homed = True   # assumiamo già homed in simulazione
+
+        # Inputs simulati monofronto
         self._inputs: Dict[str, bool] = {
             "blade_pulse": False,
             "start_pressed": False,
@@ -33,9 +44,8 @@ class SimulationMachine(MachineIO):
         }
 
         self._last_tick = time.time()
-        self._cut_done_flag = False  # per contapezzi se serve
 
-    # --- MachineIO ---
+    # --- Interfaccia MachineIO ---
     def get_position(self) -> Optional[float]:
         return self.encoder_position
 
@@ -51,10 +61,8 @@ class SimulationMachine(MachineIO):
             return False
         self._target = max(0.0, float(length_mm))
         self._moving = True
-        # angoli aggiornati subito
         self.left_head_angle = float(ang_sx)
         self.right_head_angle = float(ang_dx)
-        # sblocca freno automaticamente
         self.brake_active = False
         return True
 
@@ -76,9 +84,15 @@ class SimulationMachine(MachineIO):
         self.right_presser_locked = bool(right_locked)
         return True
 
+    def command_set_blade_inhibit(self, left: Optional[bool] = None, right: Optional[bool] = None) -> bool:
+        if left is not None:
+            self.left_blade_inhibit = bool(left)
+        if right is not None:
+            self.right_blade_inhibit = bool(right)
+        return True
+
     def command_sim_cut_pulse(self) -> None:
         self._inputs["blade_pulse"] = True
-        self._cut_done_flag = True
 
     def command_sim_start_pulse(self) -> None:
         self._inputs["start_pressed"] = True
@@ -91,7 +105,6 @@ class SimulationMachine(MachineIO):
         dt = max(1e-4, now - self._last_tick)
         self._last_tick = now
 
-        # Movimento lineare
         if self._moving and self._target is not None:
             diff = self._target - self.encoder_position
             direction = 1.0 if diff >= 0 else -1.0
@@ -99,8 +112,7 @@ class SimulationMachine(MachineIO):
             if abs(diff) <= step:
                 self.encoder_position = self._target
                 self._moving = False
-                # auto lock brake dopo arrivo
-                self.brake_active = True
+                self.brake_active = True  # auto-lock dopo arrivo
             else:
                 self.encoder_position += direction * step
 
@@ -109,7 +121,7 @@ class SimulationMachine(MachineIO):
             self._inputs["blade_pulse"] = False
         if self._inputs.get("start_pressed"):
             self._inputs["start_pressed"] = False
-        # dx_blade_out lasciata latched finché non rilasciata manualmente
+        # dx_blade_out resta latched finché non chiami command_sim_dx_blade_out(False)
 
     def get_state(self) -> Dict[str, Any]:
         return {
@@ -117,6 +129,7 @@ class SimulationMachine(MachineIO):
             "target_mm": self._target,
             "moving": self._moving,
             "brake_active": self.brake_active,
+            "clutch_active": self.clutch_active,
             "pressers": {
                 "left": self.left_presser_locked,
                 "right": self.right_presser_locked
@@ -125,6 +138,8 @@ class SimulationMachine(MachineIO):
                 "sx": self.left_head_angle,
                 "dx": self.right_head_angle
             },
+            "left_blade_inhibit": self.left_blade_inhibit,
+            "right_blade_inhibit": self.right_blade_inhibit,
             "inputs": dict(self._inputs),
             "emergency_active": self.emergency_active,
             "homed": self.machine_homed
