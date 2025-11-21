@@ -1,11 +1,24 @@
 from __future__ import annotations
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable
 from ui_qt.machine.interfaces import MachineIO
 
 class SimulationMachine(MachineIO):
+    """
+    Macchina simulata:
+    - Movimento lineare semplice verso un target.
+    - Stati per freno, frizione, pressori, inibizioni lama.
+    - Impulsi simulati (blade_pulse, start_pressed, dx_blade_out).
+    - Homing simulato (do_homing): posiziona alla minima dopo un breve ritardo.
+    """
+
     def __init__(self, speed_mm_s: float = 2500.0):
-        self.encoder_position: float = 0.0
+        # Range macchina (ora esplicito per testa grafica e homing)
+        self.min_distance = 250.0
+        self.max_cut_length = 4000.0
+
+        # Posizione / movimento
+        self.encoder_position: float = self.min_distance
         self._target: Optional[float] = None
         self._speed_mm_s = speed_mm_s
         self._moving = False
@@ -20,15 +33,15 @@ class SimulationMachine(MachineIO):
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
 
-        # Inibizioni lama
+        # Inibizioni lame
         self.left_blade_inhibit = False
         self.right_blade_inhibit = False
 
         # Flag globali
         self.emergency_active = False
-        self.machine_homed = True
+        self.machine_homed = False  # inizialmente NON azzerata per mostrare banner
 
-        # Inputs simulati
+        # Inputs simulati monofronto
         self._inputs: Dict[str, bool] = {
             "blade_pulse": False,
             "start_pressed": False,
@@ -37,6 +50,7 @@ class SimulationMachine(MachineIO):
 
         self._last_tick = time.time()
 
+    # --- Interfaccia MachineIO ---
     def get_position(self) -> Optional[float]:
         return self.encoder_position
 
@@ -46,11 +60,17 @@ class SimulationMachine(MachineIO):
     def get_input(self, name: str) -> bool:
         return bool(self._inputs.get(name, False))
 
-    def command_move(self, length_mm: float, ang_sx: float = 0.0, ang_dx: float = 0.0,
-                     profile: str = "", element: str = "") -> bool:
-        if self.emergency_active:
+    def command_move(
+        self,
+        length_mm: float,
+        ang_sx: float = 0.0,
+        ang_dx: float = 0.0,
+        profile: str = "",
+        element: str = ""
+    ) -> bool:
+        if self.emergency_active or not self.machine_homed:
             return False
-        self._target = max(0.0, float(length_mm))
+        self._target = max(self.min_distance, min(float(length_mm), self.max_cut_length))
         self._moving = True
         self.left_head_angle = float(ang_sx)
         self.right_head_angle = float(ang_dx)
@@ -91,6 +111,26 @@ class SimulationMachine(MachineIO):
     def command_sim_dx_blade_out(self, on: bool) -> None:
         self._inputs["dx_blade_out"] = bool(on)
 
+    def do_homing(self, callback: Optional[Callable[..., None]] = None) -> None:
+        """
+        Simula la sequenza di homing: piccolo ritardo, posizione fissata alla minima,
+        rilascio freno, frizione inserita, flag machine_homed True.
+        """
+        import threading, time
+        def seq():
+            if self.emergency_active:
+                if callback: callback(success=False, msg="EMERGENZA")
+                return
+            time.sleep(0.6)
+            self.encoder_position = self.min_distance
+            self._target = self.min_distance
+            self._moving = False
+            self.brake_active = False
+            self.clutch_active = True
+            self.machine_homed = True
+            if callback: callback(success=True, msg="HOMING OK")
+        threading.Thread(target=seq, daemon=True).start()
+
     def tick(self) -> None:
         now = time.time()
         dt = max(1e-4, now - self._last_tick)
@@ -103,7 +143,7 @@ class SimulationMachine(MachineIO):
             if abs(diff) <= step:
                 self.encoder_position = self._target
                 self._moving = False
-                self.brake_active = True
+                self.brake_active = True  # auto-lock
             else:
                 self.encoder_position += direction * step
 
@@ -130,7 +170,9 @@ class SimulationMachine(MachineIO):
             },
             "inputs": dict(self._inputs),
             "emergency_active": self.emergency_active,
-            "homed": self.machine_homed
+            "homed": self.machine_homed,
+            "min_distance": self.min_distance,
+            "max_cut_length": self.max_cut_length
         }
 
     def close(self) -> None:
