@@ -3,6 +3,7 @@ from typing import Optional
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QSizePolicy
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QFontMetrics
+
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 
@@ -36,10 +37,17 @@ BTN_EXTRA_W = 36
 
 
 class ManualePage(QWidget):
+    """
+    Refactor: usa MachineAdapter (self.mio) invece di accedere a attributi raw di machine.
+    La simulazione della quota locale (_sim_mm) è rimossa; se get_position() restituisce None
+    si mostra semplicemente '—'. Un fallback simulativo (se desiderato) può essere gestito
+    direttamente in SimulationMachine.
+    """
     def __init__(self, appwin):
         super().__init__()
         self.appwin = appwin
-        self.machine = appwin.machine
+        self.machine = appwin.machine              # raw machine (per StatusPanel legacy)
+        self.mio = getattr(appwin, "machine_adapter", None)  # adapter unificato
 
         self.status: Optional[StatusPanel] = None
         self.lbl_quota_val: Optional[ QLabel ] = None
@@ -48,8 +56,6 @@ class ManualePage(QWidget):
         self.btn_testa: Optional[ QPushButton ] = None
 
         self._poll: Optional[QTimer] = None
-        self._sim_mm: float = 0.0
-        self._sim_dir: float = +1.0
 
         self._scale: float = 1.0
         self._btn_main_min_w: int = 0   # larghezza fissa FRENO/FRIZIONE (da “Sblocca Freno” + extra)
@@ -73,15 +79,15 @@ class ManualePage(QWidget):
         return False
 
     def _reset_and_home(self):
+        # Con adapter: preferire eventuale metodo di reset futuro
         try:
-            m = self.machine
-            if hasattr(m, "reset") and callable(getattr(m, "reset")):
-                m.reset()
+            if hasattr(self.machine, "reset") and callable(getattr(self.machine, "reset")):
+                self.machine.reset()
             else:
-                setattr(m, "machine_homed", False)
-                setattr(m, "emergency_active", False)
-                setattr(m, "brake_active", False)
-                setattr(m, "clutch_active", True)
+                setattr(self.machine, "machine_homed", False)
+                setattr(self.machine, "emergency_active", False)
+                setattr(self.machine, "brake_active", False)
+                setattr(self.machine, "clutch_active", True)
         except Exception:
             pass
         if self._poll is not None:
@@ -89,8 +95,22 @@ class ManualePage(QWidget):
             except Exception: pass
             self._poll = None
 
-    # ---------------- Lettura/Scrittura stati robusti ----------------
+    # ---------------- Lettura/Scrittura stati robusti (legacy per styling) ----------------
     def _get_flag(self, names: list[str], default=False) -> bool:
+        # Se adapter disponibile, preferire get_state
+        if self.mio:
+            st = self.mio.get_state()
+            # Mappature note:
+            # brake_active, clutch_active presenti come boolean nel raw state
+            for n in names:
+                if n in st:
+                    try: return bool(st[n])
+                    except Exception: pass
+                # pressers nested
+                if n.startswith("brake") and "brake_active" in st:
+                    return bool(st["brake_active"])
+                if n.startswith("clutch") and ("clutch_active" in st or "clutch_on" in st):
+                    return bool(st.get("clutch_active", st.get("clutch_on", default)))
         for n in names:
             if hasattr(self.machine, n):
                 try:
@@ -100,6 +120,7 @@ class ManualePage(QWidget):
         return bool(default)
 
     def _sync_aliases(self, base_name: str, value: bool, aliases: list[str]):
+        # Legacy: lasciato per compatibilità finché altri componenti leggono attributi raw
         for a in aliases:
             if a == base_name:
                 continue
@@ -171,29 +192,18 @@ class ManualePage(QWidget):
         return fm.horizontalAdvance(text)
 
     def _fit_font_px_for_text(self, text: str, base_px: int, avail_w: int) -> int:
-        # Riduci il font finché il testo entra nella larghezza disponibile
         px = base_px
         while px > 10 and self._text_width_for_px(text, px) + BTN_PADDING_X_TOTAL > avail_w:
             px -= 1
         return px
 
     def _compute_button_widths(self):
-        """
-        Larghezza fissa dei 2 pulsanti centrali = larghezza di 'Sblocca Freno' (etichetta più lunga) + extra.
-        TESTA = 1/3 dei principali, ma non meno della sua larghezza testo.
-        """
         base_px = int(BTN_FONT_PX_BASE * self._scale)
-
-        # Fisso su Sblocca Freno
         w_main_text = self._text_width_for_px(BTN_FRENO_OFF, base_px)
         w_main = w_main_text + BTN_PADDING_X_TOTAL + BTN_EXTRA_W
         self._btn_main_min_w = w_main
-
-        # TESTA
         w_testa_text = self._text_width_for_px(BTN_TESTA, base_px) + BTN_PADDING_X_TOTAL
         self._btn_testa_min_w = max(w_main // 3, w_testa_text)
-
-        # Applica larghezze fisse
         if self.btn_freno: self.btn_freno.setFixedWidth(self._btn_main_min_w)
         if self.btn_frizione: self.btn_frizione.setFixedWidth(self._btn_main_min_w)
         if self.btn_testa: self.btn_testa.setFixedWidth(self._btn_testa_min_w)
@@ -212,7 +222,6 @@ class ManualePage(QWidget):
         if self.lbl_quota_val:
             self.lbl_quota_val.setStyleSheet(f"font-family:Consolas; font-weight:900; font-size:{quota_px}px; color:{QUOTA_COLOR};")
 
-        # Aggiorna label “Quota” e “mm”
         try:
             quota_frame = self.lbl_quota_val.parentWidget().parentWidget()
             if quota_frame:
@@ -227,33 +236,30 @@ class ManualePage(QWidget):
         except Exception:
             pass
 
-        # Recalcola larghezze fisse e re-stila
         self._compute_button_widths()
         self._style_buttons_by_state()
 
     def _style_buttons_by_state(self):
-        brake_on = self._get_flag(["brake_active", "brake_on", "freno_bloccato"], default=False)
-        clutch_on = self._get_flag(["clutch_active", "clutch_on", "frizione_inserita"], default=True)
+        brake_on = self._get_flag(["brake_active"], default=False)
+        clutch_on = self._get_flag(["clutch_active"], default=True)
         base_btn_px = int(BTN_FONT_PX_BASE * self._scale)
 
-        # FRENO (centrale sinistra)
         if self.btn_freno:
             txt = BTN_FRENO_OFF if brake_on else BTN_FRENO_ON
             px = self._fit_font_px_for_text(txt, base_btn_px, self._btn_main_min_w)
             self.btn_freno.setText(txt)
             self.btn_freno.setStyleSheet(self._btn_style_3d(GREEN if brake_on else ORANGE, GREEN_DARK if brake_on else ORANGE_DARK, px))
 
-        # FRIZIONE (centrale destra)
         if self.btn_frizione:
             txt = BTN_FRIZ_ON if clutch_on else BTN_FRIZ_OFF
             px = self._fit_font_px_for_text(txt, base_btn_px, self._btn_main_min_w)
             self.btn_frizione.setText(txt)
             self.btn_frizione.setStyleSheet(self._btn_style_3d(GREEN if clutch_on else ORANGE, GREEN_DARK if clutch_on else ORANGE_DARK, px))
 
-        # TESTA (in basso a destra, 1/3 larghezza)
         if self.btn_testa:
             txt = BTN_TESTA
             px = self._fit_font_px_for_text(txt, base_btn_px, self._btn_testa_min_w)
+            # Colore associato allo stato freno (solo per visivo)
             self.btn_testa.setText(txt)
             self.btn_testa.setStyleSheet(self._btn_style_3d(GREEN if brake_on else ORANGE, GREEN_DARK if brake_on else ORANGE_DARK, px))
 
@@ -262,7 +268,6 @@ class ManualePage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8); root.setSpacing(6)
 
-        # Header
         root.addWidget(Header(self.appwin, "MANUALE", mode="default", on_home=self._nav_home, on_reset=self._reset_and_home))
 
         body = QHBoxLayout(); body.setSpacing(8); root.addLayout(body, 1)
@@ -288,7 +293,7 @@ class ManualePage(QWidget):
 
         ll.addWidget(quota_frame, 3, alignment=Qt.AlignCenter)
 
-        # Pulsanti centrali: FRENO + FRIZIONE (centrati, distanziati)
+        # Pulsanti centrali: FRENO + FRIZIONE
         center_btns = QFrame()
         cb_lay = QHBoxLayout(center_btns)
         cb_lay.setContentsMargins(12, 12, 12, 12)
@@ -301,20 +306,19 @@ class ManualePage(QWidget):
         cb_lay.addWidget(self.btn_frizione, 0, Qt.AlignCenter)
         ll.addWidget(center_btns, 0, Qt.AlignCenter)
 
-        # Spacer e TESTA in basso a destra (1/3 larghezza)
+        # TESTA in basso a destra
         ll.addStretch(1)
         bottom_bar = QFrame()
         bb_lay = QHBoxLayout(bottom_bar)
         bb_lay.setContentsMargins(12, 0, 0, 0)
         bb_lay.setSpacing(0)
-        bb_lay.addStretch(1)  # spinge a destra
-
+        bb_lay.addStretch(1)
         self.btn_testa = QPushButton(BTN_TESTA); self.btn_testa.clicked.connect(self._press_testa)
         self.btn_testa.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         bb_lay.addWidget(self.btn_testa, 0, Qt.AlignRight | Qt.AlignBottom)
         ll.addWidget(bottom_bar, 0)
 
-        # Destra: Status + placeholder FQ
+        # Destra: StatusPanel
         right = QFrame(); right.setFixedWidth(PANEL_W + 12); body.addWidget(right, 0)
         rl = QVBoxLayout(right); rl.setContentsMargins(6,6,6,6); rl.setSpacing(8)
 
@@ -331,83 +335,50 @@ class ManualePage(QWidget):
         rl.addWidget(fq_placeholder, 0, alignment=Qt.AlignLeft)
         rl.addStretch(1)
 
-        # Stile iniziale
         self._apply_scaling()
 
-    # ---------------- Button logic ----------------
+    # ---------------- Button logic (refactor con adapter) ----------------
     def _toggle_freno(self):
-        want = not self._get_flag(["brake_active", "brake_on", "freno_bloccato"], default=False)
-        m = self.machine
-        ok = False
-        if hasattr(m, "set_brake") and callable(getattr(m, "set_brake")):
-            try: ok = bool(m.set_brake(want))
-            except Exception: ok = False
-        if not ok and hasattr(m, "toggle_brake") and callable(getattr(m, "toggle_brake")):
-            try:
-                cur = self._get_flag(["brake_active", "brake_on", "freno_bloccato"], default=False)
-                if cur != want: ok = bool(m.toggle_brake())
-            except Exception: ok = False
-        if not ok:
-            for a in ("brake_active", "brake_on", "freno_bloccato"):
-                if hasattr(m, a):
-                    try: setattr(m, a, bool(want))
-                    except Exception: pass
-            ok = True
-        if ok:
-            self._sync_aliases("brake_active", getattr(m, "brake_active", want), ["brake_on", "freno_bloccato"])
-        # aggiornamento immediato
+        brake_on = self._get_flag(["brake_active"], default=False)
+        if self.mio:
+            if brake_on:
+                self.mio.command_release_brake()
+            else:
+                self.mio.command_lock_brake()
+        else:
+            # Fallback legacy
+            try: setattr(self.machine, "brake_active", not brake_on)
+            except Exception: pass
         self._compute_button_widths()
         self._style_buttons_by_state()
         if self.status: self.status.refresh()
 
     def _toggle_frizione(self):
-        cur = self._get_flag(["clutch_active", "clutch_on", "frizione_inserita"], default=True)
-        want = not cur
-        m = self.machine
-        ok = False
-        if hasattr(m, "set_clutch") and callable(getattr(m, "set_clutch")):
-            try: ok = bool(m.set_clutch(want))
-            except Exception: ok = False
-        if not ok and hasattr(m, "toggle_clutch") and callable(getattr(m, "toggle_clutch")):
-            try:
-                if cur != want:
-                    ok = bool(m.toggle_clutch())
-            except Exception: ok = False
-        if not ok:
-            for a in ("clutch_active", "clutch_on", "frizione_inserita"):
-                if hasattr(m, a):
-                    try: setattr(m, a, bool(want))
-                    except Exception: pass
-            ok = True
-
-        new_val = getattr(m, "clutch_active", want)
-        self._sync_aliases("clutch_active", new_val, ["clutch_on", "frizione_inserita"])
-
-        # aggiornamento immediato
+        clutch_on = self._get_flag(["clutch_active"], default=True)
+        # Non esiste comando standard nel MachineIO; potresti aggiungerlo.
+        # Per ora fallback legacy:
+        target = not clutch_on
+        try: setattr(self.machine, "clutch_active", target)
+        except Exception: pass
         self._compute_button_widths()
         self._style_buttons_by_state()
         if self.status: self.status.refresh()
 
     def _press_testa(self):
-        handled = False
-        if hasattr(self.machine, "external_head_button_press") and callable(getattr(self.machine, "external_head_button_press")):
+        # Azione dimostrativa: toggle freno + pressori (mostra come usare adapter)
+        brake_on = self._get_flag(["brake_active"], default=False)
+        if self.mio:
+            if brake_on:
+                self.mio.command_release_brake()
+                self.mio.command_set_pressers(False, False)
+            else:
+                self.mio.command_lock_brake()
+                self.mio.command_set_pressers(True, True)
+        else:
             try:
-                handled = bool(self.machine.external_head_button_press())
-            except Exception:
-                handled = False
-
-        if not handled:
-            brake_on = self._get_flag(["brake_active", "brake_on", "freno_bloccato"], default=False)
-            target_locked = not brake_on
-            try:
-                setattr(self.machine, "brake_active", target_locked)
-                setattr(self.machine, "clutch_active", target_locked)
-                self._sync_aliases("brake_active", target_locked, ["brake_on", "freno_bloccato"])
-                self._sync_aliases("clutch_active", target_locked, ["clutch_on", "frizione_inserita"])
+                setattr(self.machine, "brake_active", not brake_on)
             except Exception:
                 pass
-
-        # aggiornamento immediato
         self._compute_button_widths()
         self._style_buttons_by_state()
         if self.status: self.status.refresh()
@@ -419,33 +390,19 @@ class ManualePage(QWidget):
         except Exception: return "—"
 
     def _update_quota_label(self):
-        for name in ("encoder_position", "position_current"):
-            if hasattr(self.machine, name):
-                try:
-                    val = float(getattr(self.machine, name))
-                    if self.lbl_quota_val:
-                        self.lbl_quota_val.setText(self._fmt_mm(val))
-                    return
-                except Exception:
-                    pass
-        # Simulazione locale
-        brake_on = self._get_flag(["brake_active", "brake_on", "freno_bloccato"], default=False)
-        clutch_on = self._get_flag(["clutch_active", "clutch_on", "frizione_inserita"], default=True)
-        manual_move_ok = (not brake_on) and (not clutch_on)
-        if manual_move_ok:
-            if not (0.0 <= self._sim_mm <= 4000.0):
-                self._sim_mm = max(0.0, min(4000.0, self._sim_mm)); self._sim_dir = -self._sim_dir
-            self._sim_mm += self._sim_dir * 1.5
-            if self._sim_mm >= 4000.0: self._sim_mm = 4000.0; self._sim_dir = -1.0
-            elif self._sim_mm <= 0.0: self._sim_mm = 0.0; self._sim_dir = +1.0
+        pos = None
+        if self.mio:
+            pos = self.mio.get_position()
+        if pos is None:
+            # Nessuna posizione disponibile: mostra placeholder
+            if self.lbl_quota_val:
+                self.lbl_quota_val.setText("—")
+            return
         if self.lbl_quota_val:
-            self.lbl_quota_val.setText(self._fmt_mm(self._sim_mm))
+            self.lbl_quota_val.setText(self._fmt_mm(pos))
 
     # ---------------- Lifecycle ----------------
     def on_show(self):
-        try:
-            if hasattr(self.machine, "set_head_button_input_enabled"): self.machine.set_head_button_input_enabled(True)
-        except Exception: pass
         if self._poll is None:
             self._poll = QTimer(self); self._poll.timeout.connect(self._tick); self._poll.start(200)
         self._apply_scaling()
@@ -453,21 +410,19 @@ class ManualePage(QWidget):
         if self.status: self.status.refresh()
 
     def _tick(self):
+        # Aggiorna quota e stato pulsanti
         self._update_quota_label()
+        self._style_buttons_by_state()
         if self.status: self.status.refresh()
+        # Chiedi al raw machine o adapter di avanzare la simulazione
+        if self.mio:
+            self.mio.tick()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._apply_scaling()
 
     def hideEvent(self, ev):
-        try:
-            if hasattr(self.machine, "set_head_button_input_enabled"): self.machine.set_head_button_input_enabled(False)
-        except Exception: pass
-        try:
-            if hasattr(self.machine, "normalize_after_manual"): self.machine.normalize_after_manual()
-            elif hasattr(self.machine, "clutch_active"): setattr(self.machine, "clutch_active", True)
-        except Exception: pass
         if self._poll is not None:
             try: self._poll.stop()
             except Exception: pass
