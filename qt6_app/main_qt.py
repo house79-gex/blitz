@@ -1,81 +1,40 @@
 """
-Refactor main_qt.py per integrare:
-- MachineAdapter + SimulationMachine (o RealMachine futura)
-- Rimozione DummyMachineState (sostituito da SimulationMachine se non si carica macchina reale)
-- Iniezione adapter accessibile come win.machine_adapter (pagine usano self.mio)
-- Possibilità di avviare in modalità reale (flag env/arg) senza rompere struttura esistente
-- Conserva logging, toast, stack e caricamento dinamico pagine
-
-Note:
-- RealMachine non ancora integrata nel repository corrente -> rimane commentata la sezione.
-- StatusPanel continua a leggere win.machine (raw) per compatibilità.
+MainWindow aggiornato:
+- Usa MachineAdapter + SimulationMachine (o RealMachine con flag --real).
+- Nessun DummyMachine: la simulazione fa homing a 250 mm con homing_in_progress.
+- StatusPanel resta compatibile (legge dal raw). Pagine usano l'adapter.
 """
 
 import sys
 import logging
 import traceback
-import os
 from typing import Optional
 
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QStatusBar, QSizePolicy
-)
+from PySide6.QtWidgets import QApplication, QMainWindow, QStatusBar, QSizePolicy
 from PySide6.QtCore import Qt
 
 # Tema/stili
 try:
     from ui_qt.theme import apply_global_stylesheet
 except Exception:
-    apply_global_stylesheet = lambda app: None  # fallback no-op
+    apply_global_stylesheet = lambda app: None  # no-op
 
-# Stack che non impone minime e wrapper che ignora min-size
+# Stack che non impone minime in alto
 from ui_qt.widgets.min_stack import MinimalStacked
 from ui_qt.widgets.size_ignorer import SizeIgnorer
 
-# Interfaccia macchina + adapter + simulazione
+# Adapter + macchine
 try:
     from ui_qt.machine.machine_adapter import MachineAdapter
     from ui_qt.machine.simulation_machine import SimulationMachine
+    from ui_qt.machine.real_machine import RealMachine
 except Exception:
-    # Fallback stub se i file non sono ancora presenti
-    class SimulationMachine:
-        def __init__(self): pass
-        def get_position(self): return 250.0
-        def is_positioning_active(self): return False
-        def tick(self): pass
-        def get_state(self): return {"brake_active": False, "clutch_active": True}
-        def command_lock_brake(self): return True
-        def command_release_brake(self): return True
-        def command_move(self, length_mm, ang_sx=0.0, ang_dx=0.0, profile="", element=""): return True
-        def command_set_head_angles(self, sx, dx): return True
-        def command_set_pressers(self, l, r): return True
-        def command_sim_cut_pulse(self): pass
-        def command_sim_start_pulse(self): pass
-        def command_sim_dx_blade_out(self, on): pass
-        def get_input(self, name): return False
-        def close(self): pass
-    class MachineAdapter:
-        def __init__(self, raw): self._raw = raw
-        def get_position(self): return self._raw.get_position()
-        def is_positioning_active(self): return self._raw.is_positioning_active()
-        def tick(self): self._raw.tick()
-        def get_state(self): return self._raw.get_state()
-        def command_lock_brake(self): return self._raw.command_lock_brake()
-        def command_release_brake(self): return self._raw.command_release_brake()
-        def command_move(self, *a, **k): return self._raw.command_move(*a, **k)
-        def command_set_head_angles(self, sx, dx): return self._raw.command_set_head_angles(sx, dx)
-        def command_set_pressers(self, l, r): return self._raw.command_set_pressers(l, r)
-        def command_sim_cut_pulse(self): self._raw.command_sim_cut_pulse()
-        def command_sim_start_pulse(self): self._raw.command_sim_start_pulse()
-        def command_sim_dx_blade_out(self, on): self._raw.command_sim_dx_blade_out(on)
-        def get_input(self, name): return self._raw.get_input(name)
-        def close(self): self._raw.close()
+    MachineAdapter = None
+    SimulationMachine = None
+    RealMachine = None
 
 
 def _setup_logging():
-    """
-    Inizializza logging su stderr e file.
-    """
     try:
         from pathlib import Path
         log_dir = Path.home() / "blitz" / "logs"
@@ -120,7 +79,6 @@ def _setup_logging():
     return logger
 
 
-# --- Toast minimale su status bar ---
 class _Toast:
     def __init__(self, win: QMainWindow):
         self._win = win
@@ -135,25 +93,21 @@ class MainWindow(QMainWindow):
     def __init__(self, simulation: bool = True):
         super().__init__()
         self.setWindowTitle("BLITZ 3")
-
         self.setStatusBar(QStatusBar())
         self.toast = _Toast(self)
 
-        # Creazione macchina + adapter
         self.machine, self.machine_adapter = self._make_machine(simulation)
 
-        # Stack
+        # Stack centrale
         self.stack = MinimalStacked(self)
         self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.stack.setMinimumSize(0, 0)
         self.setCentralWidget(self.stack)
         self._pages: dict[str, tuple[object, int, object]] = {}
 
-        # Pagina home obbligatoria
+        # Pagine
         from ui_qt.pages.home_page import HomePage
         self.add_page("home", HomePage(self))
-
-        # Pagine dinamiche (refactorate per usare adapter)
         self._try_add_page("manuale", "ui_qt.pages.manuale_page", "ManualePage")
         self._try_add_page("automatico", "ui_qt.pages.automatico_page", "AutomaticoPage")
         self._try_add_page("semi", "ui_qt.pages.semi_auto_page", "SemiAutoPage")
@@ -171,25 +125,61 @@ class MainWindow(QMainWindow):
         self.nav = _Nav(self)
 
     def _make_machine(self, simulation: bool):
-        """
-        Crea la macchina.
-        - Se simulation=True: SimulationMachine
-        - Futuro: se real mode e RealMachine disponibile, la usa.
-        """
         logger = logging.getLogger("blitz")
-        if not simulation:
+        if not simulation and RealMachine and MachineAdapter:
             try:
-                # Placeholder: integra RealMachine quando pronto
-                from ui_qt.machine.real_machine import RealMachine
                 raw = RealMachine()
                 logger.info("Macchina reale avviata.")
                 return raw, MachineAdapter(raw)
             except Exception as e:
                 logger.warning(f"RealMachine non disponibile, fallback a SimulationMachine: {e}")
-        # Simulation default
-        raw = SimulationMachine()
-        logger.info("Avvio SimulationMachine.")
-        return raw, MachineAdapter(raw)
+
+        if SimulationMachine and MachineAdapter:
+            raw = SimulationMachine()
+            logger.info("Avvio SimulationMachine.")
+            return raw, MachineAdapter(raw)
+
+        # Fallback di emergenza (non dovrebbe servire)
+        class _Fallback:
+            min_distance = 250.0
+            max_cut_length = 4000.0
+            machine_homed = False
+            homing_in_progress = False
+            encoder_position = 250.0
+            def get_position(self): return self.encoder_position
+            def is_positioning_active(self): return False
+            def tick(self): pass
+            def get_state(self): return {"homed": self.machine_homed, "position_mm": self.encoder_position}
+            def close(self): pass
+            def do_homing(self, callback=None):
+                import threading, time
+                def seq():
+                    self.homing_in_progress = True
+                    time.sleep(0.6)
+                    self.encoder_position = self.min_distance
+                    self.machine_homed = True
+                    self.homing_in_progress = False
+                    if callback: callback(success=True, msg="HOMING OK")
+                threading.Thread(target=seq, daemon=True).start()
+        raw = _Fallback()
+        class _Adapter:
+            def __init__(self, r): self._r = r
+            def get_position(self): return self._r.get_position()
+            def is_positioning_active(self): return self._r.is_positioning_active()
+            def tick(self): self._r.tick()
+            def get_state(self): return self._r.get_state()
+            def close(self): self._r.close()
+            def command_move(self, *a, **k): return False
+            def command_lock_brake(self): return True
+            def command_release_brake(self): return True
+            def command_set_head_angles(self, sx, dx): return True
+            def command_set_pressers(self, l, r): return True
+            def command_set_blade_inhibit(self, left=None, right=None): return True
+            def command_sim_cut_pulse(self): pass
+            def command_sim_start_pulse(self): pass
+            def command_sim_dx_blade_out(self, on): pass
+        logger.info("Avvio Fallback machine.")
+        return raw, _Adapter(raw)
 
     def add_page(self, key: str, widget):
         wrapper = SizeIgnorer(widget)
@@ -241,7 +231,6 @@ class MainWindow(QMainWindow):
 
     def reset_current_page(self):
         logger = logging.getLogger("blitz")
-        # Se adapter raw ha reset (non definito in SimulationMachine base)
         raw = self.machine
         if hasattr(raw, "reset") and callable(getattr(raw, "reset")):
             try:
@@ -261,7 +250,7 @@ def main():
     logger = logging.getLogger("blitz")
     logger.info("Avvio BLITZ 3")
 
-    # Legge argomento '--real' per tentare RealMachine
+    # Flag --real per tentare la macchina reale
     simulation = True
     for a in sys.argv[1:]:
         if a.strip().lower() in ("--real", "--hardware", "--hw"):
@@ -277,7 +266,6 @@ def main():
     win.showMaximized()
     rc = app.exec()
     logging.getLogger("blitz").info(f"Chiusura BLITZ 3 (exit code {rc})")
-    # Chiusura macchina/adapter
     try:
         win.machine_adapter.close()
     except Exception:
