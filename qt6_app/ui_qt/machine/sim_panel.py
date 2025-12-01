@@ -27,34 +27,34 @@ class SimulationPanel(QWidget):
         lay.addWidget(btn_move)
 
         btn_cut = QPushButton("Impulso lama (Taglio)")
-        btn_cut.clicked.connect(lambda: self.machine.simulate_cut_pulse())
+        btn_cut.clicked.connect(lambda: self.machine.command_sim_cut_pulse())
         lay.addWidget(btn_cut)
 
         btn_start = QPushButton("Impulso Start")
-        btn_start.clicked.connect(lambda: self.machine.simulate_start_press())
+        btn_start.clicked.connect(lambda: self.machine.command_sim_start_pulse())
         lay.addWidget(btn_start)
 
         br_row = QHBoxLayout()
         btn_lock = QPushButton("Blocca freno")
-        btn_lock.clicked.connect(self.machine.lock_brake)
+        btn_lock.clicked.connect(self.machine.command_lock_brake)
         btn_rel = QPushButton("Rilascia freno")
-        btn_rel.clicked.connect(self.machine.release_brake)
+        btn_rel.clicked.connect(self.machine.command_release_brake)
         br_row.addWidget(btn_lock); br_row.addWidget(btn_rel)
         lay.addLayout(br_row)
 
         pr_row = QHBoxLayout()
         btn_lp = QPushButton("Lock Pressore SX")
-        btn_lp.clicked.connect(lambda: self.machine.set_presser("left", True))
+        btn_lp.clicked.connect(lambda: self.machine.command_set_pressers(True, self.machine.right_presser_locked))
         btn_lr = QPushButton("Unlock Pressore SX")
-        btn_lr.clicked.connect(lambda: self.machine.set_presser("left", False))
+        btn_lr.clicked.connect(lambda: self.machine.command_set_pressers(False, self.machine.right_presser_locked))
         pr_row.addWidget(btn_lp); pr_row.addWidget(btn_lr)
         lay.addLayout(pr_row)
 
         pr_row2 = QHBoxLayout()
         btn_rp = QPushButton("Lock Pressore DX")
-        btn_rp.clicked.connect(lambda: self.machine.set_presser("right", True))
+        btn_rp.clicked.connect(lambda: self.machine.command_set_pressers(self.machine.left_presser_locked, True))
         btn_rr = QPushButton("Unlock Pressore DX")
-        btn_rr.clicked.connect(lambda: self.machine.set_presser("right", False))
+        btn_rr.clicked.connect(lambda: self.machine.command_set_pressers(self.machine.left_presser_locked, False))
         pr_row2.addWidget(btn_rp); pr_row2.addWidget(btn_rr)
         lay.addLayout(pr_row2)
 
@@ -66,8 +66,10 @@ class SimulationPanel(QWidget):
         self.timer.start(120)
 
     def _do_move(self):
-        self.machine.move_to(self.sp_target.value(), ang_sx=90.0, ang_dx=0.0,
-                             profile="SIM", element="Test")
+        if not self.machine.machine_homed:
+            return
+        self.machine.command_move(self.sp_target.value(), ang_sx=90.0, ang_dx=0.0,
+                                  profile="SIM", element="Test")
 
     def _on_tick(self):
         if self.chk_auto_tick.isChecked():

@@ -1,6 +1,10 @@
 import threading, time
-import serial
 from typing import Optional, Callable
+
+try:
+    import serial
+except ImportError:
+    serial = None
 
 class DriveSerial:
     """
@@ -11,13 +15,21 @@ class DriveSerial:
     def __init__(self, port: str, baud: int = 115200, line_callback: Optional[Callable[[str], None]] = None):
         self.port = port
         self.baud = baud
-        self._ser = serial.Serial(port=self.port, baudrate=self.baud, timeout=0.1)
+        self._ser = None
         self._cb = line_callback
-        self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
         self._closed = False
-        self._rx_thread.start()
+        if serial is not None:
+            try:
+                self._ser = serial.Serial(port=self.port, baudrate=self.baud, timeout=0.1)
+            except Exception:
+                self._ser = None
+        if self._ser is not None:
+            self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
+            self._rx_thread.start()
 
     def _rx_loop(self):
+        if self._ser is None:
+            return
         buf = ""
         while not self._closed:
             try:
@@ -39,6 +51,8 @@ class DriveSerial:
         """
         Invia comando al drive. Aggiunge terminatore CRLF se non presente.
         """
+        if self._ser is None:
+            return
         if not cmd.endswith("\r\n"):
             cmd = cmd.rstrip("\r\n") + "\r\n"
         try:
@@ -48,5 +62,6 @@ class DriveSerial:
 
     def close(self):
         self._closed = True
-        try: self._ser.close()
-        except Exception: pass
+        if self._ser is not None:
+            try: self._ser.close()
+            except Exception: pass
