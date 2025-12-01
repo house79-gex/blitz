@@ -1,5 +1,68 @@
-from ui_qt.machine.rs485_modbus import ModbusRTUClient
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
+
+try:
+    from pymodbus.client import ModbusSerialClient
+except ImportError:
+    ModbusSerialClient = None
+
+
+class ModbusRTUClient:
+    """
+    Client Modbus RTU semplificato per comunicazione RS485.
+    """
+    def __init__(self, port: str, baudrate: int = 115200):
+        self.port = port
+        self.baudrate = baudrate
+        self._client = None
+        if ModbusSerialClient:
+            try:
+                self._client = ModbusSerialClient(
+                    port=port,
+                    baudrate=baudrate,
+                    timeout=0.5
+                )
+                self._client.connect()
+            except Exception:
+                self._client = None
+
+    def read_coils(self, address: int, start: int, count: int) -> List[bool]:
+        if self._client is None:
+            return [False] * count
+        try:
+            result = self._client.read_coils(start, count, slave=address)
+            if result.isError():
+                return [False] * count
+            return list(result.bits[:count])
+        except Exception:
+            return [False] * count
+
+    def read_discrete_inputs(self, address: int, start: int, count: int) -> List[bool]:
+        if self._client is None:
+            return [False] * count
+        try:
+            result = self._client.read_discrete_inputs(start, count, slave=address)
+            if result.isError():
+                return [False] * count
+            return list(result.bits[:count])
+        except Exception:
+            return [False] * count
+
+    def write_single_coil(self, address: int, coil: int, value: bool) -> bool:
+        if self._client is None:
+            return False
+        try:
+            result = self._client.write_coil(coil, value, slave=address)
+            return not result.isError()
+        except Exception:
+            return False
+
+    def close(self):
+        if self._client:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+
 
 class ModbusBus:
     """
