@@ -1,2 +1,3 @@
 pandas
 xlsxwriter
+reportlab
