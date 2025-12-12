@@ -6,12 +6,18 @@ from reportlab.lib.units import mm
 import csv
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-CSV_MORSETTI = ROOT / "tabella_morsetti_blitz.csv"
-CSV_MODBUS = ROOT / "mappa_io_modbus_blitz.csv"
-PDF_MORSETTI = ROOT / "pdf_morsetti_blitz.pdf"
-PDF_MODBUS = ROOT / "pdf_mappa_io_modbus_blitz.pdf"
-PDF_LISTA = ROOT / "pdf_lista_componenti_fusibili.pdf"
+# Paths relative to docs/blitz/scripts/
+SCRIPT_DIR = Path(__file__).resolve().parent
+TABLES_DIR = SCRIPT_DIR.parent / "tables"
+OUTPUTS_DIR = SCRIPT_DIR.parent / "outputs"
+
+CSV_MORSETTI = TABLES_DIR / "tabella_morsetti_blitz.csv"
+CSV_MODBUS = TABLES_DIR / "mappa_io_modbus_blitz.csv"
+CSV_DRIVER = TABLES_DIR / "morsetti_driver_dcs810.csv"
+PDF_MORSETTI = OUTPUTS_DIR / "pdf_morsetti_blitz.pdf"
+PDF_MODBUS = OUTPUTS_DIR / "pdf_mappa_io_modbus_blitz.pdf"
+PDF_DRIVER = OUTPUTS_DIR / "pdf_morsetti_driver_dcs810.pdf"
+PDF_LISTA = OUTPUTS_DIR / "pdf_lista_componenti_fusibili.pdf"
 
 styles = getSampleStyleSheet()
 title_style = styles['Title']
@@ -24,8 +30,8 @@ def read_csv(path):
         rows = list(reader)
     return rows
 
-def make_table(data, col_widths=None):
-    tbl = Table(data, colWidths=col_widths)
+def make_table(data, col_widths=None, repeat_rows=1):
+    tbl = Table(data, colWidths=col_widths, repeatRows=repeat_rows)
     style = TableStyle([
         ('GRID', (0,0), (-1,-1), 0.25, colors.black),
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
@@ -46,7 +52,7 @@ def build_pdf_table(title_text, csv_path, pdf_path, col_widths=None):
     story = []
     story.append(Paragraph(title_text, title_style))
     story.append(Spacer(1, 6*mm))
-    story.append(make_table(data, col_widths))
+    story.append(make_table(data, col_widths, repeat_rows=1))
     doc = SimpleDocTemplate(str(pdf_path), pagesize=A4,
                             leftMargin=12*mm, rightMargin=12*mm,
                             topMargin=12*mm, bottomMargin=15*mm)
@@ -112,8 +118,10 @@ def main():
                     col_widths=[20*mm, 20*mm, 45*mm, 20*mm, 55*mm, 20*mm])
     build_pdf_table("Mappa I/O Modbus — Blitz retrofit", CSV_MODBUS, PDF_MODBUS,
                     col_widths=[35*mm, 20*mm, 15*mm, 25*mm, 20*mm, 55*mm, 25*mm, 35*mm])
+    build_pdf_table("Morsetti Driver DCS810", CSV_DRIVER, PDF_DRIVER,
+                    col_widths=[35*mm, 30*mm, 30*mm, 60*mm, 30*mm])
     build_pdf_lista_componenti(PDF_LISTA)
-    print(f"Creati:\n - {PDF_MORSETTI}\n - {PDF_MODBUS}\n - {PDF_LISTA}")
+    print(f"Creati:\n - {PDF_MORSETTI}\n - {PDF_MODBUS}\n - {PDF_DRIVER}\n - {PDF_LISTA}")
 
 if __name__ == "__main__":
     main()
