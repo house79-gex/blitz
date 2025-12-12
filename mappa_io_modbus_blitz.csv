@@ -1,0 +1,35 @@
+Dispositivo,ID Modbus,Tipo,Canale,Direzione,Segnale/Linea,Ramo Fusibile,Note/Interlock
+Modulo IO #1,1,IN,IN1,IN,FC_MIN (NPN NO),F1,Homing/Min
+Modulo IO #1,1,IN,IN2,IN,FC_MAX (Microswitch NA),F1,Limite max
+Modulo IO #1,1,IN,IN3,IN,EMERG Stato (NO),F1,1=OK 0=EMERG
+Modulo IO #1,1,IN,IN4,IN,Riserva,F1,
+Modulo IO #1,1,IN,IN5,IN,Riserva,F1,
+Modulo IO #1,1,IN,IN6,IN,Riserva,F1,
+Modulo IO #1,1,IN,IN7,IN,Riserva,F1,
+Modulo IO #1,1,IN,IN8,IN,Riserva,F1,
+Modulo IO #1,1,OUT,OUT1,OUT,Inclinazione SX 45° (A),F2,Impulso
+Modulo IO #1,1,OUT,OUT2,OUT,Inclinazione SX 0° (B),F2,Impulso
+Modulo IO #1,1,OUT,OUT3,OUT,Inclinazione DX 45° (A),F3,Impulso
+Modulo IO #1,1,OUT,OUT4,OUT,Inclinazione DX 0° (B),F3,Impulso
+Modulo IO #1,1,OUT,OUT5,OUT,Inibizione Lama SX (NC in serie),F2,Serie sul + bobina
+Modulo IO #1,1,OUT,OUT6,OUT,Inibizione Lama DX (NC in serie),F3,Serie sul + bobina
+Modulo IO #1,1,OUT,OUT7,OUT,Riserva,F1,
+Modulo IO #1,1,OUT,OUT8,OUT,Riserva,F1,
+Modulo IO #2,2,IN,IN1,IN,Conteggio pezzi SX (Micro NC),F1,Conteggio su apertura (debounce)
+Modulo IO #2,2,IN,IN2,IN,Conteggio pezzi DX (Micro NC),F1,Conteggio su apertura (debounce)
+Modulo IO #2,2,IN,IN3,IN,Riserva,F1,
+Modulo IO #2,2,IN,IN4,IN,Riserva,F1,
+Modulo IO #2,2,IN,IN5,IN,Riserva,F1,
+Modulo IO #2,2,IN,IN6,IN,Riserva,F1,
+Modulo IO #2,2,IN,IN7,IN,Riserva,F1,
+Modulo IO #2,2,IN,IN8,IN,Riserva,F1,
+Modulo IO #2,2,OUT,OUT1,OUT,Morsa SX CHIUDI (A),F2,Disabilitata in ciclo
+Modulo IO #2,2,OUT,OUT2,OUT,Morsa SX APRI (B) [inibibile HW],F2,Serie NC per inibire SX in “ultra corta”
+Modulo IO #2,2,OUT,OUT3,OUT,Morsa DX CHIUDI (A),F3,Disabilitata in ciclo
+Modulo IO #2,2,OUT,OUT4,OUT,Morsa DX APRI (B),F3,Normalmente consentita in “ultra corta”
+Modulo IO #2,2,OUT,OUT5,OUT,Freno BLOCCO (A),F4,Impulso
+Modulo IO #2,2,OUT,OUT6,OUT,Freno SBLOCCO (B),F4,Impulso
+Modulo IO #2,2,OUT,OUT7,OUT,Frizione ON/OFF,F4,Inserita=trazione
+Modulo IO #2,2,OUT,OUT8,OUT,Riserva,F1,
+Arduino SX,10,REG,HR40001,REG,Angolo Testa SX (centesimi di grado),F5,Modbus RTU
+Arduino DX,11,REG,HR40001,REG,Angolo Testa DX (centesimi di grado),F5,Modbus RTU
