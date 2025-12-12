@@ -1,0 +1,17 @@
+Sezione,Morsetto,Segnale,Descrizione,Note
+Alimentazione,+VDC,+48V,Ingresso alimentazione DC dal TDR-960,Usare cavo potenza; vicini per minimizzare cadute
+Alimentazione,GND,0V,Return alimentazione DC,Collegare a punto stella 0V
+Motore,M+,U+,U+ motore,Terminale motore fase/avvolgimento +,Seguire manuale DCS810 per motore DC/servo
+Motore,M-,U-,U- motore,Terminale motore fase/avvolgimento −,Coppia con M+
+Encoder,5V,5V out,Alimentazione encoder (5V),Verificare assorbimento encoder ELTRA
+Encoder,GND,GND,Ground encoder,Schermo collegato a PE lato driver
+Encoder,EA,A (EA),Canale A encoder,TTL o line-driver (vedi ELTRA)
+Encoder,EB,B (EB),Canale B encoder,TTL o line-driver (vedi ELTRA)
+Encoder,EZ,Z (EZ),Indice Z encoder,TTL o line-driver (se disponibile)
+I/O,ENA+,Enable +,Ingresso consentito/enable positivo,Per abilitazione driver (se usato)
+I/O,ENA-,Enable −,Ingresso consentito/enable negativo,Per abilitazione driver (se usato)
+I/O,ALM+,Alarm +,Uscita allarme +,Collegabile a IN di supervisione
+I/O,ALM-,Alarm −,Uscita allarme −,Collegabile a IN di supervisione
+Comunicazione,TXD,RS232 TX,Trasmissione RS232 verso RPi/Waveshare,Schermato; cavo corto
+Comunicazione,RXD,RS232 RX,Ricezione RS232 da RPi/Waveshare,Schermato; cavo corto
+Comunicazione,GND,RS232 GND,Massa comunicazione RS232,Comune con 0V logico

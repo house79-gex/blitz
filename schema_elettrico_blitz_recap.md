@@ -1,4 +1,4 @@
-# Retrofit Troncatrice CNC BLITZ — Riepilogo completo schema elettrico, logiche, cablaggio e tabella morsetti (Rev. aggiornato)
+# Retrofit Troncatrice CNC BLITZ — Riepilogo completo schema elettrico, logiche, cablaggio e tabelle (Rev. aggiornato)
 
 Dimensionamento pannello: 600 mm (L) x 850 mm (H)
 Layout 3 zone: Zona 1 = Alimentazione + portafusibili; Zona 2 = Logica (RPi + I/O Waveshare); Zona 3 = Driver + Morsettiere
@@ -126,8 +126,34 @@ EMC:
 Vedi file CSV tabella_morsetti_blitz.csv nel repository (mapping completo).
 
 ---
-Allegati
+
+## Encoder ELTRA — caratteristiche e cablaggio
+- Tipologia: Incrementale (serie tipiche E6/E8)
+- Alimentazione: 5V DC (±5%)
+- Uscite: Canali A, B (quadratura); Indice Z opzionale
+- Segnali: TTL single-ended oppure Line Driver (differenziale). Preferibile Line Driver su tratte >1–2 m
+- Risoluzione: da 500 a 1024 PPR (impostare secondo cinematica e requisiti del driver)
+- Cablaggio su DCS810:
+  - 5V → pin alimentazione encoder
+  - GND → ritorno encoder
+  - EA (A), EB (B), EZ (Z) → ingressi encoder del driver
+  - Schermo/calza → PE lato driver (un solo lato)
+- Raccomandazioni EMC: cavo schermato, coppie twistate per A/B; separare da linee 48V e bobine EV
+
+## Morsetti Driver Leadshine DCS810 — piedinatura
+- Alimentazione: +VDC (+48V), GND (0V)
+- Motore: M+ (U+), M− (U−)
+- Encoder: 5V, GND, EA (A), EB (B), EZ (Z)
+- I/O: ENA+/ENA− (enable), ALM+/ALM− (allarme)
+- RS232: TXD/RXD/GND (comunicazione con RPi/Waveshare)
+
+---
+
+## Allegati
 - layout_quadro_blitz_rev5.svg: posizioni guide DIN, canalette 40x40 e linee schematiche.
 - tabella_morsetti_blitz.csv: mappatura morsetti.
 - mappa_io_modbus_blitz.csv: mappatura I/O Modbus.
+- morsetti_driver_dcs810.csv: morsetti driver DCS810.
 - scripts/make_excel_from_csv.py: script per generare Excel con due fogli.
+- scripts/make_pdfs.py: script per generare PDF (incluso morsetti driver).
+- requirements-mapping.txt: dipendenze per Excel/PDF.
