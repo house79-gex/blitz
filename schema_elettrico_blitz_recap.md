@@ -126,8 +126,7 @@ EMC:
 Vedi file CSV tabella_morsetti_blitz.csv nel repository (mapping completo).
 
 ---
-
-## Allegati
+Allegati
 - layout_quadro_blitz_rev5.svg: posizioni guide DIN, canalette 40x40 e linee schematiche.
 - tabella_morsetti_blitz.csv: mappatura morsetti.
 - mappa_io_modbus_blitz.csv: mappatura I/O Modbus.

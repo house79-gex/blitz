@@ -23,9 +23,9 @@ Modulo IO #2,2,IN,IN5,IN,Riserva,F1,
 Modulo IO #2,2,IN,IN6,IN,Riserva,F1,
 Modulo IO #2,2,IN,IN7,IN,Riserva,F1,
 Modulo IO #2,2,IN,IN8,IN,Riserva,F1,
-Modulo IO #2,2,OUT,OUT1,OUT,Morsa SX CHIUDI (A),F2,Disabilitata in ciclo
+Modulo IO #2,2,OUT,OUT1,OUT,Morsa SX CHIUDI (A),F2,Consentita solo in modalità SW autorizzata
 Modulo IO #2,2,OUT,OUT2,OUT,Morsa SX APRI (B) [inibibile HW],F2,Serie NC per inibire SX in “ultra corta”
-Modulo IO #2,2,OUT,OUT3,OUT,Morsa DX CHIUDI (A),F3,Disabilitata in ciclo
+Modulo IO #2,2,OUT,OUT3,OUT,Morsa DX CHIUDI (A),F3,Consentita solo in modalità SW autorizzata
 Modulo IO #2,2,OUT,OUT4,OUT,Morsa DX APRI (B),F3,Normalmente consentita in “ultra corta”
 Modulo IO #2,2,OUT,OUT5,OUT,Freno BLOCCO (A),F4,Impulso
 Modulo IO #2,2,OUT,OUT6,OUT,Freno SBLOCCO (B),F4,Impulso
