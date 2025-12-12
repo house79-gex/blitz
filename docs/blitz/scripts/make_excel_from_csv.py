@@ -47,7 +47,7 @@ def main():
     
     with pd.ExcelWriter(xlsx_out, engine="xlsxwriter") as writer:
         df_morsetti.to_excel(writer, sheet_name="Morsetti", index=False)
-        df_modbus.to_excel(writer, sheet_name="I/O Modbus", index=False)
+        df_modbus.to_excel(writer, sheet_name="IO Modbus", index=False)
         df_lista.to_excel(writer, sheet_name="Lista componenti", index=False)
     
     print(f"Creato: {xlsx_out}")
