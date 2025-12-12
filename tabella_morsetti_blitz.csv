@@ -1,0 +1,40 @@
+Gruppo,Morsetto,Segnale/Linea,Tensione,Da → A,Note
+AC IN,T1,L (fase),230VAC,Ingresso → Sezionatore/MT,In alto SX
+AC IN,T2,N (neutro),230VAC,Ingresso → Sezionatore/MT,
+AC IN,T3,PE (terra),PE,Ingresso → Barra PE,
+DC 48V,T10,+48V,48V,TDR-960 → DCS810,Potenza
+DC 48V,T11,0V,48V,TDR-960 → DCS810,Ritorno
+DC 24V,T20,+24V F1 (I/O),24V,F1 → Moduli I/O,Alimentazione logica campo
+DC 24V,T21,+24V F2 (EV SX),24V,F2 → EV Testa SX,Comune bobine SX
+DC 24V,T22,+24V F3 (EV DX),24V,F3 → EV Testa DX,Comune bobine DX
+DC 24V,T23,+24V F4 (Friz/Freno),24V,F4 → Frizione/Freno,
+DC 24V,T24,0V (comune 24V),0V,Ritorni bobine/sensori → Barra 0V,Punto stella
+DC 12V,T30,+12V AUX,12V,SDR-120 → Campo,Servizi
+DC 12V,T31,0V AUX,0V,Ritorno,
+DC 5V,T40,+5V,5V,MDR-10 → Arduino/ESP32,Servizi
+DC 5V,T41,0V,0V,Ritorno,
+EV Lama SX,T50,Bobina EV LAMA SX (+),24V,Pulsantiera → (serie INIB NC) → EV,Contatto NC su OUT5 Mod#1
+EV Lama SX,T51,Bobina EV LAMA SX (−),0V,EV → 0V,
+EV Lama DX,T52,Bobina EV LAMA DX (+),24V,Pulsantiera → (serie INIB NC) → EV,Contatto NC su OUT6 Mod#1
+EV Lama DX,T53,Bobina EV LAMA DX (−),0V,EV → 0V,
+Inclinaz. SX,T60,0° (bobina B),24V,OUT2 Mod#1 → EV,Impulso
+Inclinaz. SX,T61,45° (bobina A),24V,OUT1 Mod#1 → EV,Impulso
+Inclinaz. DX,T62,0° (bobina B),24V,OUT4 Mod#1 → EV,Impulso
+Inclinaz. DX,T63,45° (bobina A),24V,OUT3 Mod#1 → EV,Impulso
+Morsa SX,T70,CHIUDI (A),24V,OUT1 Mod#2 → EV,Consentita in modalità SW
+Morsa SX,T71,APRI (B) [inibibile HW],24V,OUT2 Mod#2 → (serie INIB NC SX) → EV,Inibizione HW lato SX
+Morsa DX,T72,CHIUDI (A),24V,OUT3 Mod#2 → EV,Consentita in modalità SW
+Morsa DX,T73,APRI (B),24V,OUT4 Mod#2 → EV,Normalmente non inibita
+Freno,T80,BLOCCO (A),24V,OUT5 Mod#2 → EV,Impulso
+Freno,T81,SBLOCCO (B),24V,OUT6 Mod#2 → EV,Impulso
+Frizione,T82,FRIZIONE (ON/OFF),24V,OUT7 Mod#2 → Bobina,Inserita = trazione
+Sensori,T90,FC_MIN,24V,Sensore → IN1 Mod#1,NPN NO
+Sensori,T91,FC_MAX,24V,Sensore → IN2 Mod#1,Microswitch NA
+Sensori,T92,EMERG Stato,24V,Contatto aux → IN3 Mod#1,1=OK 0=EMERG
+Sensori,T93,CNT SX,24V,Micro NC → IN1 Mod#2,Conteggio su apertura (debounce)
+Sensori,T94,CNT DX,24V,Micro NC → IN2 Mod#2,Conteggio su apertura (debounce)
+Bus,T100,RS485 A,RS485,RPi→Mod#1→Mod#2→Ard SX→Ard DX,Terminare ultimo nodo
+Bus,T101,RS485 B,RS485,RPi→Mod#1→Mod#2→Ard SX→Ard DX,
+Driver,T110,RS232 TX/RX/GND,RS232,RPi ↔ DCS810,Cavo schermato
+Encoder motore,T120,A+/A−/B+/B−/V/G,TTL/5V,ELTRA ↔ DCS810,Schermato; calza a PE lato driver
+PE,T200,PE Schermi,PE,Schermi cavi → Barra PE,Un solo lato (quadro)
