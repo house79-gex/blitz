@@ -102,6 +102,9 @@ class EncoderReader:
         Gray code CCW: 00 → 10 → 11 → 01 → 00
         """
         if not self._pi:
+            if self._connected:
+                self.logger.warning("⚠️ Callback ricevuto ma connessione persa")
+                self._connected = False
             return
         
         try:
@@ -169,7 +172,7 @@ class EncoderReader:
             position_mm: Nuova posizione in mm
         """
         old_pos = self._pulse_count * self.mm_per_pulse
-        self._pulse_count = int(position_mm / self.mm_per_pulse)
+        self._pulse_count = round(position_mm / self.mm_per_pulse)
         self.logger.info(f"📍 Posizione encoder: {old_pos:.2f}mm → {position_mm:.2f}mm")
     
     def get_resolution_mm(self) -> float:
