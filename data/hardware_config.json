@@ -1,0 +1,147 @@
+{
+  "version": "1.0",
+  "description": "Configurazione hardware troncatrice CNC BLITZ - Parametri trasmissione, limiti, comunicazioni",
+  "last_updated": "2025-01-15",
+  
+  "transmission": {
+    "description": "Parametri trasmissione meccanica motore-carro",
+    "pulley_diameter_mm": 60.0,
+    "belt_pitch_mm": 5.0,
+    "encoder_ppr": 1000,
+    "encoder_mode": "x4",
+    "mm_per_pulse_calculated": 0.047125,
+    "correction_factor": 1.0,
+    "notes": [
+      "Puleggia: Ø 60mm → circonferenza = π × 60 = 188.5 mm",
+      "Cinghia dentata: passo 5mm",
+      "Encoder ELTRA EH63D: 1000 PPR, uscita NPN, 12V DC",
+      "Modalità x4 (quadratura): 1000 × 4 = 4000 impulsi/giro",
+      "mm_per_pulse = 188.5 / 4000 = 0.047125 mm/impulso",
+      "mm_per_pulse_effective = mm_per_pulse_calculated × correction_factor"
+    ]
+  },
+  
+  "limits": {
+    "description": "Limiti operativi macchina",
+    "min_position_mm": 250.0,
+    "max_position_mm": 4000.0,
+    "max_speed_mm_s": 2500.0,
+    "acceleration_mm_s2": 5000.0,
+    "homing_speed_mm_s": 500.0,
+    "notes": [
+      "min_position_mm: quota minima (finecorsa + sicurezza)",
+      "max_position_mm: corsa massima utile",
+      "Velocità e accelerazione da tarare sul campo"
+    ]
+  },
+  
+  "modbus": {
+    "description": "Configurazione bus RS485 Modbus RTU - I/O campo",
+    "enabled": true,
+    "port": "/dev/ttyUSB0",
+    "baudrate": 115200,
+    "timeout_s": 0.5,
+    "module1_addr": 1,
+    "module2_addr": 2,
+    "arduino_sx_addr": 10,
+    "arduino_dx_addr": 11,
+    "termination_120ohm": true,
+    "module1_map": {
+      "description": "Modulo I/O #1 (ID=1) - Finecorsa, emergenza, inclinazioni, inibizioni",
+      "inputs": {
+        "IN1": "FC_MIN (finecorsa minimo, NPN NO, homing)",
+        "IN2": "FC_MAX (finecorsa massimo, microswitch NA)",
+        "IN3": "EMERGENZA (1=OK, 0=EMERGENZA attiva)"
+      },
+      "outputs": {
+        "OUT1": "Inclinazione SX 45° (impulso EV)",
+        "OUT2": "Inclinazione SX 0° (impulso EV)",
+        "OUT3": "Inclinazione DX 45° (impulso EV)",
+        "OUT4": "Inclinazione DX 0° (impulso EV)",
+        "OUT5": "Inibizione Lama SX (NC in serie su bobina)",
+        "OUT6": "Inibizione Lama DX (NC in serie su bobina)"
+      }
+    },
+    "module2_map": {
+      "description": "Modulo I/O #2 (ID=2) - Contatori, morse, freno, frizione",
+      "inputs": {
+        "IN1": "Conteggio pezzi SX (micro NC, debounce)",
+        "IN2": "Conteggio pezzi DX (micro NC, debounce)"
+      },
+      "outputs": {
+        "OUT1": "Morsa SX CHIUDI (solo modalità SW autorizzata)",
+        "OUT2": "Morsa SX APRI (inibibile via NC hardware)",
+        "OUT3": "Morsa DX CHIUDI (solo modalità SW autorizzata)",
+        "OUT4": "Morsa DX APRI (inibibile via NC hardware)",
+        "OUT5": "Frizione (EV 24V)",
+        "OUT6": "Freno (EV 24V)"
+      }
+    },
+    "notes": [
+      "Terminazione 120Ω sull'ultimo nodo (Arduino DX)",
+      "Cavo schermato per RS485, lunghezza max 100m",
+      "Moduli Waveshare 8IN/8OUT con relè integrati"
+    ]
+  },
+  
+  "rs232": {
+    "description": "Comunicazione seriale con driver motore Leadshine DCS810",
+    "enabled": true,
+    "port": "/dev/ttyUSB1",
+    "baudrate": 115200,
+    "driver_model": "DCS810",
+    "timeout_s": 1.0,
+    "notes": [
+      "Cavo RS232 schermato, lunghezza max 15m",
+      "Comandi: movimento assoluto/relativo, lettura encoder, allarmi",
+      "Protocollo specifico: vedere manuale DCS810"
+    ]
+  },
+  
+  "safety": {
+    "description": "Parametri sicurezza",
+    "emergency_stop_enabled": true,
+    "software_limits_enabled": true,
+    "blade_inhibit_timeout_ms": 100,
+    "hardware_interlock": true,
+    "notes": [
+      "Catena emergenza: hardware indipendente dal software",
+      "Finecorsa: interruzione movimento via software + hardware",
+      "Inibizioni lame: contatti NC in serie sulle bobine EV",
+      "Morse: inibizione hardware selettiva (modalità ultra corto)"
+    ]
+  },
+  
+  "calibration": {
+    "description": "Parametri di calibrazione (da aggiornare dopo taratura)",
+    "encoder_offset_mm": 0.0,
+    "home_position_offset_mm": 0.0,
+    "left_head_zero_calibration": 0.0,
+    "right_head_zero_calibration": 0.0,
+    "notes": [
+      "Questi valori vengono aggiornati dalla procedura di calibrazione",
+      "Eseguire calibrazione encoder dalla pagina Utility",
+      "Calibrazione angoli teste tramite Arduino MT6701"
+    ]
+  },
+  
+  "hardware_info": {
+    "description": "Informazioni componenti hardware installati",
+    "raspberry_pi": "Raspberry Pi 5 (4GB RAM)",
+    "driver_motor": "Leadshine DCS810 (48V, 8A)",
+    "motor": "Servo/DC brushless (specifiche da verificare)",
+    "encoder": "ELTRA EH63D.1B000S12N8X3PA (1000 PPR, NPN, 12V)",
+    "io_modules": "Waveshare RS485 8IN/8OUT (x2)",
+    "arduino_angle": "Arduino Nano + MT6701 (x2 - teste SX/DX)",
+    "power_supply": {
+      "48V": "Mean Well TDR-960-48",
+      "24V": "Mean Well SDR-240-24",
+      "12V": "Mean Well SDR-120-12",
+      "5V": "Mean Well MDR-10-5"
+    },
+    "notes": [
+      "Vedere docs/blitz/tables/ per mapping completo I/O",
+      "Vedere docs/blitz/recap/ per schema elettrico"
+    ]
+  }
+}
