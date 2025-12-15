@@ -1,0 +1,45 @@
+Ecco le caratteristiche tecniche dell'encoder ELTRA EH63D.1B000S12N8X3PA.004:
+Decodifica del codice prodotto
+Analizzando il codice dell'encoder:
+
+EH63D = Serie encoder incrementale con albero pieno, flangia centrata quadrata, diametro 31,75 mm
+1B000 = 1000 impulsi per rivoluzione (PPR)
+S12 = Alimentazione 12V DC
+N = Uscita NPN
+8 = Diametro albero 8 mm
+X3 = Connettore tipo JMSP 1607 F
+PA = Grado di protezione IP54
+.004 = Versione speciale numerata
+
+Caratteristiche principali
+Specifiche meccaniche:
+
+Diametro esterno: 63,5 mm
+Diametro albero: 8 mm (acciaio inox AISI303)
+Tipo flangia: D (flangia centrata quadrata ø31,75 mm)
+Peso: circa 350 g
+Cuscinetti: n°2 cuscinetti a sfere (vita utile 10⁹ rivoluzioni)
+Materiale corpo: Alluminio UNI 5076
+Grado di protezione: IP54 (standard)
+
+Specifiche elettriche (serie EH):
+
+Risoluzione: 1000 PPR
+Tensione di alimentazione: 12V DC (range serie EH: 8-24V DC)
+Corrente assorbita: max 100 mA senza carico
+Tipo uscita: NPN
+Corrente di uscita: 50 mA per canale
+Frequenza massima: 100 kHz
+Impulso di zero: presente
+
+Prestazioni:
+
+Velocità massima: 6000 RPM (3000 RPM con protezione IP66)
+Temperatura di esercizio: 0°C ÷ +60°C
+Temperatura stoccaggio: -25°C ÷ +70°C
+Shock: 50 G per 11 msec (disco plastica), 20 G (disco vetro)
+Vibrazioni: 10G da 10 a 2000 Hz
+
+Connessione:
+
+Connettore tipo JMSP 1607 F
