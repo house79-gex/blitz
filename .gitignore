@@ -40,3 +40,7 @@ Thumbs.db
 data/*.db
 data/*.db-journal
 *.log
+
+# Generated documentation artifacts
+docs/blitz/outputs/*.xlsx
+docs/blitz/outputs/*.pdf

@@ -123,7 +123,32 @@ EMC:
 - Separare 230VAC/potenze da segnali/RS485; diodi flyback su bobine; schermi a PE lato quadro.
 
 6) Tabella morsetti (riassunto)
-Vedi file CSV tabella_morsetti_blitz.csv nel repository (mapping completo).
+Vedi file CSV ../tables/tabella_morsetti_blitz.csv nel repository (mapping completo).
+
+---
+
+## Schema di principio — Inibizione APRI morsa per lato
+
+In modalità operative speciali (es. "ultra corta"), può essere necessario inibire l'apertura di una morsa mentre si consente l'altra. L'inibizione è realizzata via hardware (contatto NC in serie) per garantire sicurezza indipendente dal software.
+
+```
+  +24V (F2/F3)
+      │
+      ├──[Relè inibizione]──NC────[Bobina APRI morsa SX/DX]───GND
+      │           (ID 2)
+      │
+    (Normale: NC chiuso → morsa può aprire)
+    (Inibito: NC aperto  → morsa NON può aprire)
+```
+
+Esempio modalità "ultra corta":
+- Morsa DX: consentita apertura (NC chiuso, relè disattivato)
+- Morsa SX: inibita apertura (NC aperto, relè attivato) → la bobina APRI SX non può essere alimentata
+
+Comando software:
+- Software attiva/disattiva il relè di inibizione secondo la modalità operativa
+- Anche con comando APRI attivo (da pulsantiera o software), la morsa inibita non si apre
+- Garantisce protezione hardware su cicli con pezzo "ultra corto" bloccato su un solo lato
 
 ---
 
@@ -140,6 +165,91 @@ Vedi file CSV tabella_morsetti_blitz.csv nel repository (mapping completo).
   - Schermo/calza → PE lato driver (un solo lato)
 - Raccomandazioni EMC: cavo schermato, coppie twistate per A/B; separare da linee 48V e bobine EV
 
+---
+
+## Mappa indirizzi Modbus dettagliata
+
+### Moduli I/O Waveshare (Modbus RTU, ID 1 e ID 2)
+
+**Ingressi digitali (DI)** e **Coils (Uscite relè)**:
+
+**Modulo #1 (ID 1) — Inclinazioni / Lame / Sicurezze**
+- DI (Discrete Input):
+  - Indirizzo 0: IN1 (FC_MIN)
+  - Indirizzo 1: IN2 (FC_MAX)
+  - Indirizzo 2: IN3 (EMERG Stato)
+  - Indirizzi 3–7: IN4–IN8 (riserva)
+- Coils (Uscite relè):
+  - Indirizzo 0: OUT1 (Testa SX 45°)
+  - Indirizzo 1: OUT2 (Testa SX 0°)
+  - Indirizzo 2: OUT3 (Testa DX 45°)
+  - Indirizzo 3: OUT4 (Testa DX 0°)
+  - Indirizzo 4: OUT5 (INIBIZIONE LAMA SX)
+  - Indirizzo 5: OUT6 (INIBIZIONE LAMA DX)
+  - Indirizzi 6–7: OUT7–OUT8 (riserva)
+
+**Modulo #2 (ID 2) — Morse / Frizione / Freno / Conteggi**
+- DI (Discrete Input):
+  - Indirizzo 0: IN1 (Conteggio pezzi SX)
+  - Indirizzo 1: IN2 (Conteggio pezzi DX)
+  - Indirizzi 2–7: IN3–IN8 (riserva)
+- Coils (Uscite relè):
+  - Indirizzo 0: OUT1 (Morsa SX CHIUDI)
+  - Indirizzo 1: OUT2 (Morsa SX APRI)
+  - Indirizzo 2: OUT3 (Morsa DX CHIUDI)
+  - Indirizzo 3: OUT4 (Morsa DX APRI)
+  - Indirizzo 4: OUT5 (Freno BLOCCO)
+  - Indirizzo 5: OUT6 (Freno SBLOCCO)
+  - Indirizzo 6: OUT7 (Frizione ON/OFF)
+  - Indirizzo 7: OUT8 (riserva)
+
+### Arduino Nano + MT6701 (Modbus RTU, ID 10 e ID 11)
+
+**Holding Registers (HR)** — Angolo encoder magnetico:
+
+**Arduino SX (ID 10)**
+- HR 0: Angolo_raw (0–16383, 14 bit da MT6701)
+- HR 1: Angolo_deg (0–359, gradi interi)
+- HR 2: Status (bit flag: 0=OK, 1=errore SPI, 2=timeout)
+
+**Arduino DX (ID 11)**
+- HR 0: Angolo_raw (0–16383, 14 bit da MT6701)
+- HR 1: Angolo_deg (0–359, gradi interi)
+- HR 2: Status (bit flag: 0=OK, 1=errore SPI, 2=timeout)
+
+**Lettura da RPi**:
+- Funzione 0x01 (Read Coils): leggere stato uscite
+- Funzione 0x02 (Read Discrete Inputs): leggere ingressi digitali
+- Funzione 0x03 (Read Holding Registers): leggere angolo Arduino MT6701
+- Funzione 0x05 (Write Single Coil): attivare/disattivare relè singoli
+- Timeout: 500 ms; retry: 2 volte
+
+---
+
+## Elenco cavi consigliati
+
+Dimensionamento e schermatura per ridurre EMI e garantire affidabilità:
+
+| Applicazione | Sezione | Schermatura | Colori / Note |
+|---|---|---|---|
+| **230VAC** | 1.5–2.5 mm² | NO | Nero (L), Blu (N), Giallo/Verde (PE). Separare da segnali. |
+| **48V DC Driver** | 1.5 mm² | NO | Rosso (+48V), Nero (0V). Tratte corte (<1 m), coppie twistate. |
+| **24V EV/I/O** | 0.5–1 mm² | NO | Rosso (+24V), Blu (0V). Rami F1–F4 su portafusibili DIN. |
+| **24V Sensori (NPN/PNP)** | 0.25–0.5 mm² | SÌ (se >2 m) | Marrone (+24V), Blu (0V), Nero (OUT). Calza a PE quadro. |
+| **RS485 Modbus** | 0.25–0.5 mm² | SÌ | Twistato (A, B), schermo. Calza a PE lato quadro (un solo lato). Terminazione 120Ω ultimo nodo. |
+| **RS232 Driver DCS810** | N/A | SÌ | Cavo schermato 3 fili (TXD, RXD, GND). Lunghezza <5 m. |
+| **Encoder ELTRA** | 0.15–0.25 mm² | SÌ | 5V (Rosso), GND (Nero), A/B/Z (coppie twistate). Calza a PE lato driver. |
+| **PE (Terra protezione)** | 1.5–2.5 mm² | NO | Giallo/Verde. Barra PE quadro; un punto stella. |
+
+**Note EMC**:
+- Separare 230VAC e 48V da segnali/RS485 in canalette distinte (40x40 laterali vs centrali).
+- Diodi flyback su bobine EV/frizione/freno (se non integrati nei moduli Waveshare).
+- Schermi/calze a PE lato quadro (un solo lato) — evitare loop di massa.
+- Cavi di potenza corti e paralleli (andata/ritorno vicini per ridurre loop).
+- RS485: terminazione 120Ω solo ultimo nodo; no stub lunghi.
+
+---
+
 ## Morsetti Driver Leadshine DCS810 — piedinatura
 - Alimentazione: +VDC (+48V), GND (0V)
 - Motore: M+ (U+), M− (U−)
@@ -150,10 +260,10 @@ Vedi file CSV tabella_morsetti_blitz.csv nel repository (mapping completo).
 ---
 
 ## Allegati
-- layout_quadro_blitz_rev5.svg: posizioni guide DIN, canalette 40x40 e linee schematiche.
-- tabella_morsetti_blitz.csv: mappatura morsetti.
-- mappa_io_modbus_blitz.csv: mappatura I/O Modbus.
-- morsetti_driver_dcs810.csv: morsetti driver DCS810.
-- scripts/make_excel_from_csv.py: script per generare Excel con due fogli.
-- scripts/make_pdfs.py: script per generare PDF (incluso morsetti driver).
-- requirements-mapping.txt: dipendenze per Excel/PDF.
+- ../layouts/layout_quadro_blitz_rev5.svg: posizioni guide DIN, canalette 40x40 e linee schematiche.
+- ../tables/tabella_morsetti_blitz.csv: mappatura morsetti.
+- ../tables/mappa_io_modbus_blitz.csv: mappatura I/O Modbus.
+- ../tables/morsetti_driver_dcs810.csv: morsetti driver DCS810.
+- ../scripts/make_excel_from_csv.py: script per generare Excel con tre fogli (Morsetti, I/O Modbus, Lista componenti).
+- ../scripts/make_pdfs.py: script per generare PDF con tabelle multipage (morsetti, Modbus, driver, lista componenti).
+- ../scripts/requirements-mapping.txt: dipendenze per Excel/PDF.
