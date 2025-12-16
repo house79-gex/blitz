@@ -790,15 +790,28 @@ class AutomaticoPage(QWidget):
         self._update_cycle_state_label()
         self._log_state(f"Emit active piece seq={self._seq_pos}")
 
-    def _start_move(self,piece:Dict[str,Any]):
-        self._state=STATE_MOVING
-        thickness=self._get_profile_thickness(piece["profile"])
-        eff=self._effective_position_length(piece["len"],piece["ax"],piece["ad"],thickness)
+       def _start_move(self, piece: Dict[str, Any]):
+        """
+        Avvia movimento per pezzo in modalità automatico.
+        
+        Notifica contesto modalità alla macchina per gestione pressori.
+        """
+        self._state = STATE_MOVING
+        thickness = self._get_profile_thickness(piece["profile"])
+        eff = self._effective_position_length(piece["len"], piece["ax"], piece["ad"], thickness)
+        
         if self.mio:
+            # Notifica contesto: modalità plan + lunghezza pezzo
+            if hasattr(self.mio, "set_mode_context"):
+                # TODO: Ottenere lunghezza barra corrente da config/piano
+                bar_length = 6500.0  # Default, da sostituire con valore reale
+                self.mio. set_mode_context("plan", piece_length_mm=piece["len"], bar_length_mm=bar_length)
+            
             self.mio.command_move(eff, piece["ax"], piece["ad"], profile=piece["profile"], element=piece["element"])
-            self.mio.command_set_pressers(False,False)
+            self. mio.command_set_pressers(False, False)  # Logica interna decide se attivare
         else:
-            self._position_machine_exact(eff,piece["ax"],piece["ad"],piece["profile"],piece["element"])
+            self._position_machine_exact(eff, piece["ax"], piece["ad"], piece["profile"], piece["element"])
+        
         self._update_cycle_state_label()
         self._log_state(f"Start move len_eff={eff:.2f}")
 
@@ -927,33 +940,45 @@ class AutomaticoPage(QWidget):
         self._log_state("Brake unlocked.")
 
     # ---- Manuale posizionamento ----
-    def _trigger_manual_cut(self):
-        self._unlock_brake(False)
-        r=self._current_or_next_piece_row()
-        piece=self._get_row_piece(r) if r is not None else None
+       def _trigger_manual_cut(self):
+        """
+        Avvia taglio manuale.
+        
+        In manuale NON muove il motore:  operatore posiziona a mano,
+        sistema legge posizione da encoder e aspetta taglio (F7).
+        """
+        # NON sbloccare freno/frizione (già fatto in _enter_manual_mode)
+        
+        r = self._current_or_next_piece_row()
+        piece = self._get_row_piece(r) if r is not None else None
+        
         if not piece:
-            dlg=ManualCutDialog(self,preset=None)
-            if not dlg.exec(): return
-            data=dlg.get_data()
-            piece={"profile":data["profile"],"element":data["element"],
-                   "len":data["len"],"ax":data["ax"],"ad":data["ad"],"seq_id":0,"meta":{}}
-        self._manual_current_piece=piece
-        if r is not None: self._apply_active_row(r)
-        self._pending_active_piece={**piece,"mode":"manual"}
-        self._state=STATE_ARMING
-        self._position_piece_manual(piece)
+            dlg = ManualCutDialog(self, preset=None)
+            if not dlg.exec():
+                return
+            data = dlg.get_data()
+            piece = {
+                "profile": data["profile"],
+                "element": data["element"],
+                "len": data["len"],
+                "ax": data["ax"],
+                "ad": data["ad"],
+                "seq_id": 0,
+                "meta": {}
+            }
+        
+        self._manual_current_piece = piece
+        if r is not None:
+            self._apply_active_row(r)
+        
+        self._pending_active_piece = {**piece, "mode": "manual"}
+        self._state = STATE_READY  # ✅ Direttamente READY (no movimento)
+        
+        # Emit active piece subito
+        self._emit_active_piece()
+        
         self._update_cycle_state_label()
-
-    def _position_piece_manual(self,piece:Dict[str,Any]):
-        self._state=STATE_MOVING
-        thickness=self._get_profile_thickness(piece["profile"])
-        eff=self._effective_position_length(piece["len"],piece["ax"],piece["ad"],thickness)
-        if self.mio:
-            self.mio.command_move(eff, piece["ax"], piece["ad"], profile=piece["profile"], element=piece["element"])
-            self.mio.command_set_pressers(False,False)
-        else:
-            self._position_machine_exact(eff,piece["ax"],piece["ad"],piece["profile"],piece["element"])
-        self._update_cycle_state_label()
+        self._toast(f"MANUALE: Posiziona testa DX a {piece['len']:. 2f}mm e premi F7 per taglio", "info")
 
     # ---- Tabella helpers ----
     def _row_is_header(self,row:int)->bool:
