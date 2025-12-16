@@ -172,14 +172,17 @@ class MainWindow(QMainWindow):
             def command_move(self, *a, **k): return False
             def command_lock_brake(self): self._r.brake_active = True; return True
             def command_release_brake(self): self._r.brake_active = False; return True
-                 # ✅ AGGIUNGI QUESTO: 
-            def command_set_clutch(self, active): 
+                # ✅ AGGIUNGI QUESTO: 
+    def command_set_clutch(self, active): 
         try:
             self._r.clutch_active = bool(active)
             return True
         except:
             return False
-        # ✅ AGGIUNGI QUESTO:
+    
+    # ✅ AGGIUNGI QUESTO:
+    def set_mode_context(self, mode, piece_length_mm=0. 0, bar_length_mm=6500.0):
+        pass  # Fallback non gestisce contesto
             def set_mode_context(self, mode, piece_length_mm=0. 0, bar_length_mm=6500.0):
         pass  # Fallback non gestisce contesto
             def command_set_head_angles(self, sx, dx): return True
