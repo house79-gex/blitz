@@ -1,4 +1,5 @@
 from typing import Optional
+import logging
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QSizePolicy
 from PySide6.QtCore import Qt, QTimer
@@ -6,6 +7,9 @@ from PySide6.QtGui import QFont, QFontMetrics
 
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
+
+# Module logger
+logger = logging.getLogger("blitz")
 
 # Dimensioni base (verranno scalate dinamicamente)
 BASE_HEIGHT = 900.0
@@ -358,7 +362,7 @@ class ManualePage(QWidget):
         clutch_on = self._get_flag(["clutch_active"], default=True)
         target = not clutch_on
         
-        if self. mio:
+        if self.mio:
             self.mio.command_set_clutch(target)
         else:
             try:
@@ -369,26 +373,54 @@ class ManualePage(QWidget):
         self._compute_button_widths()
         self._style_buttons_by_state()
         if self.status: 
-            self. status.refresh()
+            self.status.refresh()
             
     def _press_testa(self):
-        # Azione dimostrativa: toggle freno + pressori (mostra come usare adapter)
+        """
+        Toggle TESTA: synchronizes brake + clutch.
+        
+        States:
+        - Locked: Brake ACTIVE + Clutch ACTIVE (head locked, motor engaged)
+        - Released: Brake INACTIVE + Clutch INACTIVE (head free, manual drag)
+        """
         brake_on = self._get_flag(["brake_active"], default=False)
-        if self.mio:
-            if brake_on:
-                self.mio.command_release_brake()
-                self.mio.command_set_pressers(False, False)
-            else:
-                self.mio.command_lock_brake()
-                self.mio.command_set_pressers(True, True)
+        clutch_on = self._get_flag(["clutch_active"], default=False)
+        
+        # Check if synchronized
+        if brake_on != clutch_on:
+            # Mismatched: synchronize to safest state (both locked)
+            logger.info(f"TESTA: States mismatched (brake={brake_on}, clutch={clutch_on}), synchronizing to locked")
+            target_locked = True
         else:
+            # Synchronized: toggle
+            target_locked = not brake_on
+            logger.debug(f"TESTA: Toggling synchronized state to {'locked' if target_locked else 'released'}")
+        
+        if self.mio:
             try:
-                setattr(self.machine, "brake_active", not brake_on)
+                if target_locked:
+                    # Lock both (order: brake first for safety)
+                    self.mio.command_lock_brake()
+                    self.mio.command_set_clutch(True)
+                else:
+                    # Release both (order: clutch first, then brake)
+                    self.mio.command_set_clutch(False)
+                    self.mio.command_release_brake()
+            except Exception as e:
+                # If command fails, log and leave in current state
+                logger.warning(f"TESTA command failed: {e}")
+        else:
+            # Fallback legacy
+            try:
+                setattr(self.machine, "brake_active", target_locked)
+                setattr(self.machine, "clutch_active", target_locked)
             except Exception:
                 pass
+        
         self._compute_button_widths()
         self._style_buttons_by_state()
-        if self.status: self.status.refresh()
+        if self.status:
+            self.status.refresh()
 
     # ---------------- Encoder display ----------------
     @staticmethod
