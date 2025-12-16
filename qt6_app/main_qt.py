@@ -181,7 +181,7 @@ class MainWindow(QMainWindow):
             return False
     
     # ✅ AGGIUNGI QUESTO:
-    def set_mode_context(self, mode, piece_length_mm=0. 0, bar_length_mm=6500.0):
+    def set_mode_context(self, mode, piece_length_mm=0.0, bar_length_mm=6500.0):
         pass  # Fallback non gestisce contesto
             def set_mode_context(self, mode, piece_length_mm=0. 0, bar_length_mm=6500.0):
         pass  # Fallback non gestisce contesto
