@@ -1,57 +1,57 @@
 from __future__ import annotations
 import time
-from typing import Dict, Any, Optional, Callable
+from typing import Optional, Dict, Any, Callable
+
 from ui_qt.machine.interfaces import MachineIO
+
 
 class SimulationMachine(MachineIO):
     """
-    Macchina simulata:
-    - Movimento lineare semplice verso un target.
-    - Stati: freno, frizione, pressori, inibizioni lama.
-    - Impulsi simulati (blade_pulse, start_pressed, dx_blade_out).
-    - Homing simulato con flag homing_in_progress: porta la posizione alla minima (250 mm).
+    Macchina simulata per test senza hardware reale.
     """
 
-    def __init__(self, speed_mm_s: float = 2500.0):
-        # Range macchina (espliciti)
-        self.min_distance = 250.0       # zero macchina
-        self.max_cut_length = 4000.0
+    def __init__(
+        self,
+        min_distance: float = 250.0,
+        max_cut_length: float = 4000.0,
+        speed_mm_s: float = 2000.0
+    ):
+        self.min_distance = min_distance
+        self.max_cut_length = max_cut_length
+        self.speed_mm_s = speed_mm_s
 
-        # Posizione / movimento
-        self.encoder_position: float = self.min_distance
-        self._target: Optional[float] = None
-        self._speed_mm_s = speed_mm_s
+        self. encoder_position = min_distance
+        self._target:  Optional[float] = None
         self._moving = False
 
-        # Stati base
-        self.brake_active = False
-        self.clutch_active = True
-        self.left_presser_locked = False
-        self.right_presser_locked = False
-
-        # Angoli teste
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
 
-        # Inibizioni lame
+        self. brake_active = False
+        self. clutch_active = True
+        self.left_presser_locked = False
+        self.right_presser_locked = False
         self.left_blade_inhibit = False
         self.right_blade_inhibit = False
 
-        # Flag globali
+        self.machine_homed = False
         self.emergency_active = False
-        self.machine_homed = False            # all'avvio non è azzerata
-        self.homing_in_progress = False       # nuovo flag
+        self.homing_in_progress = False
 
-        # Inputs simulati monofronto
-        self._inputs: Dict[str, bool] = {
+        # Tracking modalità per controllo pressori
+        self._software_presser_control_enabled = False
+        self._current_mode = "idle"
+        self._current_piece_length = 0.0
+        self._bar_stock_length = 6500.0
+
+        self._inputs:  Dict[str, bool] = {
             "blade_pulse": False,
-            "start_pressed": False,
+            "start_pressed":  False,
             "dx_blade_out": False
         }
 
         self._last_tick = time.time()
 
-    # --- Interfaccia MachineIO ---
     def get_position(self) -> Optional[float]:
         return self.encoder_position
 
@@ -59,7 +59,7 @@ class SimulationMachine(MachineIO):
         return self._moving
 
     def get_input(self, name: str) -> bool:
-        return bool(self._inputs.get(name, False))
+        return bool(self._inputs. get(name, False))
 
     def command_move(
         self,
@@ -73,7 +73,7 @@ class SimulationMachine(MachineIO):
             return False
         self._target = max(self.min_distance, min(float(length_mm), self.max_cut_length))
         self._moving = True
-        self.left_head_angle = float(ang_sx)
+        self. left_head_angle = float(ang_sx)
         self.right_head_angle = float(ang_dx)
         self.brake_active = False
         return True
@@ -86,18 +86,54 @@ class SimulationMachine(MachineIO):
         self.brake_active = False
         return True
 
-    def command_set_head_angles(self, sx: float, dx: float) -> bool:
+    def command_set_clutch(self, active: bool) -> bool:
+        """Controlla frizione (simulata)."""
+        self.clutch_active = bool(active)
+        return True
+
+    def command_set_head_angles(self, sx:  float, dx: float) -> bool:
         self.left_head_angle = float(sx)
         self.right_head_angle = float(dx)
         return True
 
+    def set_mode_context(self, mode: str, piece_length_mm: float = 0.0, 
+                         bar_length_mm: float = 6500.0):
+        """Imposta contesto modalità (simulata)."""
+        self._current_mode = str(mode)
+        self._current_piece_length = float(piece_length_mm)
+        self._bar_stock_length = float(bar_length_mm)
+        self._update_presser_control_mode()
+
+    def _update_presser_control_mode(self):
+        """Decide se abilitare controllo software pressori (simulata)."""
+        was_enabled = self._software_presser_control_enabled
+        
+        if self._current_mode.startswith("ultra_long"):
+            self._software_presser_control_enabled = True
+        elif self._current_mode == "manual": 
+            self._software_presser_control_enabled = False
+        elif self._current_mode in ("plan", "semi"):
+            is_out_of_quota = self._current_piece_length > self._bar_stock_length
+            is_ultra_short = 0 < self._current_piece_length < 500.0
+            self._software_presser_control_enabled = (is_out_of_quota or is_ultra_short)
+        else:
+            self._software_presser_control_enabled = False
+        
+        if was_enabled != self._software_presser_control_enabled: 
+            mode_str = "SOFTWARE" if self._software_presser_control_enabled else "PULSANTIERA"
+            print(f"🔧 [SIM] Controllo pressori:  {mode_str}")
+
     def command_set_pressers(self, left_locked: bool, right_locked: bool) -> bool:
-        self.left_presser_locked = bool(left_locked)
+        """Comanda pressori solo se controllo software abilitato."""
+        if not self._software_presser_control_enabled: 
+            return False
+        
+        self. left_presser_locked = bool(left_locked)
         self.right_presser_locked = bool(right_locked)
         return True
 
     def command_set_blade_inhibit(self, left: Optional[bool] = None, right: Optional[bool] = None) -> bool:
-        if left is not None:
+        if left is not None: 
             self.left_blade_inhibit = bool(left)
         if right is not None:
             self.right_blade_inhibit = bool(right)
@@ -113,14 +149,6 @@ class SimulationMachine(MachineIO):
         self._inputs["dx_blade_out"] = bool(on)
 
     def do_homing(self, callback: Optional[Callable[..., None]] = None) -> None:
-        """
-        Simula l'homing:
-        - setta homing_in_progress True
-        - attende un breve tempo
-        - posiziona alla min_distance (250 mm)
-        - setta machine_homed True
-        - homing_in_progress False
-        """
         import threading, time
         def seq():
             if self.emergency_active:
@@ -129,10 +157,10 @@ class SimulationMachine(MachineIO):
             self.homing_in_progress = True
             self._moving = False
             time.sleep(0.6)
-            self.encoder_position = self.min_distance
-            self._target = self.min_distance
-            self.brake_active = False
-            self.clutch_active = True
+            self. encoder_position = self.min_distance
+            self._target = self. min_distance
+            self. brake_active = False
+            self. clutch_active = True
             self.machine_homed = True
             self.homing_in_progress = False
             if callback: callback(success=True, msg="HOMING OK")
@@ -140,48 +168,48 @@ class SimulationMachine(MachineIO):
 
     def tick(self) -> None:
         now = time.time()
-        dt = max(1e-4, now - self._last_tick)
+        dt = now - self._last_tick
         self._last_tick = now
 
-        if self._moving and self._target is not None and not self.homing_in_progress:
-            diff = self._target - self.encoder_position
-            direction = 1.0 if diff >= 0 else -1.0
-            step = self._speed_mm_s * dt
-            if abs(diff) <= step:
+        if self._moving and self._target is not None:
+            dist = self._target - self.encoder_position
+            if abs(dist) < 1.0:
                 self.encoder_position = self._target
                 self._moving = False
-                self.brake_active = True  # auto-lock
             else:
-                self.encoder_position += direction * step
+                step = self.speed_mm_s * dt
+                if dist > 0:
+                    self.encoder_position += min(step, dist)
+                else:
+                    self.encoder_position += max(-step, dist)
 
-        # Reset impulsi monofronto
-        if self._inputs.get("blade_pulse"):
-            self._inputs["blade_pulse"] = False
-        if self._inputs.get("start_pressed"):
-            self._inputs["start_pressed"] = False
+        for key in list(self._inputs.keys()):
+            self._inputs[key] = False
 
     def get_state(self) -> Dict[str, Any]:
         return {
-            "position_mm": self.encoder_position,
+            "homed":  self.machine_homed,
+            "position_mm": self. encoder_position,
             "target_mm": self._target,
             "moving": self._moving,
+            "homing_in_progress": self.homing_in_progress,
             "brake_active": self.brake_active,
-            "clutch_active": self.clutch_active,
+            "clutch_active":  self.clutch_active,
             "left_presser_locked": self.left_presser_locked,
             "right_presser_locked": self.right_presser_locked,
             "left_blade_inhibit": self.left_blade_inhibit,
             "right_blade_inhibit": self.right_blade_inhibit,
-            "head_angles": {
-                "sx": self.left_head_angle,
-                "dx": self.right_head_angle
-            },
-            "inputs": dict(self._inputs),
             "emergency_active": self.emergency_active,
-            "homed": self.machine_homed,
-            "homing_in_progress": self.homing_in_progress,
-            "min_distance": self.min_distance,
-            "max_cut_length": self.max_cut_length
+            "left_head_angle": self.left_head_angle,
+            "right_head_angle": self.right_head_angle
         }
 
     def close(self) -> None:
-        pass
+        self._moving = False
+
+    def reset(self):
+        self.machine_homed = False
+        self.homing_in_progress = False
+        self.encoder_position = self.min_distance
+        self. brake_active = False
+        self.emergency_active = False
