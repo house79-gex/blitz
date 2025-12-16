@@ -380,7 +380,7 @@ class ManualePage(QWidget):
         - Released: Brake INACTIVE + Clutch INACTIVE (head free, manual drag)
         """
         brake_on = self._get_flag(["brake_active"], default=False)
-        clutch_on = self._get_flag(["clutch_active"], default=True)
+        clutch_on = self._get_flag(["clutch_active"], default=False)
         
         # Check if synchronized
         if brake_on != clutch_on:
@@ -391,14 +391,19 @@ class ManualePage(QWidget):
             target_locked = not brake_on
         
         if self.mio:
-            if target_locked:
-                # Lock both
-                self.mio.command_lock_brake()
-                self.mio.command_set_clutch(True)
-            else:
-                # Release both
-                self.mio.command_release_brake()
-                self.mio.command_set_clutch(False)
+            try:
+                if target_locked:
+                    # Lock both (order: brake first for safety)
+                    self.mio.command_lock_brake()
+                    self.mio.command_set_clutch(True)
+                else:
+                    # Release both (order: clutch first, then brake)
+                    self.mio.command_set_clutch(False)
+                    self.mio.command_release_brake()
+            except Exception as e:
+                # If command fails, log and leave in current state
+                import logging
+                logging.getLogger("blitz").warning(f"TESTA command failed: {e}")
         else:
             # Fallback legacy
             try:
