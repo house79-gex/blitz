@@ -83,7 +83,7 @@ class EncoderReader:
             elif gpio == self.gpio_b and level_b != self._last_b:
                 self._pulse_count += 1 if level_a == level_b else -1
                 self._last_b = level_b
-        except:
+        except Exception:
             pass
     
     def is_connected(self) -> bool:
@@ -107,7 +107,7 @@ class EncoderReader:
     
     def set_position(self, position_mm: float):
         """Set current position (calibration)."""
-        self._pulse_count = int(position_mm / self.mm_per_pulse)
+        self._pulse_count = round(position_mm / self.mm_per_pulse)
     
     def close(self):
         """Close connection and free resources."""
@@ -115,10 +115,12 @@ class EncoderReader:
             try:
                 if self._cb_a:
                     self._cb_a.cancel()
+                    self._cb_a = None
                 if self._cb_b:
                     self._cb_b.cancel()
+                    self._cb_b = None
                 self._pi.stop()
-            except:
+            except Exception:
                 pass
             finally:
                 self._pi = None
