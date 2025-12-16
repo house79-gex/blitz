@@ -74,32 +74,34 @@ class UltraShortSequence:
     
     Measurement: OUTSIDE mobile blade DX
     """
+    # Required fields (no defaults)
     enabled: bool
     target_length_mm: float
     angle_sx: float
     angle_dx: float
-    
-    # Step 1: Heading with fixed head SX
     heading_position: float  # zero_homing + safety_margin
     heading_angle_sx: float  # Angle for fixed head SX
+    retract_offset: float  # Offset = piece_length + offset_battuta
+    final_position: float  # heading_position - retract_offset
+    final_angle_dx: float  # Angle for mobile head DX
+    
+    # Optional fields with defaults (Step 1: Heading)
     heading_blade_left_enable: bool = True  # ✅ Left blade enabled
     heading_blade_right_inhibit: bool = True  # ❌ Right blade inhibited
     heading_morse_left_lock: bool = True  # ✅ Left morse locked
     heading_morse_right_lock: bool = True  # ✅ Right morse locked
     
-    # Step 2: Retract mobile head DX
-    retract_offset: float  # Offset = piece_length + offset_battuta
+    # Optional fields with defaults (Step 2: Retract)
     retract_morse_left_lock: bool = True  # ✅ Left morse locked
     retract_morse_right_release: bool = True  # ❌ Right morse released
     
-    # Step 3: Final cut with mobile head DX
-    final_position: float  # heading_position - retract_offset
-    final_angle_dx: float  # Angle for mobile head DX
+    # Optional fields with defaults (Step 3: Final)
     final_blade_left_inhibit: bool = True  # ❌ Left blade inhibited
     final_blade_right_enable: bool = True  # ✅ Right blade enabled
     final_morse_left_release: bool = True  # ❌ Left morse released
     final_morse_right_lock: bool = True  # ✅ Right morse locked
     
+    # Optional fields with defaults (Tracking)
     measurement_outside: bool = True  # Measurement OUTSIDE mobile blade DX
     current_step: int = 0  # 0=idle, 1=heading, 2=retract, 3=final, 4=complete
 

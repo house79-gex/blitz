@@ -31,43 +31,38 @@ class UltraLongConfig:
 @dataclass
 class UltraLongSequence:
     """Sequenza step per pezzo ultra-lungo."""
+    # Required fields (no defaults)
     enabled: bool
     target_length_mm: float
-    
-    # === STEP 1: INTESTATURA con TESTA MOBILE DX ===
     pos_head_cut_dx: float              # Posizione testa DX (es.  2000mm)
     angle_head_cut_dx: float            # Angolo intestatura su TESTA DX
+    offset_mm: float                    # Offset arretramento (es. 1000mm)
+    pos_after_retract_dx: float         # Posizione dopo arretramento (es. 1000mm)
+    pos_final_cut_dx: float             # Posizione finale DX (es. 4000mm)
+    angle_final_cut_sx: float           # Angolo finale su TESTA SX
     
-    # Lame Step 1
+    # Optional fields with defaults (Lame Step 1)
     blade_left_inhibit: bool = True     # ❌ Lama SX (FISSA) inibita
     blade_right_enable: bool = True     # ✅ Lama DX (MOBILE) abilitata
     
-    # Pressori Step 1
+    # Optional fields with defaults (Pressori Step 1)
     presser_left_lock: bool = True      # ✅ Pressore SX bloccato
     presser_right_lock: bool = True     # ✅ Pressore DX bloccato (ENTRAMBI!)
     
-    # === STEP 2: ARRETRAMENTO TESTA DX ===
-    offset_mm: float                    # Offset arretramento (es. 1000mm)
-    pos_after_retract_dx: float         # Posizione dopo arretramento (es. 1000mm)
-    
-    # Pressori Step 2 (PRIMA movimento)
+    # Optional fields with defaults (Pressori Step 2)
     presser_left_lock_step2: bool = True    # ✅ SX rimane bloccato
     presser_right_release_step2: bool = True # ❌ DX sbloccato (testa scorre)
     presser_switch_delay_ms: int = 100      # Ritardo sblocco DX
     
-    # === STEP 3: TAGLIO FINALE con TESTA FISSA SX ===
-    pos_final_cut_dx: float             # Posizione finale DX (es. 4000mm)
-    angle_final_cut_sx: float           # Angolo finale su TESTA SX
-    
-    # Lame Step 3
+    # Optional fields with defaults (Lame Step 3)
     blade_left_enable: bool = True      # ✅ Lama SX (FISSA) abilitata
     blade_right_inhibit_step3: bool = True # ❌ Lama DX (MOBILE) inibita
     
-    # Pressori Step 3 (NON simultaneo)
+    # Optional fields with defaults (Pressori Step 3)
     presser_right_lock_step3: bool = True   # ✅ 1.  Blocca DX prima
     presser_left_release_step3: bool = True # ❌ 2. Sblocca SX dopo (con ritardo)
     
-    # Tracking
+    # Optional fields with defaults (Tracking)
     current_step: int = 0
 
 

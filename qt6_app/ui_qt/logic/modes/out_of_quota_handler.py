@@ -57,28 +57,30 @@ class OutOfQuotaSequence:
     - Blades: Left enabled, Right inhibited
     - Morse: Left released, Right locked
     """
+    # Required fields (no defaults)
     enabled: bool
     target_length_mm: float
     angle_sx: float
     angle_dx: float
-    
-    # Step 1: Heading
     heading_position: float  # Position for mobile head DX (= zero_homing_mm)
     heading_angle: float  # Angle for mobile head DX (typically 45°)
+    final_position: float  # Position for fixed head SX (= target + offset_battuta)
+    final_angle_sx: float  # Angle for fixed head SX (user requested)
+    final_angle_dx: float  # Angle for mobile head DX (user requested)
+    
+    # Optional fields with defaults (Step 1: Heading)
     heading_blade_left_inhibit: bool = True  # ❌ Left blade inhibited
     heading_blade_right_enable: bool = True  # ✅ Right blade enabled
     heading_morse_left_lock: bool = True  # ✅ Left morse locked
     heading_morse_right_lock: bool = True  # ✅ Right morse locked
     
-    # Step 2: Final
-    final_position: float  # Position for fixed head SX (= target + offset_battuta)
-    final_angle_sx: float  # Angle for fixed head SX (user requested)
-    final_angle_dx: float  # Angle for mobile head DX (user requested)
+    # Optional fields with defaults (Step 2: Final)
     final_blade_left_enable: bool = True  # ✅ Left blade enabled
     final_blade_right_inhibit: bool = True  # ❌ Right blade inhibited
     final_morse_left_release: bool = True  # ❌ Left morse released
     final_morse_right_lock: bool = True  # ✅ Right morse locked
     
+    # Optional fields with defaults (Tracking)
     current_step: int = 0  # 0=idle, 1=heading, 2=final, 3=complete
 
 
