@@ -353,12 +353,12 @@ class ManualePage(QWidget):
         self._style_buttons_by_state()
         if self.status: self.status.refresh()
 
-       def _toggle_frizione(self):
+    def _toggle_frizione(self):
         """Toggle frizione con supporto adapter."""
         clutch_on = self._get_flag(["clutch_active"], default=True)
         target = not clutch_on
         
-        if self. mio: 
+        if self. mio:
             self.mio.command_set_clutch(target)
         else:
             try:
@@ -369,7 +369,8 @@ class ManualePage(QWidget):
         self._compute_button_widths()
         self._style_buttons_by_state()
         if self.status: 
-            self.status.refresh()
+            self. status.refresh()
+            
     def _press_testa(self):
         # Azione dimostrativa: toggle freno + pressori (mostra come usare adapter)
         brake_on = self._get_flag(["brake_active"], default=False)
