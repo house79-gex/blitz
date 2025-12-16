@@ -162,7 +162,7 @@ class MainWindow(QMainWindow):
 
         raw = _Fallback()
 
-        class _Adapter:
+             class _Adapter:
             def __init__(self, r): self._r = r
             def get_position(self): return self._r.get_position()
             def is_positioning_active(self): return self._r.is_positioning_active()
@@ -172,19 +172,14 @@ class MainWindow(QMainWindow):
             def command_move(self, *a, **k): return False
             def command_lock_brake(self): self._r.brake_active = True; return True
             def command_release_brake(self): self._r.brake_active = False; return True
-                # ✅ AGGIUNGI QUESTO: 
-    def command_set_clutch(self, active): 
-        try:
-            self._r.clutch_active = bool(active)
-            return True
-        except:
-            return False
-    
-    # ✅ AGGIUNGI QUESTO:
-    def set_mode_context(self, mode, piece_length_mm=0.0, bar_length_mm=6500.0):
-        pass  # Fallback non gestisce contesto
+            def command_set_clutch(self, active): 
+                try:
+                    self._r.clutch_active = bool(active)
+                    return True
+                except:
+                    return False
             def set_mode_context(self, mode, piece_length_mm=0.0, bar_length_mm=6500.0):
-        pass  # Fallback non gestisce contesto
+                pass
             def command_set_head_angles(self, sx, dx): return True
             def command_set_pressers(self, l, r): return True
             def command_set_blade_inhibit(self, left=None, right=None): return True
