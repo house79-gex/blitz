@@ -778,17 +778,34 @@ class AutomaticoPage(QWidget):
         self._update_cycle_state_label()
         self._log_state(f"Start move len_eff={eff:.2f}")
 
-    def _try_auto_continue(self):
-        if not self._auto_continue_enabled: return
-        cur=self._seq_plan[self._seq_pos] if 0<=self._seq_pos<len(self._seq_plan) else None
-        nxt=self._next_seq_piece()
-        if not cur or not nxt: return
-        if not self._same_sig(cur,nxt): return
-        same_bar=(cur.get("bar")==nxt.get("bar"))
-        if self._strict_bar_sequence and not same_bar: return
-        if not same_bar and not self._auto_continue_across_bars: return
-        if cur["len"] < self._extshort_safe_mm or nxt["len"] < self._extshort_safe_mm: return
-        self._log_state("Auto-continue triggered.")
+        def _try_auto_continue(self):
+        """
+        Tenta auto-continue se abilitato e condizioni soddisfatte.
+        
+        Fix: Rimosso limite 400mm, corretto skip_move per stessa barra. 
+        """
+        if not self._auto_continue_enabled:
+            return
+        
+        cur = self._seq_plan[self._seq_pos] if 0 <= self._seq_pos < len(self._seq_plan) else None
+        nxt = self._next_seq_piece()
+        
+        if not cur or not nxt:
+            return
+        
+        if not self._same_sig(cur, nxt):
+            return
+        
+        same_bar = (cur.get("bar") == nxt.get("bar"))
+        
+        if self._strict_bar_sequence and not same_bar:
+            return
+        
+        if not same_bar and not self._auto_continue_across_bars:
+            return
+        
+        self._log_state("Auto-continue triggered")
+        
         if same_bar:
             self._advance_to_next_piece(skip_move=True)
         else:
