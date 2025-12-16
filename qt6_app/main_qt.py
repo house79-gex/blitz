@@ -183,7 +183,7 @@ class MainWindow(QMainWindow):
     # ✅ AGGIUNGI QUESTO:
     def set_mode_context(self, mode, piece_length_mm=0.0, bar_length_mm=6500.0):
         pass  # Fallback non gestisce contesto
-            def set_mode_context(self, mode, piece_length_mm=0. 0, bar_length_mm=6500.0):
+            def set_mode_context(self, mode, piece_length_mm=0.0, bar_length_mm=6500.0):
         pass  # Fallback non gestisce contesto
             def command_set_head_angles(self, sx, dx): return True
             def command_set_pressers(self, l, r): return True
