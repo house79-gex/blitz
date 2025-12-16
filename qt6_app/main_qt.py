@@ -160,9 +160,8 @@ class MainWindow(QMainWindow):
                 self.brake_active = False
                 self.emergency_active = False
 
-        raw = _Fallback()
-
-             class _Adapter:
+        raw = _Fallback()       
+        class _Adapter:
             def __init__(self, r): self._r = r
             def get_position(self): return self._r.get_position()
             def is_positioning_active(self): return self._r.is_positioning_active()
