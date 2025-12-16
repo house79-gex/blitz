@@ -455,9 +455,9 @@ class AutomaticoPage(QWidget):
         if DEBUG_LOG: logger.debug(f"[AUTO] {msg}")
 
     # ---- Modalità manuale ----
-       def _enter_manual_mode(self):
+        def _enter_manual_mode(self):
         """
-        Entra in modalità manuale.
+        Entra in modalità manuale. 
         
         In manuale: 
         - Freno e frizione SBLOCCATI
@@ -466,7 +466,7 @@ class AutomaticoPage(QWidget):
         - NO movimento motore
         """
         if self._mode == "plan":
-            self._bars. clear()
+            self._bars.clear()
             self._seq_plan.clear()
             self._seq_pos = -1
             self._cur_sig = None
@@ -476,17 +476,16 @@ class AutomaticoPage(QWidget):
         
         # CRITICO: Sblocca freno E frizione per trascinamento manuale
         if self.mio:
-            self.mio.command_release_brake()
-            self.mio.command_set_clutch(False)  # ✅ Testa DX libera! 
+            self. mio.command_release_brake()
+            self.mio. command_set_clutch(False)
             
-            # Notifica contesto:  modalità manuale
+            # Notifica contesto: modalità manuale
             if hasattr(self.mio, "set_mode_context"):
                 self.mio.set_mode_context("manual")
         
         self._update_counters_ui()
-        self._toast("MANUALE:  Trascina testa DX a mano.  Encoder legge posizione.", "info")
+        self._toast("MANUALE: Trascina testa DX a mano.  Encoder legge posizione.", "info")
         self._update_cycle_state_label()
-
     # ---- Etichette ----
     def _on_label_toggle(self,on:bool):
         self._label_enabled=bool(on)
@@ -940,15 +939,13 @@ class AutomaticoPage(QWidget):
         self._log_state("Brake unlocked.")
 
     # ---- Manuale posizionamento ----
-       def _trigger_manual_cut(self):
+           def _trigger_manual_cut(self):
         """
-        Avvia taglio manuale.
+        Avvia taglio manuale. 
         
         In manuale NON muove il motore:  operatore posiziona a mano,
         sistema legge posizione da encoder e aspetta taglio (F7).
         """
-        # NON sbloccare freno/frizione (già fatto in _enter_manual_mode)
-        
         r = self._current_or_next_piece_row()
         piece = self._get_row_piece(r) if r is not None else None
         
@@ -972,9 +969,8 @@ class AutomaticoPage(QWidget):
             self._apply_active_row(r)
         
         self._pending_active_piece = {**piece, "mode": "manual"}
-        self._state = STATE_READY  # ✅ Direttamente READY (no movimento)
+        self._state = STATE_READY
         
-        # Emit active piece subito
         self._emit_active_piece()
         
         self._update_cycle_state_label()
