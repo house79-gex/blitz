@@ -161,7 +161,7 @@ class PulseGenerator:
                     break
                 
                 self._pi.write(self.gpio_pul, 1)
-                time.sleep(pulse_width_us / 1000000. 0)
+                time.sleep(pulse_width_us / 1000000.0)
                 self._pi. write(self.gpio_pul, 0)
                 time.sleep((period_us - pulse_width_us) / 1000000.0)
             

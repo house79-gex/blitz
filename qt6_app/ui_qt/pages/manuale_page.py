@@ -110,7 +110,7 @@ class ManualePage(QWidget):
                 if n in st:
                     try: return bool(st[n])
                     except Exception: pass
-                # pressers nested
+                # morse nested
                 if n.startswith("brake") and "brake_active" in st:
                     return bool(st["brake_active"])
                 if n.startswith("clutch") and ("clutch_active" in st or "clutch_on" in st):
