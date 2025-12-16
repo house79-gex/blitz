@@ -42,18 +42,18 @@ class UltraLongSequence:
     blade_left_inhibit: bool = True     # ❌ Lama SX (FISSA) inibita
     blade_right_enable: bool = True     # ✅ Lama DX (MOBILE) abilitata
     
-    # Pressori Step 1
-    presser_left_lock: bool = True      # ✅ Pressore SX bloccato
-    presser_right_lock: bool = True     # ✅ Pressore DX bloccato (ENTRAMBI!)
+    # Morse Step 1
+    morse_left_lock: bool = True      # ✅ Morsa SX bloccata
+    morse_right_lock: bool = True     # ✅ Morsa DX bloccata (ENTRAMBI!)
     
     # === STEP 2: ARRETRAMENTO TESTA DX ===
     offset_mm: float                    # Offset arretramento (es. 1000mm)
     pos_after_retract_dx: float         # Posizione dopo arretramento (es. 1000mm)
     
-    # Pressori Step 2 (PRIMA movimento)
-    presser_left_lock_step2: bool = True    # ✅ SX rimane bloccato
-    presser_right_release_step2: bool = True # ❌ DX sbloccato (testa scorre)
-    presser_switch_delay_ms: int = 100      # Ritardo sblocco DX
+    # Morse Step 2 (PRIMA movimento)
+    morse_left_lock_step2: bool = True    # ✅ SX rimane bloccato
+    morse_right_release_step2: bool = True # ❌ DX sbloccato (testa scorre)
+    morse_switch_delay_ms: int = 100      # Ritardo sblocco DX
     
     # === STEP 3: TAGLIO FINALE con TESTA FISSA SX ===
     pos_final_cut_dx: float             # Posizione finale DX (es. 4000mm)
@@ -63,9 +63,9 @@ class UltraLongSequence:
     blade_left_enable: bool = True      # ✅ Lama SX (FISSA) abilitata
     blade_right_inhibit_step3: bool = True # ❌ Lama DX (MOBILE) inibita
     
-    # Pressori Step 3 (NON simultaneo)
-    presser_right_lock_step3: bool = True   # ✅ 1.  Blocca DX prima
-    presser_left_release_step3: bool = True # ❌ 2. Sblocca SX dopo (con ritardo)
+    # Morse Step 3 (NON simultaneo)
+    morse_right_lock_step3: bool = True   # ✅ 1.  Blocca DX prima
+    morse_left_release_step3: bool = True # ❌ 2. Sblocca SX dopo (con ritardo)
     
     # Tracking
     current_step: int = 0

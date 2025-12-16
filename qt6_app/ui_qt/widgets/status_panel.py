@@ -27,7 +27,7 @@ class StatusPanel(QWidget):
     - FRENO
     - FRIZIONE
     - TESTA SX/DX (inibizione lama)
-    - PRESSORE SX/DX (left_presser_locked / right_presser_locked)
+    - MORSA SX/DX (left_morse_locked / right_morse_locked)
     Supporta sia oggetto 'raw' con attributi legacy sia adapter con get_state().
     """
     def __init__(self, machine_state: Any, title="STATO", parent=None):
@@ -67,8 +67,8 @@ class StatusPanel(QWidget):
         self.w_clutch = _pill("-", MUTED)
         self.w_head_sx = _pill("-", MUTED)
         self.w_head_dx = _pill("-", MUTED)
-        self.w_press_sx = _pill("-", MUTED)
-        self.w_press_dx = _pill("-", MUTED)
+        self.w_morse_sx = _pill("-", MUTED)
+        self.w_morse_dx = _pill("-", MUTED)
 
         add_row(0, "EMG", self.w_emg)
         add_row(1, "HOMED", self.w_homed)
@@ -76,8 +76,8 @@ class StatusPanel(QWidget):
         add_row(3, "FRIZIONE", self.w_clutch)
         add_row(4, "TESTA SX", self.w_head_sx)
         add_row(5, "TESTA DX", self.w_head_dx)
-        add_row(6, "PRESS. SX", self.w_press_sx)
-        add_row(7, "PRESS. DX", self.w_press_dx)
+        add_row(6, "Morsa SX", self.w_morse_sx)
+        add_row(7, "Morsa DX", self.w_morse_dx)
 
         root.addStretch(1)
 
@@ -117,13 +117,13 @@ class StatusPanel(QWidget):
             clutch = self._state_bool(state, "clutch_active", default=True)
             inh_sx = self._state_bool(state, "left_blade_inhibit")
             inh_dx = self._state_bool(state, "right_blade_inhibit")
-            # Pressori possono essere sia diretti sia dentro 'pressers'
-            press_sx = self._state_bool(state, "left_presser_locked")
-            press_dx = self._state_bool(state, "right_presser_locked")
-            if not press_sx and "pressers" in state and isinstance(state["pressers"], dict):
-                press_sx = bool(state["pressers"].get("left", False))
-            if not press_dx and "pressers" in state and isinstance(state["pressers"], dict):
-                press_dx = bool(state["pressers"].get("right", False))
+            # Morse possono essere sia diretti sia dentro 'morse'
+            morse_sx = self._state_bool(state, "left_morse_locked")
+            morse_dx = self._state_bool(state, "right_morse_locked")
+            if not morse_sx and "morse" in state and isinstance(state["morse"], dict):
+                morse_sx = bool(state["morse"].get("left", False))
+            if not morse_dx and "morse" in state and isinstance(state["morse"], dict):
+                morse_dx = bool(state["morse"].get("right", False))
         else:
             emg    = self._legacy_attr("emergency_active", "emg_active", "is_emg", "in_emergency")
             homed  = self._legacy_attr("machine_homed", "homed", "is_homed", "home_done", "azzerata")
@@ -131,8 +131,8 @@ class StatusPanel(QWidget):
             clutch = self._legacy_attr("clutch_active", "clutch_on", "frizione_inserita", default=True)
             inh_sx = self._legacy_attr("left_blade_inhibit", "lama_sx_inibita", "sx_inhibit")
             inh_dx = self._legacy_attr("right_blade_inhibit", "lama_dx_inibita", "dx_inhibit")
-            press_sx = self._legacy_attr("left_presser_locked")
-            press_dx = self._legacy_attr("right_presser_locked")
+            morse_sx = self._legacy_attr("left_morse_locked")
+            morse_dx = self._legacy_attr("right_morse_locked")
 
         # EMG
         self.w_emg.setText("ATTIVA" if emg else "OK")
@@ -156,11 +156,11 @@ class StatusPanel(QWidget):
         self.w_head_dx.setText("ABILITATA" if not inh_dx else "DISABILITATA")
         self.w_head_dx.setStyleSheet(self._style(not inh_dx))
 
-        # PRESSORI
-        self.w_press_sx.setText("BLOCCATO" if press_sx else "SBLOCCATO")
-        self.w_press_sx.setStyleSheet(self._style(press_sx))
-        self.w_press_dx.setText("BLOCCATO" if press_dx else "SBLOCCATO")
-        self.w_press_dx.setStyleSheet(self._style(press_dx))
+        # MORSE
+        self.w_morse_sx.setText("BLOCCATO" if morse_sx else "SBLOCCATO")
+        self.w_morse_sx.setStyleSheet(self._style(morse_sx))
+        self.w_morse_dx.setText("BLOCCATO" if morse_dx else "SBLOCCATO")
+        self.w_morse_dx.setStyleSheet(self._style(morse_dx))
 
     @staticmethod
     def _style(active: bool, err_on: bool = False) -> str:

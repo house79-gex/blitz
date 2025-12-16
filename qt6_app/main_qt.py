@@ -180,7 +180,7 @@ class MainWindow(QMainWindow):
             def set_mode_context(self, mode, piece_length_mm=0.0, bar_length_mm=6500.0):
                 pass
             def command_set_head_angles(self, sx, dx): return True
-            def command_set_pressers(self, l, r): return True
+            def command_set_morse(self, l, r): return True
             def command_set_blade_inhibit(self, left=None, right=None): return True
             def command_sim_cut_pulse(self): pass
             def command_sim_start_pulse(self): pass

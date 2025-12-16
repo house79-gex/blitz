@@ -52,12 +52,12 @@ class MachineAdapter:
 
     def set_mode_context(self, mode:  str, piece_length_mm:  float = 0.0, 
                          bar_length_mm: float = 6500.0):
-        """Imposta contesto modalità per logica pressori."""
+        """Imposta contesto modalità per logica morse."""
         if hasattr(self._raw, "set_mode_context"):
             self._raw.set_mode_context(mode, piece_length_mm, bar_length_mm)
 
-    def command_set_pressers(self, left_locked: bool, right_locked: bool) -> bool:
-        return self._raw.command_set_pressers(left_locked, right_locked)
+    def command_set_morse(self, left_locked: bool, right_locked: bool) -> bool:
+        return self._raw.command_set_morse(left_locked, right_locked)
 
     def command_set_blade_inhibit(self, left: Optional[bool] = None, right:  Optional[bool] = None) -> bool:
         return self._raw.command_set_blade_inhibit(left, right)

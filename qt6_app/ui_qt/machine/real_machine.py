@@ -59,8 +59,8 @@ class RealMachine(MachineIO):
         self.homing_in_progress = False
         self.emergency_active = False
 
-        # Tracking modalità per controllo pressori
-        self._software_presser_control_enabled = False
+        # Tracking modalità per controllo morse
+        self._software_morse_control_enabled = False
         self._current_mode = "idle"
         self._current_piece_length = 0.0
         self._bar_stock_length = 6500.0
@@ -153,7 +153,7 @@ class RealMachine(MachineIO):
     def set_mode_context(self, mode: str, piece_length_mm: float = 0.0, 
                          bar_length_mm: float = 6500.0):
         """
-        Imposta contesto modalità per decisione controllo pressori.
+        Imposta contesto modalità per decisione controllo morse.
         
         Args:
             mode: "idle" | "manual" | "plan" | "semi" | "ultra_long_head" | "ultra_long_retract" | "ultra_long_final"
@@ -163,45 +163,45 @@ class RealMachine(MachineIO):
         self._current_mode = str(mode)
         self._current_piece_length = float(piece_length_mm)
         self._bar_stock_length = float(bar_length_mm)
-        self._update_presser_control_mode()
+        self._update_morse_control_mode()
 
-    def _update_presser_control_mode(self):
+    def _update_morse_control_mode(self):
         """
-        Decide se abilitare controllo software pressori.
+        Decide se abilitare controllo software morse.
         
         Logica:
         - Ultra-lunga: sempre controllo software
         - Manuale: mai controllo software (pulsantiera)
         - Automatico/Semi: solo se fuori quota O ultra corto (<500mm)
         """
-        was_enabled = self._software_presser_control_enabled
+        was_enabled = self._software_morse_control_enabled
         
         if self._current_mode. startswith("ultra_long"):
-            self._software_presser_control_enabled = True
+            self._software_morse_control_enabled = True
         elif self._current_mode == "manual":
-            self._software_presser_control_enabled = False
+            self._software_morse_control_enabled = False
         elif self._current_mode in ("plan", "semi"):
             is_out_of_quota = self._current_piece_length > self._bar_stock_length
             is_ultra_short = 0 < self._current_piece_length < 500.0
-            self._software_presser_control_enabled = (is_out_of_quota or is_ultra_short)
+            self._software_morse_control_enabled = (is_out_of_quota or is_ultra_short)
         else:
-            self._software_presser_control_enabled = False
+            self._software_morse_control_enabled = False
         
-        if was_enabled != self._software_presser_control_enabled: 
-            mode_str = "SOFTWARE" if self._software_presser_control_enabled else "PULSANTIERA"
-            print(f"🔧 Controllo pressori: {mode_str}")
+        if was_enabled != self._software_morse_control_enabled: 
+            mode_str = "SOFTWARE" if self._software_morse_control_enabled else "PULSANTIERA"
+            print(f"🔧 Controllo morse: {mode_str}")
             
-            if not self._software_presser_control_enabled:
+            if not self._software_morse_control_enabled:
                 self._write_coil_a(2, False)
                 self._write_coil_a(3, False)
 
-    def command_set_pressers(self, left_locked: bool, right_locked:  bool) -> bool:
+    def command_set_morse(self, left_locked: bool, right_locked:  bool) -> bool:
         """
-        Comanda pressori SOLO se controllo software abilitato.
+        Comanda morse SOLO se controllo software abilitato.
         
         Se controllo software disabilitato → ignora comando (pulsantiera controlla).
         """
-        if not self._software_presser_control_enabled: 
+        if not self._software_morse_control_enabled: 
             return False
         
         self._write_coil_a(2, bool(left_locked))
@@ -280,8 +280,8 @@ class RealMachine(MachineIO):
             "homing_in_progress": self. homing_in_progress,
             "brake_active": self._coils_a[0],
             "clutch_active": self._coils_a[1],
-            "left_presser_locked": self._coils_a[2],
-            "right_presser_locked": self._coils_a[3],
+            "left_morse_locked": self._coils_a[2],
+            "right_morse_locked": self._coils_a[3],
             "left_blade_inhibit": self._coils_b[0],
             "right_blade_inhibit": self._coils_b[1],
             "emergency_active": self. emergency_active,

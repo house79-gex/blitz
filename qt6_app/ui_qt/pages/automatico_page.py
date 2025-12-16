@@ -791,7 +791,7 @@ class AutomaticoPage(QWidget):
         """
         Avvia movimento per pezzo in modalità automatico.
         
-        Notifica contesto modalità alla macchina per gestione pressori.
+        Notifica contesto modalità alla macchina per gestione morse.
         """
         self._state = STATE_MOVING
         thickness = self._get_profile_thickness(piece["profile"])
@@ -805,7 +805,7 @@ class AutomaticoPage(QWidget):
                 self.mio.set_mode_context("plan", piece_length_mm=piece["len"], bar_length_mm=bar_length)
             
             self.mio.command_move(eff, piece["ax"], piece["ad"], profile=piece["profile"], element=piece["element"])
-            self.mio.command_set_pressers(False, False)  # Logica interna decide se attivare
+            self.mio.command_set_morse(False, False)  # Logica interna decide se attivare
         else:
             self._position_machine_exact(eff, piece["ax"], piece["ad"], piece["profile"], piece["element"])
         
