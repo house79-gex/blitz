@@ -8,6 +8,9 @@ from PySide6.QtGui import QFont, QFontMetrics
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 
+# Module logger
+logger = logging.getLogger("blitz")
+
 # Dimensioni base (verranno scalate dinamicamente)
 BASE_HEIGHT = 900.0
 QUOTA_FONT_PX_BASE = 150
@@ -386,10 +389,12 @@ class ManualePage(QWidget):
         # Check if synchronized
         if brake_on != clutch_on:
             # Mismatched: synchronize to safest state (both locked)
+            logger.info(f"TESTA: States mismatched (brake={brake_on}, clutch={clutch_on}), synchronizing to locked")
             target_locked = True
         else:
             # Synchronized: toggle
             target_locked = not brake_on
+            logger.debug(f"TESTA: Toggling synchronized state to {'locked' if target_locked else 'released'}")
         
         if self.mio:
             try:
@@ -403,7 +408,7 @@ class ManualePage(QWidget):
                     self.mio.command_release_brake()
             except Exception as e:
                 # If command fails, log and leave in current state
-                logging.getLogger("blitz").warning(f"TESTA command failed: {e}")
+                logger.warning(f"TESTA command failed: {e}")
         else:
             # Fallback legacy
             try:
