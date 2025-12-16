@@ -137,7 +137,12 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     'label_backend':           'wspool',
     'label_printer_name':      '',
     'label_paper':             'DK-11201',
-    'label_rotate':            0
+    'label_rotate':            0,
+    # --- Hardware configuration (measured values) ---
+    'machine_zero_homing_mm':       250.0,
+    'machine_offset_battuta_mm':    120.0,
+    'machine_max_travel_mm':        4000.0,
+    'stock_length_mm':              6500.0
 }
 
 # Chiavi di mapping (se un giorno vuoi sincronizzare con la struttura annidata)
