@@ -455,12 +455,36 @@ class AutomaticoPage(QWidget):
         if DEBUG_LOG: logger.debug(f"[AUTO] {msg}")
 
     # ---- Modalità manuale ----
-    def _enter_manual_mode(self):
+       def _enter_manual_mode(self):
+        """
+        Entra in modalità manuale.
+        
+        In manuale: 
+        - Freno e frizione SBLOCCATI
+        - Testa DX libera (trascinabile a mano)
+        - Encoder legge posizione passivamente
+        - NO movimento motore
+        """
         if self._mode == "plan":
-            self._bars.clear(); self._seq_plan.clear(); self._seq_pos=-1; self._cur_sig=None
-        self._mode="manual"; self._state=STATE_IDLE
+            self._bars. clear()
+            self._seq_plan.clear()
+            self._seq_pos = -1
+            self._cur_sig = None
+        
+        self._mode = "manual"
+        self._state = STATE_IDLE
+        
+        # CRITICO: Sblocca freno E frizione per trascinamento manuale
+        if self.mio:
+            self.mio.command_release_brake()
+            self.mio.command_set_clutch(False)  # ✅ Testa DX libera! 
+            
+            # Notifica contesto:  modalità manuale
+            if hasattr(self.mio, "set_mode_context"):
+                self.mio.set_mode_context("manual")
+        
         self._update_counters_ui()
-        self._toast("Manuale pronto. Seleziona pezzo e premi Start.","info")
+        self._toast("MANUALE:  Trascina testa DX a mano.  Encoder legge posizione.", "info")
         self._update_cycle_state_label()
 
     # ---- Etichette ----
