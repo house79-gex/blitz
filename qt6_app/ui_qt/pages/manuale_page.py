@@ -359,7 +359,7 @@ class ManualePage(QWidget):
         clutch_on = self._get_flag(["clutch_active"], default=True)
         target = not clutch_on
         
-        if self. mio:
+        if self.mio:
             self.mio.command_set_clutch(target)
         else:
             try:
@@ -370,7 +370,7 @@ class ManualePage(QWidget):
         self._compute_button_widths()
         self._style_buttons_by_state()
         if self.status: 
-            self. status.refresh()
+            self.status.refresh()
             
     def _press_testa(self):
         """

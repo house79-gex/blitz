@@ -475,8 +475,8 @@ class AutomaticoPage(QWidget):
         self._state = STATE_IDLE
         
         if self.mio:
-            self. mio.command_release_brake()
-            self.mio. command_set_clutch(False)
+            self.mio.command_release_brake()
+            self.mio.command_set_clutch(False)
             
             if hasattr(self.mio, "set_mode_context"):
                 self.mio.set_mode_context("manual")
