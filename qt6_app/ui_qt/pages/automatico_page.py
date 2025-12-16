@@ -455,8 +455,8 @@ class AutomaticoPage(QWidget):
         if DEBUG_LOG: logger.debug(f"[AUTO] {msg}")
 
     # ---- Modalità manuale ----
-        def _enter_manual_mode(self):    
-            """
+    def _enter_manual_mode(self):    
+        """
         Entra in modalità manuale. 
         
         In manuale: 
@@ -787,7 +787,7 @@ class AutomaticoPage(QWidget):
         self._update_cycle_state_label()
         self._log_state(f"Emit active piece seq={self._seq_pos}")
 
-       def _start_move(self, piece: Dict[str, Any]):
+    def _start_move(self, piece: Dict[str, Any]):
         """
         Avvia movimento per pezzo in modalità automatico.
         
@@ -802,17 +802,17 @@ class AutomaticoPage(QWidget):
             if hasattr(self.mio, "set_mode_context"):
                 # TODO: Ottenere lunghezza barra corrente da config/piano
                 bar_length = 6500.0  # Default, da sostituire con valore reale
-                self.mio. set_mode_context("plan", piece_length_mm=piece["len"], bar_length_mm=bar_length)
+                self.mio.set_mode_context("plan", piece_length_mm=piece["len"], bar_length_mm=bar_length)
             
             self.mio.command_move(eff, piece["ax"], piece["ad"], profile=piece["profile"], element=piece["element"])
-            self. mio.command_set_pressers(False, False)  # Logica interna decide se attivare
+            self.mio.command_set_pressers(False, False)  # Logica interna decide se attivare
         else:
             self._position_machine_exact(eff, piece["ax"], piece["ad"], piece["profile"], piece["element"])
         
         self._update_cycle_state_label()
         self._log_state(f"Start move len_eff={eff:.2f}")
 
-        def _try_auto_continue(self):
+    def _try_auto_continue(self):
         """
         Tenta auto-continue se abilitato e condizioni soddisfatte.
         
@@ -937,7 +937,7 @@ class AutomaticoPage(QWidget):
         self._log_state("Brake unlocked.")
 
     # ---- Manuale posizionamento ----
-           def _trigger_manual_cut(self):
+    def _trigger_manual_cut(self):
         """
         Avvia taglio manuale. 
         
@@ -972,7 +972,7 @@ class AutomaticoPage(QWidget):
         self._emit_active_piece()
         
         self._update_cycle_state_label()
-        self._toast(f"MANUALE: Posiziona testa DX a {piece['len']:. 2f}mm e premi F7 per taglio", "info")
+        self._toast(f"MANUALE: Posiziona testa DX a {piece['len']:.2f}mm e premi F7 per taglio", "info")
 
     # ---- Tabella helpers ----
     def _row_is_header(self,row:int)->bool:

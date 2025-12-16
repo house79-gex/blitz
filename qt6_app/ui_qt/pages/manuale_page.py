@@ -372,23 +372,45 @@ class ManualePage(QWidget):
             self. status.refresh()
             
     def _press_testa(self):
-        # Azione dimostrativa: toggle freno + pressori (mostra come usare adapter)
+        """
+        Toggle TESTA: synchronizes brake + clutch.
+        
+        States:
+        - Locked: Brake ACTIVE + Clutch ACTIVE (head locked, motor engaged)
+        - Released: Brake INACTIVE + Clutch INACTIVE (head free, manual drag)
+        """
         brake_on = self._get_flag(["brake_active"], default=False)
-        if self.mio:
-            if brake_on:
-                self.mio.command_release_brake()
-                self.mio.command_set_pressers(False, False)
-            else:
-                self.mio.command_lock_brake()
-                self.mio.command_set_pressers(True, True)
+        clutch_on = self._get_flag(["clutch_active"], default=True)
+        
+        # Check if synchronized
+        if brake_on != clutch_on:
+            # Mismatched: synchronize to safest state (both locked)
+            target_locked = True
         else:
+            # Synchronized: toggle
+            target_locked = not brake_on
+        
+        if self.mio:
+            if target_locked:
+                # Lock both
+                self.mio.command_lock_brake()
+                self.mio.command_set_clutch(True)
+            else:
+                # Release both
+                self.mio.command_release_brake()
+                self.mio.command_set_clutch(False)
+        else:
+            # Fallback legacy
             try:
-                setattr(self.machine, "brake_active", not brake_on)
+                setattr(self.machine, "brake_active", target_locked)
+                setattr(self.machine, "clutch_active", target_locked)
             except Exception:
                 pass
+        
         self._compute_button_widths()
         self._style_buttons_by_state()
-        if self.status: self.status.refresh()
+        if self.status:
+            self.status.refresh()
 
     # ---------------- Encoder display ----------------
     @staticmethod
