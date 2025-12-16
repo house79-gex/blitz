@@ -13,7 +13,7 @@ except Exception:
 class RealMachine(MachineIO):
     """
     Implementazione base "reale": 
-    - RS485 Modbus:  due dispositivi (addr_a:  freno/frizione/pressori, addr_b: inibizioni).
+    - RS485 Modbus:  due dispositivi (addr_a:  freno/frizione/morse, addr_b: inibizioni).
     - Pulse/Dir (GPIO) per movimento open-loop stimato.
     - Homing placeholder con homing_in_progress:  porta la posizione a 250 mm.
     """
@@ -232,7 +232,7 @@ class RealMachine(MachineIO):
                 return
             self.homing_in_progress = True
             self._moving = False
-            time.sleep(1. 0)
+            time.sleep(1.0)
             with self._lock:
                 self._position_mm = self.min_distance
                 self._target_mm = self.min_distance

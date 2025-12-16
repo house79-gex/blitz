@@ -129,7 +129,7 @@ def calculate_ultra_long_sequence(
         # Step 2: Arretramento
         offset_mm=offset,
         pos_after_retract_dx=pos_dopo_arretramento_dx,
-        presser_switch_delay_ms=100,
+        morse_switch_delay_ms=100,
         
         # Step 3: Taglio finale con TESTA SX
         pos_final_cut_dx=pos_finale_dx,
