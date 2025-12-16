@@ -1,4 +1,5 @@
 from typing import Optional
+import logging
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QSizePolicy
 from PySide6.QtCore import Qt, QTimer
@@ -402,7 +403,6 @@ class ManualePage(QWidget):
                     self.mio.command_release_brake()
             except Exception as e:
                 # If command fails, log and leave in current state
-                import logging
                 logging.getLogger("blitz").warning(f"TESTA command failed: {e}")
         else:
             # Fallback legacy
