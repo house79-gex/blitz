@@ -2,19 +2,19 @@ from __future__ import annotations
 from typing import Optional, Dict, Any
 from ui_qt.machine.interfaces import MachineIO
 
-class MachineAdapter:
+class MachineAdapter: 
     def __init__(self, raw_machine: MachineIO):
         self._raw = raw_machine
 
-    def get_position(self) -> Optional[float]:
+    def get_position(self) -> Optional[float]: 
         return self._raw.get_position()
 
     def is_positioning_active(self) -> bool:
-        return self._raw.is_positioning_active()
+        return self._raw. is_positioning_active()
 
     def get_input(self, name: str) -> bool:
         try:
-            return self._raw.get_input(name)
+            return self._raw. get_input(name)
         except Exception:
             return False
 
@@ -26,15 +26,40 @@ class MachineAdapter:
         return self._raw.command_lock_brake()
 
     def command_release_brake(self) -> bool:
-        return self._raw.command_release_brake()
+        return self._raw. command_release_brake()
+
+    def command_set_clutch(self, active: bool) -> bool:
+        """
+        Comanda frizione.
+        
+        Args:
+            active: True = inserita, False = disinserita
+        
+        Returns:
+            True se comando eseguito
+        """
+        if hasattr(self._raw, "command_set_clutch"):
+            return self._raw.command_set_clutch(active)
+        
+        try:
+            setattr(self._raw, "clutch_active", bool(active))
+            return True
+        except Exception:
+            return False
 
     def command_set_head_angles(self, sx: float, dx: float) -> bool:
         return self._raw.command_set_head_angles(sx, dx)
 
+    def set_mode_context(self, mode:  str, piece_length_mm:  float = 0.0, 
+                         bar_length_mm: float = 6500.0):
+        """Imposta contesto modalità per logica pressori."""
+        if hasattr(self._raw, "set_mode_context"):
+            self._raw.set_mode_context(mode, piece_length_mm, bar_length_mm)
+
     def command_set_pressers(self, left_locked: bool, right_locked: bool) -> bool:
         return self._raw.command_set_pressers(left_locked, right_locked)
 
-    def command_set_blade_inhibit(self, left: Optional[bool] = None, right: Optional[bool] = None) -> bool:
+    def command_set_blade_inhibit(self, left: Optional[bool] = None, right:  Optional[bool] = None) -> bool:
         return self._raw.command_set_blade_inhibit(left, right)
 
     def command_sim_cut_pulse(self) -> None:
@@ -63,9 +88,9 @@ class MachineAdapter:
         except Exception:
             pass
 
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> Dict[str, Any]: 
         try:
-            return self._raw.get_state()
+            return self._raw. get_state()
         except Exception:
             return {}
 
