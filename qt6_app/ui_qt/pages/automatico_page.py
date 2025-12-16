@@ -455,8 +455,8 @@ class AutomaticoPage(QWidget):
         if DEBUG_LOG: logger.debug(f"[AUTO] {msg}")
 
     # ---- Modalità manuale ----
-      def _enter_manual_mode(self):
-        """
+        def _enter_manual_mode(self):    
+            """
         Entra in modalità manuale. 
         
         In manuale: 
