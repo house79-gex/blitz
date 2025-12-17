@@ -18,18 +18,19 @@ Usage:
         caliper.connect_sync(devices[0]['address'])
 """
 
-from typing import Optional, Callable, List, Dict, Any
+from typing import Optional, Callable, List, Dict, Any, TYPE_CHECKING
 import asyncio
 import struct
 import logging
+
+if TYPE_CHECKING:
+    from bleak import BleakClient, BleakScanner
 
 try:
     from bleak import BleakClient, BleakScanner
     HAS_BLEAK = True
 except ImportError:
     HAS_BLEAK = False
-    BleakClient = None
-    BleakScanner = None
 
 logger = logging.getLogger("bluetooth_caliper")
 
@@ -254,6 +255,10 @@ class BluetoothCaliperQt:
         """
         Synchronous device scan (blocking).
         
+        Note: Uses asyncio.run() which creates a new event loop separate from Qt's.
+        This is safe because the operation is blocking and completes before returning.
+        Called via QTimer.singleShot() to avoid blocking the Qt main thread.
+        
         Returns:
             List of devices found
         """
@@ -262,6 +267,7 @@ class BluetoothCaliperQt:
             return []
         
         try:
+            # asyncio.run() creates a new event loop, separate from Qt's event loop
             return asyncio.run(self.caliper.scan_devices(timeout))
         except Exception as e:
             logger.error(f"Scan error: {e}")
@@ -270,6 +276,10 @@ class BluetoothCaliperQt:
     def connect_sync(self, address: str) -> bool:
         """
         Synchronous connection (blocking).
+        
+        Note: Uses asyncio.run() which creates a new event loop separate from Qt's.
+        This is safe because the operation is blocking and completes before returning.
+        Called via QTimer.singleShot() to avoid blocking the Qt main thread.
         
         Args:
             address: BLE MAC address
@@ -281,15 +291,21 @@ class BluetoothCaliperQt:
             return False
         
         try:
+            # asyncio.run() creates a new event loop, separate from Qt's event loop
             return asyncio.run(self.caliper.connect(address))
         except Exception as e:
             logger.error(f"Connect error: {e}")
             return False
     
     def disconnect_sync(self):
-        """Synchronous disconnection (blocking)."""
+        """
+        Synchronous disconnection (blocking).
+        
+        Note: Uses asyncio.run() which creates a new event loop separate from Qt's.
+        """
         if self.caliper.is_connected():
             try:
+                # asyncio.run() creates a new event loop, separate from Qt's event loop
                 asyncio.run(self.caliper.disconnect())
             except Exception as e:
                 logger.error(f"Disconnect error: {e}")
