@@ -770,7 +770,7 @@ class SemiAutoPage(QWidget):
                 right=(piece.get("ad", 0) == 0)
             )
         except Exception as e:
-            logger.error(f"Error configuring blades: {e}")
+            logger.error(f"Error configuring blades for piece {piece['len']:.0f}mm, ax={piece.get('ax', 0)}, ad={piece.get('ad', 0)}: {e}")
         
         # Execute movement
         try:
