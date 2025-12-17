@@ -172,7 +172,7 @@ class Header(QWidget):
                 # Metro status widget
                 if HAS_METRO_WIDGET and MetroStatusWidget:
                     try:
-                        self.metro_widget = MetroStatusWidget(right_bar)
+                        self.metro_widget = MetroStatusWidget(self)
                         right_bar_l.addWidget(self.metro_widget)
                     except Exception:
                         pass
@@ -198,7 +198,7 @@ class Header(QWidget):
                 # Metro status widget
                 if HAS_METRO_WIDGET and MetroStatusWidget:
                     try:
-                        self.metro_widget = MetroStatusWidget(right_bar)
+                        self.metro_widget = MetroStatusWidget(self)
                         right_bar_l.addWidget(self.metro_widget)
                     except Exception:
                         pass
@@ -226,7 +226,7 @@ class Header(QWidget):
             # Metro status widget
             if HAS_METRO_WIDGET and MetroStatusWidget:
                 try:
-                    self.metro_widget = MetroStatusWidget(right_bar)
+                    self.metro_widget = MetroStatusWidget(self)
                     right_bar_l.addWidget(self.metro_widget)
                 except Exception:
                     pass

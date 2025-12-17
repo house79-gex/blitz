@@ -127,25 +127,15 @@ class MetroDigitaleManager(QObject):
         try:
             import asyncio
             
-            # Check if we're already in an event loop
-            try:
-                loop = asyncio.get_running_loop()
-                # We're in an event loop, use ensure_future
-                asyncio.ensure_future(self._connect_async(address))
-            except RuntimeError:
-                # No event loop, create one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                success = loop.run_until_complete(self._connect_async(address))
-                loop.close()
-                
-                if success:
-                    self._connected = True
-                    self._last_device_address = address
-                    self.connection_changed.emit(True)
-                    logger.info("✅ Auto-reconnect successful")
-                else:
-                    logger.warning("Auto-reconnect failed")
+            success = asyncio.run(self._connect_async(address))
+            
+            if success:
+                self._connected = True
+                self._last_device_address = address
+                self.connection_changed.emit(True)
+                logger.info("✅ Auto-reconnect successful")
+            else:
+                logger.warning("Auto-reconnect failed")
         except Exception as e:
             logger.error(f"Auto-reconnect error: {e}")
     
@@ -184,20 +174,7 @@ class MetroDigitaleManager(QObject):
         
         try:
             import asyncio
-            
-            # Check if we're already in an event loop
-            try:
-                loop = asyncio.get_running_loop()
-                # Can't use run_until_complete in running loop
-                logger.warning("Cannot scan from within event loop")
-                return []
-            except RuntimeError:
-                # No event loop, create one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                devices = loop.run_until_complete(self._scan_async())
-                loop.close()
-                return devices
+            return asyncio.run(self._scan_async())
         
         except Exception as e:
             logger.error(f"Scan error: {e}")
@@ -241,37 +218,26 @@ class MetroDigitaleManager(QObject):
         try:
             import asyncio
             
-            # Check if we're already in an event loop
-            try:
-                loop = asyncio.get_running_loop()
-                # Can't use run_until_complete in running loop
-                logger.warning("Cannot connect from within event loop")
-                return False
-            except RuntimeError:
-                # No event loop, create one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                success = loop.run_until_complete(self._connect_async(address))
-                loop.close()
+            success = asyncio.run(self._connect_async(address))
+            
+            if success:
+                self._connected = True
+                self._last_device_address = address
                 
-                if success:
-                    self._connected = True
-                    self._last_device_address = address
-                    
-                    # Save for auto-reconnect
-                    try:
-                        from ui_qt.utils.settings import read_settings, write_settings
-                        settings = read_settings()
-                        settings["metro_last_device_address"] = address
-                        settings["metro_auto_reconnect"] = True
-                        write_settings(settings)
-                    except Exception as e:
-                        logger.warning(f"Could not save metro settings: {e}")
-                    
-                    self.connection_changed.emit(True)
-                    return True
+                # Save for auto-reconnect
+                try:
+                    from ui_qt.utils.settings import read_settings, write_settings
+                    settings = read_settings()
+                    settings["metro_last_device_address"] = address
+                    settings["metro_auto_reconnect"] = True
+                    write_settings(settings)
+                except Exception as e:
+                    logger.warning(f"Could not save metro settings: {e}")
                 
-                return False
+                self.connection_changed.emit(True)
+                return True
+            
+            return False
         
         except Exception as e:
             logger.error(f"Connection error: {e}")
@@ -294,18 +260,7 @@ class MetroDigitaleManager(QObject):
         
         try:
             import asyncio
-            
-            # Check if we're already in an event loop
-            try:
-                loop = asyncio.get_running_loop()
-                # Can't use run_until_complete in running loop
-                asyncio.ensure_future(self._disconnect_async())
-            except RuntimeError:
-                # No event loop, create one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(self._disconnect_async())
-                loop.close()
+            asyncio.run(self._disconnect_async())
             
             self._connected = False
             self.connection_changed.emit(False)
