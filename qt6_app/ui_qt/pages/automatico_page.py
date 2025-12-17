@@ -33,6 +33,20 @@ from ui_qt.logic.refiner import (
 
 from ui_qt.services.profiles_store import ProfilesStore
 
+# Mode system imports
+from ui_qt.logic.modes import (
+    ModeConfig,
+    ModeDetector,
+    ModeInfo,
+    MorseStrategy,
+    OutOfQuotaHandler,
+    UltraShortHandler,
+    ExtraLongHandler
+)
+from ui_qt.logic.modes.out_of_quota_handler import OutOfQuotaConfig
+from ui_qt.logic.modes.ultra_short_handler import UltraShortConfig
+from ui_qt.logic.modes.extra_long_handler import ExtraLongConfig
+
 try:
     from ui_qt.utils.settings import read_settings, write_settings
 except Exception:
@@ -336,6 +350,29 @@ class AutomaticoPage(QWidget):
         self._label_printer=LabelPrinter(cfg, toast_cb=self._toast)
 
         self._manual_current_piece=None
+
+        # === Mode system initialization ===
+        try:
+            settings = read_settings()
+            self._mode_config = ModeConfig.from_settings(settings)
+            self._mode_detector = ModeDetector(self._mode_config)
+        except Exception as e:
+            logger.error(f"Error initializing mode system: {e}")
+            # Fallback to default config
+            self._mode_config = ModeConfig(
+                machine_zero_homing_mm=250.0,
+                machine_offset_battuta_mm=120.0,
+                machine_max_travel_mm=4000.0,
+                stock_length_mm=6500.0
+            )
+            self._mode_detector = ModeDetector(self._mode_config)
+        
+        # Handlers for special modes (lazy initialization)
+        self._out_of_quota_handler: Optional[OutOfQuotaHandler] = None
+        self._ultra_short_handler: Optional[UltraShortHandler] = None
+        self._extra_long_handler: Optional[ExtraLongHandler] = None
+        self._current_mode: str = "normal"
+        self._current_mode_handler = None
 
         self._poll=None
         self._build()
@@ -789,28 +826,258 @@ class AutomaticoPage(QWidget):
 
     def _start_move(self, piece: Dict[str, Any]):
         """
-        Avvia movimento per pezzo in modalità automatico.
+        Start movement with automatic mode detection.
         
-        Notifica contesto modalità alla macchina per gestione morse.
+        Uses ModeDetector + handlers for special modes.
+        Preserves all existing functionality.
         """
-        self._state = STATE_MOVING
-        thickness = self._get_profile_thickness(piece["profile"])
-        eff = self._effective_position_length(piece["len"], piece["ax"], piece["ad"], thickness)
         
-        if self.mio:
-            # Notifica contesto: modalità plan + lunghezza pezzo
-            if hasattr(self.mio, "set_mode_context"):
-                # TODO: Ottenere lunghezza barra corrente da config/piano
-                bar_length = 6500.0  # Default, da sostituire con valore reale
-                self.mio.set_mode_context("plan", piece_length_mm=piece["len"], bar_length_mm=bar_length)
+        if not piece:
+            return
+        
+        # === 1. Detect mode ===
+        try:
+            mode_info = self._mode_detector.detect(piece["len"])
+        except Exception as e:
+            logger.error(f"Error detecting mode: {e}")
+            self._toast(f"Errore rilevamento modalità: {e}", "error")
+            return
+        
+        # === 2. Validate ===
+        if not mode_info.is_valid:
+            self._toast(mode_info.error_message, "error")
+            return
+        
+        self._current_mode = mode_info.mode_name
+        
+        # === 3. Log warning for special modes ===
+        if mode_info.mode_range and mode_info.mode_range.requires_confirmation:
+            # Log warning (dialog will be added in PR #21)
+            logger.warning(f"Special mode: {mode_info.mode_name}")
+            logger.warning(mode_info.warning_message)
+            self._toast(f"⚠️ Modalità {self._mode_detector.get_mode_display_name(mode_info.mode_name)}", "warn", 3000)
+        
+        # === 4. Notify machine context ===
+        if self.mio and hasattr(self.mio, "set_mode_context"):
+            try:
+                self.mio.set_mode_context(
+                    self._current_mode,
+                    piece_length_mm=piece["len"],
+                    bar_length_mm=self._mode_config.stock_length_mm
+                )
+            except Exception as e:
+                logger.error(f"Error setting mode context: {e}")
+        
+        # === 5. Execute movement for detected mode ===
+        if mode_info.mode_name == "out_of_quota":
+            self._execute_out_of_quota(piece)
+        
+        elif mode_info.mode_name == "ultra_short":
+            self._execute_ultra_short(piece)
+        
+        elif mode_info.mode_name == "extra_long":
+            self._execute_extra_long(piece)
+        
+        else:  # normal
+            self._execute_normal_move(piece)
+
+    def _execute_normal_move(self, piece: Dict[str, Any]):
+        """Execute normal mode movement (250-4000mm)."""
+        
+        if not self.mio:
+            logger.error("Machine adapter not available")
+            return
+        
+        # Configure blades (normal mode)
+        try:
+            self.mio.command_set_blade_inhibit(
+                left=(piece.get("ax", 0) == 0),
+                right=(piece.get("ad", 0) == 0)
+            )
+        except Exception as e:
+            logger.error(f"Error configuring blades: {e}")
+        
+        # NOTE: In normal mode, morse (clamps) controlled by button panel
+        # Software does NOT send morse commands
+        
+        # Execute movement
+        try:
+            success = self.mio.command_move(
+                piece["len"],
+                piece.get("ax", 0),
+                piece.get("ad", 0),
+                profile=piece.get("profile", ""),
+                element=piece.get("element", "")
+            )
             
-            self.mio.command_move(eff, piece["ax"], piece["ad"], profile=piece["profile"], element=piece["element"])
-            self.mio.command_set_morse(False, False)  # Logica interna decide se attivare
-        else:
-            self._position_machine_exact(eff, piece["ax"], piece["ad"], piece["profile"], piece["element"])
+            if success:
+                self._state = STATE_MOVING
+                self._toast(f"▶️ Posizionamento {piece['len']:.0f}mm", "info")
+                logger.info(f"Normal movement started: {piece['len']:.0f}mm")
+            else:
+                self._toast("❌ Movimento non avviato", "error")
+                logger.error("Normal movement failed to start")
         
-        self._update_cycle_state_label()
-        self._log_state(f"Start move len_eff={eff:.2f}")
+        except Exception as e:
+            logger.error(f"Error starting normal movement: {e}")
+            self._toast(f"Errore movimento: {e}", "error")
+
+
+    def _execute_out_of_quota(self, piece: Dict[str, Any]):
+        """Execute out of quota mode (2-step sequence)."""
+        
+        if not self.mio:
+            logger.error("Machine adapter not available")
+            return
+        
+        # Lazy initialize handler
+        if not self._out_of_quota_handler:
+            try:
+                config = OutOfQuotaConfig(
+                    zero_homing_mm=self._mode_config.machine_zero_homing_mm,
+                    offset_battuta_mm=self._mode_config.machine_offset_battuta_mm
+                )
+                self._out_of_quota_handler = OutOfQuotaHandler(self.mio, config)
+            except Exception as e:
+                logger.error(f"Error creating OutOfQuotaHandler: {e}")
+                self._toast(f"Errore inizializzazione fuori quota: {e}", "error")
+                return
+        
+        # Start sequence
+        try:
+            success = self._out_of_quota_handler.start_sequence(
+                target_length_mm=piece["len"],
+                angle_sx=piece.get("ax", 0),
+                angle_dx=piece.get("ad", 0)
+            )
+            
+            if success:
+                self._state = STATE_MOVING
+                self._current_mode_handler = self._out_of_quota_handler
+                self._toast(f"🔴 Fuori Quota: Step 1/2 - Intestatura", "warn")
+                logger.info(f"Out of quota sequence started: {piece['len']:.0f}mm")
+            else:
+                self._toast("❌ Fuori quota non avviato", "error")
+                logger.error("Out of quota sequence failed to start")
+        
+        except Exception as e:
+            logger.error(f"Error starting out of quota: {e}")
+            self._toast(f"Errore fuori quota: {e}", "error")
+
+
+    def _execute_ultra_short(self, piece: Dict[str, Any]):
+        """Execute ultra short mode (3-step sequence, inverted heads)."""
+        
+        if not self.mio:
+            logger.error("Machine adapter not available")
+            return
+        
+        # Lazy initialize handler
+        if not self._ultra_short_handler:
+            try:
+                config = UltraShortConfig(
+                    zero_homing_mm=self._mode_config.machine_zero_homing_mm,
+                    offset_battuta_mm=self._mode_config.machine_offset_battuta_mm
+                )
+                self._ultra_short_handler = UltraShortHandler(self.mio, config)
+            except Exception as e:
+                logger.error(f"Error creating UltraShortHandler: {e}")
+                self._toast(f"Errore inizializzazione ultra corta: {e}", "error")
+                return
+        
+        # Start sequence
+        try:
+            success = self._ultra_short_handler.start_sequence(
+                target_length_mm=piece["len"],
+                angle_sx=piece.get("ax", 0),
+                angle_dx=piece.get("ad", 0)
+            )
+            
+            if success:
+                self._state = STATE_MOVING
+                self._current_mode_handler = self._ultra_short_handler
+                self._toast(f"🟡 Ultra Corta: Step 1/3 - Intestatura SX", "warn")
+                logger.info(f"Ultra short sequence started: {piece['len']:.0f}mm")
+            else:
+                self._toast("❌ Ultra corta non avviato", "error")
+                logger.error("Ultra short sequence failed to start")
+        
+        except Exception as e:
+            logger.error(f"Error starting ultra short: {e}")
+            self._toast(f"Errore ultra corta: {e}", "error")
+
+
+    def _execute_extra_long(self, piece: Dict[str, Any]):
+        """Execute extra long mode (3-step sequence)."""
+        
+        if not self.mio:
+            logger.error("Machine adapter not available")
+            return
+        
+        # Lazy initialize handler
+        if not self._extra_long_handler:
+            try:
+                config = ExtraLongConfig(
+                    max_travel_mm=self._mode_config.machine_max_travel_mm,
+                    stock_length_mm=self._mode_config.stock_length_mm
+                )
+                self._extra_long_handler = ExtraLongHandler(self.mio, config)
+            except Exception as e:
+                logger.error(f"Error creating ExtraLongHandler: {e}")
+                self._toast(f"Errore inizializzazione extra lunga: {e}", "error")
+                return
+        
+        # Start sequence
+        try:
+            success = self._extra_long_handler.start_sequence(
+                target_length_mm=piece["len"],
+                angle_sx=piece.get("ax", 0),
+                angle_dx=piece.get("ad", 0)
+            )
+            
+            if success:
+                self._state = STATE_MOVING
+                self._current_mode_handler = self._extra_long_handler
+                self._toast(f"🔵 Extra Lunga: Step 1/3 - Intestatura DX", "info")
+                logger.info(f"Extra long sequence started: {piece['len']:.0f}mm")
+            else:
+                self._toast("❌ Extra lunga non avviato", "error")
+                logger.error("Extra long sequence failed to start")
+        
+        except Exception as e:
+            logger.error(f"Error starting extra long: {e}")
+            self._toast(f"Errore extra lunga: {e}", "error")
+
+
+    def _on_special_mode_step_complete(self, step_num: int, success: bool, message: str):
+        """
+        Callback for special mode step completion.
+        
+        Args:
+            step_num: Step number completed (1, 2, 3)
+            success: True if completed successfully
+            message: Descriptive message
+        """
+        
+        if success:
+            self._toast(f"✅ Step {step_num} completato: {message}", "ok")
+            logger.info(f"Special mode step {step_num} completed: {message}")
+            
+            # Check if sequence complete
+            if self._current_mode_handler:
+                try:
+                    if hasattr(self._current_mode_handler, 'is_sequence_complete'):
+                        if self._current_mode_handler.is_sequence_complete():
+                            self._state = STATE_READY
+                            logger.info("Special mode sequence completed")
+                            # Auto-continue handled by existing _tick() logic
+                except Exception as e:
+                    logger.error(f"Error checking sequence completion: {e}")
+        else:
+            self._toast(f"❌ Step {step_num} fallito: {message}", "error")
+            logger.error(f"Special mode step {step_num} failed: {message}")
+            self._state = STATE_IDLE
+            self._current_mode_handler = None
 
     def _try_auto_continue(self):
         """
