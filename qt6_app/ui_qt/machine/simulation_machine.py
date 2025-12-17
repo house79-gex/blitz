@@ -29,8 +29,8 @@ class SimulationMachine(MachineIO):
 
         self. brake_active = False
         self. clutch_active = True
-        self.left_presser_locked = False
-        self.right_presser_locked = False
+        self.left_morse_locked = False
+        self.right_morse_locked = False
         self.left_blade_inhibit = False
         self.right_blade_inhibit = False
 
@@ -38,8 +38,8 @@ class SimulationMachine(MachineIO):
         self.emergency_active = False
         self.homing_in_progress = False
 
-        # Tracking modalità per controllo pressori
-        self._software_presser_control_enabled = False
+        # Tracking modalità per controllo morse
+        self._software_morse_control_enabled = False
         self._current_mode = "idle"
         self._current_piece_length = 0.0
         self._bar_stock_length = 6500.0
@@ -102,34 +102,34 @@ class SimulationMachine(MachineIO):
         self._current_mode = str(mode)
         self._current_piece_length = float(piece_length_mm)
         self._bar_stock_length = float(bar_length_mm)
-        self._update_presser_control_mode()
+        self._update_morse_control_mode()
 
-    def _update_presser_control_mode(self):
-        """Decide se abilitare controllo software pressori (simulata)."""
-        was_enabled = self._software_presser_control_enabled
+    def _update_morse_control_mode(self):
+        """Decide se abilitare controllo software morse (simulata)."""
+        was_enabled = self._software_morse_control_enabled
         
         if self._current_mode.startswith("ultra_long"):
-            self._software_presser_control_enabled = True
+            self._software_morse_control_enabled = True
         elif self._current_mode == "manual": 
-            self._software_presser_control_enabled = False
+            self._software_morse_control_enabled = False
         elif self._current_mode in ("plan", "semi"):
             is_out_of_quota = self._current_piece_length > self._bar_stock_length
             is_ultra_short = 0 < self._current_piece_length < 500.0
-            self._software_presser_control_enabled = (is_out_of_quota or is_ultra_short)
+            self._software_morse_control_enabled = (is_out_of_quota or is_ultra_short)
         else:
-            self._software_presser_control_enabled = False
+            self._software_morse_control_enabled = False
         
-        if was_enabled != self._software_presser_control_enabled: 
-            mode_str = "SOFTWARE" if self._software_presser_control_enabled else "PULSANTIERA"
-            print(f"🔧 [SIM] Controllo pressori:  {mode_str}")
+        if was_enabled != self._software_morse_control_enabled: 
+            mode_str = "SOFTWARE" if self._software_morse_control_enabled else "PULSANTIERA"
+            print(f"🔧 [SIM] Controllo morse:  {mode_str}")
 
-    def command_set_pressers(self, left_locked: bool, right_locked: bool) -> bool:
-        """Comanda pressori solo se controllo software abilitato."""
-        if not self._software_presser_control_enabled: 
+    def command_set_morse(self, left_locked: bool, right_locked: bool) -> bool:
+        """Comanda morse solo se controllo software abilitato."""
+        if not self._software_morse_control_enabled: 
             return False
         
-        self. left_presser_locked = bool(left_locked)
-        self.right_presser_locked = bool(right_locked)
+        self. left_morse_locked = bool(left_locked)
+        self.right_morse_locked = bool(right_locked)
         return True
 
     def command_set_blade_inhibit(self, left: Optional[bool] = None, right: Optional[bool] = None) -> bool:
@@ -195,8 +195,8 @@ class SimulationMachine(MachineIO):
             "homing_in_progress": self.homing_in_progress,
             "brake_active": self.brake_active,
             "clutch_active":  self.clutch_active,
-            "left_presser_locked": self.left_presser_locked,
-            "right_presser_locked": self.right_presser_locked,
+            "left_morse_locked": self.left_morse_locked,
+            "right_morse_locked": self.right_morse_locked,
             "left_blade_inhibit": self.left_blade_inhibit,
             "right_blade_inhibit": self.right_blade_inhibit,
             "emergency_active": self.emergency_active,
