@@ -11,8 +11,8 @@ from PySide6.QtGui import QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QListWidget, QListWidgetItem,
     QLineEdit, QPushButton, QGridLayout, QSizePolicy, QAbstractItemView, QStackedWidget,
-    QFileDialog, QToolButton, QStyle, QComboBox, QCheckBox, QSpinBox,
-    QTableWidget, QHeaderView, QTableWidgetItem, QMessageBox, QTextEdit, QSplitter
+    QFileDialog, QToolButton, QStyle, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox,
+    QTableWidget, QHeaderView, QTableWidgetItem, QMessageBox, QTextEdit, QSplitter, QFormLayout
 )
 
 from ui_qt.widgets.header import Header
@@ -96,6 +96,350 @@ except Exception:
 STATUS_W = 260
 
 
+class HardwareConfigTab(QFrame):
+    """
+    Hardware configuration tab for machine parameters.
+    
+    Configurable parameters:
+    - Zero Homing (mm): Minimum position after homing
+    - Offset Battuta (mm): Physical stop distance (measured)
+    - Corsa Max (mm): Maximum usable travel
+    - Lunghezza Stock (mm): Current bar stock length
+    
+    Displays:
+    - Real-time calculated mode ranges
+    - Color-coded preview (🟡🔴🟢🔵)
+    """
+    
+    def __init__(self, appwin):
+        super().__init__()
+        self.appwin = appwin
+        self._build()
+        self._load_current_config()
+    
+    def _build(self):
+        self.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius: 6px; }")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(20)
+        
+        # Title
+        title = QLabel("⚙️ Configurazione Hardware Macchina")
+        title.setStyleSheet("font-size: 16pt; font-weight: 700; color: #ecf0f1;")
+        root.addWidget(title)
+        
+        # Description
+        desc = QLabel(
+            "Configura i parametri hardware della macchina. "
+            "I range delle modalità (Ultra Corta, Fuori Quota, etc.) vengono calcolati automaticamente."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #bdc3c7; font-size: 11pt; margin-bottom: 10px;")
+        root.addWidget(desc)
+        
+        # === Parameters Form ===
+        form_frame = QFrame()
+        form_frame.setStyleSheet("""
+            QFrame {
+                background: #34495e;
+                border: 1px solid #2c3e50;
+                border-radius: 8px;
+                padding: 20px;
+            }
+        """)
+        form_layout = QFormLayout(form_frame)
+        form_layout.setSpacing(16)
+        form_layout.setLabelAlignment(Qt.AlignRight)
+        
+        # Zero Homing
+        zero_layout = QHBoxLayout()
+        self.spin_zero = QDoubleSpinBox()
+        self.spin_zero.setRange(0.0, 1000.0)
+        self.spin_zero.setValue(250.0)
+        self.spin_zero.setSuffix(" mm")
+        self.spin_zero.setDecimals(1)
+        self.spin_zero.setMinimumWidth(120)
+        self.spin_zero.valueChanged.connect(self._update_ranges_preview)
+        zero_layout.addWidget(self.spin_zero)
+        zero_layout.addWidget(QLabel("Posizione minima dopo azzeramento/homing"))
+        zero_layout.addStretch()
+        form_layout.addRow("Zero Homing:", zero_layout)
+        
+        # Offset Battuta
+        offset_layout = QHBoxLayout()
+        self.spin_offset = QDoubleSpinBox()
+        self.spin_offset.setRange(0.0, 500.0)
+        self.spin_offset.setValue(120.0)
+        self.spin_offset.setSuffix(" mm")
+        self.spin_offset.setDecimals(1)
+        self.spin_offset.setMinimumWidth(120)
+        self.spin_offset.valueChanged.connect(self._update_ranges_preview)
+        offset_layout.addWidget(self.spin_offset)
+        offset_layout.addWidget(QLabel("Distanza fisica battuta (misurare con calibro)"))
+        offset_layout.addStretch()
+        form_layout.addRow("Offset Battuta:", offset_layout)
+        
+        # Corsa Max
+        max_layout = QHBoxLayout()
+        self.spin_max_travel = QDoubleSpinBox()
+        self.spin_max_travel.setRange(1000.0, 10000.0)
+        self.spin_max_travel.setValue(4000.0)
+        self.spin_max_travel.setSuffix(" mm")
+        self.spin_max_travel.setDecimals(1)
+        self.spin_max_travel.setMinimumWidth(120)
+        self.spin_max_travel.valueChanged.connect(self._update_ranges_preview)
+        max_layout.addWidget(self.spin_max_travel)
+        max_layout.addWidget(QLabel("Corsa utile massima (testare sul campo)"))
+        max_layout.addStretch()
+        form_layout.addRow("Corsa Massima:", max_layout)
+        
+        # Lunghezza Stock
+        stock_layout = QHBoxLayout()
+        self.spin_stock = QDoubleSpinBox()
+        self.spin_stock.setRange(1000.0, 10000.0)
+        self.spin_stock.setValue(6500.0)
+        self.spin_stock.setSuffix(" mm")
+        self.spin_stock.setDecimals(1)
+        self.spin_stock.setMinimumWidth(120)
+        self.spin_stock.valueChanged.connect(self._update_ranges_preview)
+        stock_layout.addWidget(self.spin_stock)
+        stock_layout.addWidget(QLabel("Lunghezza barra stock corrente"))
+        stock_layout.addStretch()
+        form_layout.addRow("Lunghezza Stock:", stock_layout)
+        
+        root.addWidget(form_frame)
+        
+        # === Calculated Ranges Preview ===
+        ranges_frame = QFrame()
+        ranges_frame.setStyleSheet("""
+            QFrame {
+                background: #2c3e50;
+                border: 1px solid #34495e;
+                border-radius: 8px;
+                padding: 20px;
+            }
+        """)
+        ranges_layout = QVBoxLayout(ranges_frame)
+        ranges_layout.setSpacing(12)
+        
+        ranges_title = QLabel("📊 Range Modalità Calcolati")
+        ranges_title.setStyleSheet("font-weight: 700; font-size: 13pt; color: #ecf0f1; margin-bottom: 8px;")
+        ranges_layout.addWidget(ranges_title)
+        
+        ranges_desc = QLabel(
+            "I range delle modalità sono calcolati automaticamente dai parametri hardware. "
+            "La soglia Ultra Corta = Zero Homing - Offset Battuta."
+        )
+        ranges_desc.setWordWrap(True)
+        ranges_desc.setStyleSheet("color: #95a5a6; font-size: 10pt; margin-bottom: 10px;")
+        ranges_layout.addWidget(ranges_desc)
+        
+        # Range labels
+        self.lbl_range_ultra = QLabel()
+        self.lbl_range_ultra.setStyleSheet("font-size: 12pt; padding: 6px; font-weight: 600;")
+        ranges_layout.addWidget(self.lbl_range_ultra)
+        
+        self.lbl_range_fq = QLabel()
+        self.lbl_range_fq.setStyleSheet("font-size: 12pt; padding: 6px; font-weight: 600;")
+        ranges_layout.addWidget(self.lbl_range_fq)
+        
+        self.lbl_range_normal = QLabel()
+        self.lbl_range_normal.setStyleSheet("font-size: 12pt; padding: 6px; font-weight: 600;")
+        ranges_layout.addWidget(self.lbl_range_normal)
+        
+        self.lbl_range_extra = QLabel()
+        self.lbl_range_extra.setStyleSheet("font-size: 12pt; padding: 6px; font-weight: 600;")
+        ranges_layout.addWidget(self.lbl_range_extra)
+        
+        root.addWidget(ranges_frame)
+        
+        # === Action Buttons ===
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        
+        btn_save = QPushButton("💾 Salva Configurazione")
+        btn_save.clicked.connect(self._save_config)
+        btn_save.setStyleSheet("""
+            QPushButton {
+                background: #27ae60;
+                color: white;
+                padding: 12px 24px;
+                font-weight: 700;
+                font-size: 12pt;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: #229954;
+            }
+            QPushButton:pressed {
+                background: #1e8449;
+            }
+        """)
+        btn_row.addWidget(btn_save)
+        
+        btn_reset = QPushButton("🔄 Ripristina Default")
+        btn_reset.clicked.connect(self._reset_defaults)
+        btn_reset.setStyleSheet("""
+            QPushButton {
+                background: #e67e22;
+                color: white;
+                padding: 12px 24px;
+                font-weight: 700;
+                font-size: 12pt;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover {
+                background: #d35400;
+            }
+            QPushButton:pressed {
+                background: #ba4a00;
+            }
+        """)
+        btn_row.addWidget(btn_reset)
+        
+        root.addLayout(btn_row)
+        root.addStretch()
+        
+        # Initialize preview
+        self._update_ranges_preview()
+    
+    def _load_current_config(self):
+        """Load current configuration from settings."""
+        try:
+            settings = read_settings()
+            
+            self.spin_zero.setValue(float(settings.get("machine_zero_homing_mm", 250.0)))
+            self.spin_offset.setValue(float(settings.get("machine_offset_battuta_mm", 120.0)))
+            self.spin_max_travel.setValue(float(settings.get("machine_max_travel_mm", 4000.0)))
+            self.spin_stock.setValue(float(settings.get("stock_length_mm", 6500.0)))
+        except Exception as e:
+            import logging
+            logging.getLogger("hardware_config").error(f"Error loading config: {e}")
+    
+    def _update_ranges_preview(self):
+        """Update preview of calculated mode ranges."""
+        zero = self.spin_zero.value()
+        offset = self.spin_offset.value()
+        max_travel = self.spin_max_travel.value()
+        stock = self.spin_stock.value()
+        
+        threshold = zero - offset
+        
+        # Validation warnings
+        warning_style = "color: #e74c3c; font-weight: 700;"
+        
+        if threshold < 0:
+            self.lbl_range_ultra.setText("⚠️ ERRORE: Offset > Zero (threshold negativa!)")
+            self.lbl_range_ultra.setStyleSheet(warning_style)
+        else:
+            self.lbl_range_ultra.setText(f"🟡 Ultra Corta:      0 - {threshold:.1f} mm")
+            self.lbl_range_ultra.setStyleSheet("color: #f39c12; font-weight: 600; font-size: 12pt;")
+        
+        if threshold >= zero:
+            self.lbl_range_fq.setText("⚠️ ERRORE: Range Fuori Quota invalido")
+            self.lbl_range_fq.setStyleSheet(warning_style)
+        else:
+            self.lbl_range_fq.setText(f"🔴 Fuori Quota:      {threshold:.1f} - {zero:.1f} mm")
+            self.lbl_range_fq.setStyleSheet("color: #e67e22; font-weight: 600; font-size: 12pt;")
+        
+        if max_travel <= zero:
+            self.lbl_range_normal.setText("⚠️ ERRORE: Corsa Max ≤ Zero")
+            self.lbl_range_normal.setStyleSheet(warning_style)
+        else:
+            self.lbl_range_normal.setText(f"🟢 Normale:         {zero:.1f} - {max_travel:.1f} mm")
+            self.lbl_range_normal.setStyleSheet("color: #27ae60; font-weight: 600; font-size: 12pt;")
+        
+        if stock <= max_travel:
+            self.lbl_range_extra.setText("⚠️ ERRORE: Stock ≤ Corsa Max")
+            self.lbl_range_extra.setStyleSheet(warning_style)
+        else:
+            self.lbl_range_extra.setText(f"🔵 Extra Lunga:     {max_travel:.1f} - {stock:.1f} mm")
+            self.lbl_range_extra.setStyleSheet("color: #3498db; font-weight: 600; font-size: 12pt;")
+    
+    def _save_config(self):
+        """Save configuration to settings."""
+        try:
+            # Validation
+            zero = self.spin_zero.value()
+            offset = self.spin_offset.value()
+            max_travel = self.spin_max_travel.value()
+            stock = self.spin_stock.value()
+            
+            threshold = zero - offset
+            
+            # Check for errors
+            errors = []
+            if threshold < 0:
+                errors.append("• Offset Battuta > Zero Homing (threshold negativa)")
+            if max_travel <= zero:
+                errors.append("• Corsa Massima ≤ Zero Homing")
+            if stock <= max_travel:
+                errors.append("• Lunghezza Stock ≤ Corsa Massima")
+            
+            if errors:
+                QMessageBox.critical(
+                    self,
+                    "Errori Configurazione",
+                    "Impossibile salvare. Correggere i seguenti errori:\n\n" + "\n".join(errors)
+                )
+                return
+            
+            # Save
+            settings = read_settings()
+            settings["machine_zero_homing_mm"] = zero
+            settings["machine_offset_battuta_mm"] = offset
+            settings["machine_max_travel_mm"] = max_travel
+            settings["stock_length_mm"] = stock
+            write_settings(settings)
+            
+            QMessageBox.information(
+                self,
+                "Configurazione Salvata",
+                f"✅ Configurazione hardware salvata con successo!\n\n"
+                f"Range calcolati:\n"
+                f"🟡 Ultra Corta: 0 - {threshold:.1f}mm\n"
+                f"🔴 Fuori Quota: {threshold:.1f} - {zero:.1f}mm\n"
+                f"🟢 Normale: {zero:.1f} - {max_travel:.1f}mm\n"
+                f"🔵 Extra Lunga: {max_travel:.1f} - {stock:.1f}mm\n\n"
+                f"I nuovi valori saranno utilizzati immediatamente in Automatico e Semi-Automatico."
+            )
+            
+            # Log
+            import logging
+            logger = logging.getLogger("hardware_config")
+            logger.info(f"Configuration saved: zero={zero}, offset={offset}, max={max_travel}, stock={stock}, threshold={threshold:.1f}")
+        
+        except Exception as e:
+            import logging
+            logging.getLogger("hardware_config").error(f"Error saving config: {e}")
+            QMessageBox.critical(self, "Errore", f"Errore salvataggio configurazione:\n{e}")
+    
+    def _reset_defaults(self):
+        """Reset to default values."""
+        reply = QMessageBox.question(
+            self,
+            "Ripristina Default",
+            "Ripristinare i valori di default?\n\n"
+            "• Zero Homing: 250.0 mm\n"
+            "• Offset Battuta: 120.0 mm\n"
+            "• Corsa Massima: 4000.0 mm\n"
+            "• Lunghezza Stock: 6500.0 mm",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.spin_zero.setValue(250.0)
+            self.spin_offset.setValue(120.0)
+            self.spin_max_travel.setValue(4000.0)
+            self.spin_stock.setValue(6500.0)
+            
+            import logging
+            logging.getLogger("hardware_config").info("Configuration reset to defaults")
+
+
 class UtilityPage(QWidget):
     def __init__(self, appwin):
         super().__init__()
@@ -127,7 +471,7 @@ class UtilityPage(QWidget):
         menu_layout.setSpacing(6)
         self.lst_menu = QListWidget()
         self.lst_menu.setSelectionMode(QAbstractItemView.SingleSelection)
-        for label in ("Profili", "QCAD", "Backup", "Configurazione", "Temi", "Etichette"):
+        for label in ("Hardware", "Profili", "QCAD", "Backup", "Configurazione", "Temi", "Etichette"):
             self.lst_menu.addItem(QListWidgetItem(label))
         self.lst_menu.setCurrentRow(0)
         menu_layout.addWidget(QLabel("Sottomenu"))
@@ -135,6 +479,7 @@ class UtilityPage(QWidget):
 
         self.stack = QStackedWidget()
         self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.page_hardware = HardwareConfigTab(self.appwin)
         self.page_profiles = ProfilesSubPage(self.appwin, self.profiles_store)
         self.page_qcad = QcadSubPage(self.appwin, self.profiles_store)
         self.page_backup = BackupSubPage(self.appwin)
@@ -142,12 +487,13 @@ class UtilityPage(QWidget):
         self.page_themes = ThemesSubPage(self.appwin)
         self.page_labels = LabelsSubPage(self.appwin, self.profiles_store)
 
-        self.stack.addWidget(self.page_profiles)  # 0
-        self.stack.addWidget(self.page_qcad)      # 1
-        self.stack.addWidget(self.page_backup)    # 2
-        self.stack.addWidget(self.page_config)    # 3
-        self.stack.addWidget(self.page_themes)    # 4
-        self.stack.addWidget(self.page_labels)    # 5
+        self.stack.addWidget(self.page_hardware)  # 0
+        self.stack.addWidget(self.page_profiles)  # 1
+        self.stack.addWidget(self.page_qcad)      # 2
+        self.stack.addWidget(self.page_backup)    # 3
+        self.stack.addWidget(self.page_config)    # 4
+        self.stack.addWidget(self.page_themes)    # 5
+        self.stack.addWidget(self.page_labels)    # 6
 
         right = QFrame()
         right.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
