@@ -855,7 +855,9 @@ class AutomaticoPage(QWidget):
             # Log warning (dialog will be added in PR #21)
             logger.warning(f"Special mode: {mode_info.mode_name}")
             logger.warning(mode_info.warning_message)
-            self._toast(f"⚠️ Modalità {self._mode_detector.get_mode_display_name(mode_info.mode_name)}", "warn", 3000)
+            # Display mode name with proper capitalization
+            mode_display = mode_info.mode_name.replace("_", " ").title()
+            self._toast(f"⚠️ Modalità {mode_display}", "warn", 3000)
         
         # === 4. Notify machine context ===
         if self.mio and hasattr(self.mio, "set_mode_context"):
