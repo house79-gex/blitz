@@ -1,14 +1,31 @@
+from typing import Optional, Dict, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QSpinBox, QGridLayout, QDoubleSpinBox, QLineEdit, QComboBox,
-    QSizePolicy, QCheckBox, QAbstractSpinBox, QToolButton, QStyle, QApplication
+    QSizePolicy, QCheckBox, QAbstractSpinBox, QToolButton, QStyle, QApplication,
+    QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer, QSize, QLocale, QRect
 from PySide6.QtGui import QKeyEvent, QGuiApplication
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.widgets.heads_view import HeadsView
+from ui_qt.logic.modes import (
+    ModeConfig,
+    ModeDetector,
+    ModeInfo,
+    OutOfQuotaHandler,
+    UltraShortHandler,
+    ExtraLongHandler
+)
+from ui_qt.logic.modes.out_of_quota_handler import OutOfQuotaConfig
+from ui_qt.logic.modes.ultra_short_handler import UltraShortConfig
+from ui_qt.logic.modes.extra_long_handler import ExtraLongConfig
+from ui_qt.utils.settings import read_settings
 import math
+import logging
+
+logger = logging.getLogger("semi_auto_page")
 
 try:
     from ui_qt.services.profiles_store import ProfilesStore
@@ -44,7 +61,31 @@ class SemiAutoPage(QWidget):
         self.profiles_store = ProfilesStore() if ProfilesStore else None
         self._profiles = self._load_profiles_dict()
 
-        # Stato intestatura / FQ
+        # === NEW: Mode system initialization ===
+        try:
+            settings = read_settings()
+            self._mode_config = ModeConfig.from_settings(settings)
+            self._mode_detector = ModeDetector(self._mode_config)
+            logger.info(f"Mode system initialized: threshold={self._mode_config.ultra_short_threshold:.1f}mm")
+        except Exception as e:
+            logger.error(f"Error initializing mode system: {e}")
+            # Fallback to default config
+            self._mode_config = ModeConfig(
+                machine_zero_homing_mm=250.0,
+                machine_offset_battuta_mm=120.0,
+                machine_max_travel_mm=4000.0,
+                stock_length_mm=6500.0
+            )
+            self._mode_detector = ModeDetector(self._mode_config)
+        
+        # Handlers for special modes (lazy initialization, shared with automatico!)
+        self._out_of_quota_handler: Optional[OutOfQuotaHandler] = None
+        self._ultra_short_handler: Optional[UltraShortHandler] = None
+        self._extra_long_handler: Optional[ExtraLongHandler] = None
+        self._current_mode: str = "normal"
+        self._current_mode_handler = None
+
+        # Stato intestatura / FQ (keep for backward compatibility)
         self._intest_in_progress = False
         self._intest_prev_ang_dx = 0.0
         self._last_internal = None
@@ -298,7 +339,7 @@ class SemiAutoPage(QWidget):
 
         self.btn_start = QPushButton("START")
         self.btn_start.setMinimumHeight(52)
-        self.btn_start.clicked.connect(self._start_positioning)
+        self.btn_start.clicked.connect(self._on_cut)
         ctrl_row.addWidget(self.btn_start, 0, alignment=Qt.AlignRight)
 
         bottom_box.addLayout(ctrl_row)
@@ -316,31 +357,24 @@ class SemiAutoPage(QWidget):
         self.status_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         right_col.addWidget(self.status_panel, 1)
 
-        fq_box = QFrame()
-        fq_box.setFixedSize(QSize(FQ_W, FQ_H))
-        fq_box.setStyleSheet("QFrame { border: 1px solid #3b4b5a; border-radius:6px; }")
-        fq = QGridLayout(fq_box)
-        fq.setHorizontalSpacing(8)
-        fq.setVerticalSpacing(6)
-
-        self.chk_fuori_quota = QCheckBox("Fuori quota")
-        self.chk_fuori_quota.toggled.connect(self._on_fuori_quota_toggle)
-        fq.addWidget(self.chk_fuori_quota, 0, 0, 1, 2)
-
-        fq.addWidget(QLabel("Offset:"), 1, 0)
+        # NOTE: "Fuori Quota" section removed - mode detection is now automatic
+        # Legacy UI elements preserved for backward compatibility but hidden:
+        # Checkbox, offset spinbox, and intestatura button are no longer used
+        # Mode is automatically detected based on piece length
+        
+        # Keep offset spinbox for backward compatibility (may be referenced elsewhere)
         self.spin_offset = QDoubleSpinBox()
         self.spin_offset.setRange(0.0, 1000.0)
         self.spin_offset.setDecimals(0)
         self.spin_offset.setValue(120.0)
         self.spin_offset.setSuffix(" mm")
         self.spin_offset.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        fq.addWidget(self.spin_offset, 1, 1)
-
-        self.btn_intesta = QPushButton("INTESTATURA")
-        self.btn_intesta.clicked.connect(self._do_intestatura)
-        fq.addWidget(self.btn_intesta, 2, 0, 1, 2)
-
-        right_col.addWidget(fq_box, 0, alignment=Qt.AlignTop)
+        self.spin_offset.setVisible(False)  # Hidden - not used in new mode system
+        
+        # Add stub for backward compatibility with legacy code
+        class _StubCheckBox:
+            def isChecked(self): return False
+        self.chk_fuori_quota = _StubCheckBox()
 
         root.addWidget(left_container, 1)
         root.addWidget(right_container, 0)
@@ -713,53 +747,326 @@ class SemiAutoPage(QWidget):
         setattr(self.machine, "semi_auto_count_done", 0)
 
     # ---------- Azioni ----------
-    def _start_positioning(self):
+    def _on_cut(self):
+        """
+        Handler for cut/positioning button.
+        
+        With automatic mode detection:
+        - Normal: direct movement
+        - Out of quota: 2-step cycle
+        - Ultra short: 3-step cycle (inverted heads)
+        - Extra long: 3-step cycle
+        """
+        
+        # Close any open profile preview popup
         try:
             if self._section_popup:
                 self._section_popup.close()
                 self._section_popup = None
         except Exception:
             pass
-
+        
+        # === 1. Basic validations ===
         if getattr(self.machine, "emergency_active", False):
-            self._show_warn("EMERGENZA ATTIVA: ESEGUI AZZERA"); return
-        if not getattr(self.machine, "machine_homed", False):
-            self._show_warn("ESEGUI AZZERA (HOMING)"); return
-        if self.mio and self.mio.is_positioning_active():
-            self._show_info("Movimento in corso"); return
-        if (not self.mio) and getattr(self.machine, "positioning_active", False):
-            self._show_info("Movimento in corso"); return
-
-        try:
-            target, sx, dx = self._compute_target_from_inputs()
-        except Exception:
+            self._show_warn("EMERGENZA ATTIVA", auto_hide_ms=2500)
             return
-
-        if self.mio:
-            ok = self.mio.command_move(target, sx, dx, profile=self.cb_profilo.currentText().strip(), element="semi")
-            if not ok:
-                self._show_warn("Movimento non avviato"); return
-        else:
-            # Legacy path
-            if getattr(self.machine, "brake_active", False):
-                if hasattr(self.machine, "toggle_brake"):
-                    self.machine.toggle_brake()
-                else:
-                    setattr(self.machine, "brake_active", False)
-            if hasattr(self.machine, "move_to_length_and_angles"):
-                self.machine.move_to_length_and_angles(
-                    length_mm=float(target), ang_sx=float(sx), ang_dx=float(dx),
-                    done_cb=lambda ok, msg: None
+        
+        if not getattr(self.machine, "machine_homed", False):
+            self._show_warn("ESEGUI AZZERA (HOMING) prima", auto_hide_ms=2500)
+            return
+        
+        # Check if already moving
+        if self.mio and self.mio.is_positioning_active():
+            self._show_info("Movimento in corso", auto_hide_ms=2000)
+            return
+        if (not self.mio) and getattr(self.machine, "positioning_active", False):
+            self._show_info("Movimento in corso", auto_hide_ms=2000)
+            return
+        
+        # === 2. Read parameters from UI ===
+        try:
+            ext = self._parse_float(self.ext_len.text(), 0.0)
+            th = self._parse_float(self.thickness.text(), 0.0)
+            angle_sx = self._parse_float(self.spin_sx.text(), 0.0)
+            angle_dx = self._parse_float(self.spin_dx.text(), 0.0)
+        except Exception as e:
+            self._show_warn(f"Parametri invalidi: {e}", auto_hide_ms=2500)
+            return
+        
+        if ext <= 0:
+            self._show_warn("Inserisci una misura esterna valida (mm)", auto_hide_ms=2500)
+            return
+        
+        # Calculate internal length (subtract detractions from angles)
+        det_sx = th * math.tan(math.radians(angle_sx)) if angle_sx > 0 and th > 0 else 0.0
+        det_dx = th * math.tan(math.radians(angle_dx)) if angle_dx > 0 and th > 0 else 0.0
+        length = ext - (det_sx + det_dx)
+        
+        if length <= 0:
+            self._show_warn("Lunghezza interna deve essere > 0", auto_hide_ms=2500)
+            return
+        
+        # === 3. Detect mode automatically ===
+        try:
+            mode_info = self._mode_detector.detect(length)
+        except Exception as e:
+            logger.error(f"Error detecting mode: {e}")
+            self._show_warn(f"Errore rilevamento modalità: {e}", auto_hide_ms=3000)
+            return
+        
+        if not mode_info.is_valid:
+            self._show_warn(mode_info.error_message, auto_hide_ms=3000)
+            return
+        
+        self._current_mode = mode_info.mode_name
+        logger.info(f"Mode detected: {self._current_mode} for {length:.1f}mm")
+        
+        # === 4. Confirm special modes ===
+        if mode_info.mode_range and mode_info.mode_range.requires_confirmation:
+            mode_display = self._mode_detector.get_mode_display_name(mode_info.mode_name)
+            reply = QMessageBox.question(
+                self,
+                f"Conferma Modalità {mode_display}",
+                f"{mode_info.warning_message}\n\nContinuare?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply != QMessageBox.Yes:
+                self._show_info("Operazione annullata", auto_hide_ms=2000)
+                logger.info("Special mode operation cancelled by user")
+                return
+        
+        # === 5. Notify machine context ===
+        if self.mio and hasattr(self.mio, "set_mode_context"):
+            try:
+                self.mio.set_mode_context(
+                    self._current_mode,
+                    piece_length_mm=length,
+                    bar_length_mm=self._mode_config.stock_length_mm
                 )
+            except Exception as e:
+                logger.error(f"Error setting mode context: {e}")
+        
+        # === 6. Execute for detected mode ===
+        piece = {
+            "len": length,
+            "ax": angle_sx,
+            "ad": angle_dx,
+            "profile": self.cb_profilo.currentText().strip() if hasattr(self, 'cb_profilo') else "",
+            "element": ""
+        }
+        
+        if mode_info.mode_name == "out_of_quota":
+            self._execute_out_of_quota(piece)
+        
+        elif mode_info.mode_name == "ultra_short":
+            self._execute_ultra_short(piece)
+        
+        elif mode_info.mode_name == "extra_long":
+            self._execute_extra_long(piece)
+        
+        else:  # normal
+            self._execute_normal_move(piece)
+    
+    def _execute_normal_move(self, piece: Dict[str, Any]):
+        """Execute normal mode movement (250-4000mm)."""
+        
+        if not self.mio:
+            logger.error("Machine adapter not available")
+            self._show_warn("Adattatore macchina non disponibile", auto_hide_ms=2500)
+            return
+        
+        # Configure blades
+        try:
+            self.mio.command_set_blade_inhibit(
+                left=(piece.get("ax", 0) == 0),
+                right=(piece.get("ad", 0) == 0)
+            )
+        except Exception as e:
+            logger.error(f"Error configuring blades: {e}")
+        
+        # Execute movement
+        try:
+            success = self.mio.command_move(
+                piece["len"],
+                piece.get("ax", 0),
+                piece.get("ad", 0),
+                profile=piece.get("profile", ""),
+                element=piece.get("element", "")
+            )
+            
+            if success:
+                self._show_info(f"▶️ Posizionamento {piece['len']:.0f}mm", auto_hide_ms=2000)
+                logger.info(f"Semi-auto normal movement started: {piece['len']:.0f}mm")
+                self._update_buttons()
             else:
+                self._show_warn("❌ Movimento non avviato", auto_hide_ms=2500)
+                logger.error("Normal movement failed to start")
+        
+        except Exception as e:
+            logger.error(f"Error starting movement: {e}")
+            self._show_warn(f"Errore movimento: {e}", auto_hide_ms=2500)
+
+    def _execute_out_of_quota(self, piece: Dict[str, Any]):
+        """Execute out of quota mode (2-step sequence) - SHARED handler with automatico."""
+        
+        if not self.mio:
+            logger.error("Machine adapter not available")
+            return
+        
+        # Lazy initialize handler (shared with automatico!)
+        if not self._out_of_quota_handler:
+            try:
+                config = OutOfQuotaConfig(
+                    zero_homing_mm=self._mode_config.machine_zero_homing_mm,
+                    offset_battuta_mm=self._mode_config.machine_offset_battuta_mm
+                )
+                self._out_of_quota_handler = OutOfQuotaHandler(self.mio, config)
+                logger.info("OutOfQuotaHandler initialized")
+            except Exception as e:
+                logger.error(f"Error creating OutOfQuotaHandler: {e}")
+                self._show_warn(f"Errore inizializzazione: {e}", auto_hide_ms=2500)
+                return
+        
+        # Start sequence
+        try:
+            success = self._out_of_quota_handler.start_sequence(
+                target_length_mm=piece["len"],
+                angle_sx=piece.get("ax", 0),
+                angle_dx=piece.get("ad", 0),
+                on_step_complete=self._on_special_mode_step_complete
+            )
+            
+            if success:
+                self._current_mode_handler = self._out_of_quota_handler
+                self._show_info(f"🔴 Fuori Quota: Step 1/2 - Intestatura", auto_hide_ms=3000)
+                logger.info(f"Out of quota sequence started: {piece['len']:.0f}mm")
+            else:
+                self._show_warn("❌ Sequenza fuori quota non avviata", auto_hide_ms=2500)
+                logger.error("Out of quota sequence failed to start")
+        
+        except Exception as e:
+            logger.error(f"Error starting out of quota: {e}")
+            self._show_warn(f"Errore fuori quota: {e}", auto_hide_ms=2500)
+
+    def _execute_ultra_short(self, piece: Dict[str, Any]):
+        """Execute ultra short mode (3-step, inverted heads vs extra long) - NEW!"""
+        
+        if not self.mio:
+            logger.error("Machine adapter not available")
+            return
+        
+        # Lazy initialize handler
+        if not self._ultra_short_handler:
+            try:
+                config = UltraShortConfig(
+                    zero_homing_mm=self._mode_config.machine_zero_homing_mm,
+                    offset_battuta_mm=self._mode_config.machine_offset_battuta_mm
+                )
+                self._ultra_short_handler = UltraShortHandler(self.mio, config)
+                logger.info("UltraShortHandler initialized")
+            except Exception as e:
+                logger.error(f"Error creating UltraShortHandler: {e}")
+                self._show_warn(f"Errore inizializzazione: {e}", auto_hide_ms=2500)
+                return
+        
+        # Start sequence
+        try:
+            success = self._ultra_short_handler.start_sequence(
+                target_length_mm=piece["len"],
+                angle_sx=piece.get("ax", 0),
+                angle_dx=piece.get("ad", 0),
+                on_step_complete=self._on_special_mode_step_complete
+            )
+            
+            if success:
+                self._current_mode_handler = self._ultra_short_handler
+                self._show_info(f"🟡 Ultra Corta: Step 1/3 - Intestatura SX", auto_hide_ms=3000)
+                logger.info(f"Ultra short sequence started: {piece['len']:.0f}mm")
+            else:
+                self._show_warn("❌ Sequenza ultra corta non avviata", auto_hide_ms=2500)
+                logger.error("Ultra short sequence failed to start")
+        
+        except Exception as e:
+            logger.error(f"Error starting ultra short: {e}")
+            self._show_warn(f"Errore ultra corta: {e}", auto_hide_ms=2500)
+
+    def _execute_extra_long(self, piece: Dict[str, Any]):
+        """Execute extra long mode (3-step sequence) - NEW!"""
+        
+        if not self.mio:
+            logger.error("Machine adapter not available")
+            return
+        
+        # Lazy initialize handler
+        if not self._extra_long_handler:
+            try:
+                config = ExtraLongConfig(
+                    max_travel_mm=self._mode_config.machine_max_travel_mm,
+                    stock_length_mm=self._mode_config.stock_length_mm
+                )
+                self._extra_long_handler = ExtraLongHandler(self.mio, config)
+                logger.info("ExtraLongHandler initialized")
+            except Exception as e:
+                logger.error(f"Error creating ExtraLongHandler: {e}")
+                self._show_warn(f"Errore inizializzazione: {e}", auto_hide_ms=2500)
+                return
+        
+        # Start sequence
+        try:
+            success = self._extra_long_handler.start_sequence(
+                target_length_mm=piece["len"],
+                angle_sx=piece.get("ax", 0),
+                angle_dx=piece.get("ad", 0),
+                on_step_complete=self._on_special_mode_step_complete
+            )
+            
+            if success:
+                self._current_mode_handler = self._extra_long_handler
+                self._show_info(f"🔵 Extra Lunga: Step 1/3 - Intestatura DX", auto_hide_ms=3000)
+                logger.info(f"Extra long sequence started: {piece['len']:.0f}mm")
+            else:
+                self._show_warn("❌ Sequenza extra lunga non avviata", auto_hide_ms=2500)
+                logger.error("Extra long sequence failed to start")
+        
+        except Exception as e:
+            logger.error(f"Error starting extra long: {e}")
+            self._show_warn(f"Errore extra lunga: {e}", auto_hide_ms=2500)
+
+    def _on_special_mode_step_complete(self, step_num: int, success: bool, message: str):
+        """Callback for special mode step completion."""
+        
+        if success:
+            self._show_info(f"✅ Step {step_num} completato", auto_hide_ms=2000)
+            logger.info(f"Special mode step {step_num} completed: {message}")
+            
+            # Check if sequence complete
+            if self._current_mode_handler:
                 try:
-                    setattr(self.machine, "position_current", float(target))
-                    setattr(self.machine, "left_head_angle", float(sx))
-                    setattr(self.machine, "right_head_angle", float(dx))
-                    setattr(self.machine, "brake_active", True)
-                except Exception:
-                    pass
-        self._update_buttons()
+                    if hasattr(self._current_mode_handler, 'is_sequence_complete'):
+                        if self._current_mode_handler.is_sequence_complete():
+                            self._show_info("✅ Sequenza completata", auto_hide_ms=2500)
+                            logger.info("Special mode sequence completed")
+                            self._current_mode_handler = None
+                            
+                            # Increment counter if method exists (preserve existing functionality)
+                            if hasattr(self, '_increment_counter_if_enabled'):
+                                try:
+                                    self._increment_counter_if_enabled()
+                                except Exception as e:
+                                    logger.error(f"Error incrementing counter: {e}")
+                except Exception as e:
+                    logger.error(f"Error checking sequence completion: {e}")
+        else:
+            self._show_warn(f"❌ Step {step_num} fallito", auto_hide_ms=2500)
+            logger.error(f"Special mode step {step_num} failed: {message}")
+            self._current_mode_handler = None
+
+    def _start_positioning(self):
+        """DEPRECATED: Use _on_cut() instead. Kept for backward compatibility."""
+        # Redirect to new method
+        self._on_cut()
 
     def _toggle_brake(self):
         brk = bool(getattr(self.machine, "brake_active", False))
@@ -804,14 +1111,15 @@ class SemiAutoPage(QWidget):
         except Exception:
             self.lbl_target_big.setText("Quota: — mm")
 
-        if self._intest_in_progress:
-            cur_out = self._get_dx_blade_out()
-            if self._last_dx_blade_out is None:
-                self._last_dx_blade_out = cur_out
-            else:
-                if self._last_dx_blade_out and not cur_out:
-                    QTimer.singleShot(0, self._finish_intestatura)
-                self._last_dx_blade_out = cur_out
+        # NOTE: Legacy intestatura system removed - now handled by mode handlers
+        # if self._intest_in_progress:
+        #     cur_out = self._get_dx_blade_out()
+        #     if self._last_dx_blade_out is None:
+        #         self._last_dx_blade_out = cur_out
+        #     else:
+        #         if self._last_dx_blade_out and not cur_out:
+        #             QTimer.singleShot(0, self._finish_intestatura)
+        #         self._last_dx_blade_out = cur_out
 
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0))
         done = int(getattr(self.machine, "semi_auto_count_done", 0))
@@ -863,8 +1171,9 @@ class SemiAutoPage(QWidget):
                     self.mio.command_sim_dx_blade_out(False)
                 setattr(self.machine, "dx_blade_out", False)
                 self._show_info("Uscita lama DX: CHIUSA (simulazione F5)", auto_hide_ms=1200)
-                if self._intest_in_progress:
-                    QTimer.singleShot(0, self._finish_intestatura)
+                # Legacy intestatura system removed - now handled by mode handlers
+                # if self._intest_in_progress:
+                #     QTimer.singleShot(0, self._finish_intestatura)
             event.accept(); return
         super().keyReleaseEvent(event)
 
