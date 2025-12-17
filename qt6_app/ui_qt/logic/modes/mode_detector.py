@@ -168,6 +168,25 @@ class ModeDetector:
                     f"Misura INTERNA lama mobile DX."
                 )
             )
+    
+    def get_mode_display_name(self, mode_name: str) -> str:
+        """
+        Get human-readable display name for mode.
+        
+        Args:
+            mode_name: Mode name ("ultra_short", "out_of_quota", "normal", "extra_long")
+        
+        Returns:
+            Display name in Italian
+        """
+        mode_names = {
+            "ultra_short": "Ultra Corta",
+            "out_of_quota": "Fuori Quota",
+            "normal": "Normale",
+            "extra_long": "Extra Lunga",
+            "invalid": "Invalida"
+        }
+        return mode_names.get(mode_name, mode_name.replace("_", " ").title())
 
 
 __all__ = ["ModeDetector", "ModeInfo"]
