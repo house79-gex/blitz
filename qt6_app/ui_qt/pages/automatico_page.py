@@ -890,6 +890,15 @@ class AutomaticoPage(QWidget):
             logger.error("Machine adapter not available")
             return
         
+        # Calculate effective position considering angles and thickness
+        thickness = self._get_profile_thickness(piece.get("profile", ""))
+        eff = self._effective_position_length(
+            piece["len"],
+            piece.get("ax", 0),
+            piece.get("ad", 0),
+            thickness
+        )
+        
         # Configure blades (normal mode)
         try:
             self.mio.command_set_blade_inhibit(
@@ -905,7 +914,7 @@ class AutomaticoPage(QWidget):
         # Execute movement
         try:
             success = self.mio.command_move(
-                piece["len"],
+                eff,
                 piece.get("ax", 0),
                 piece.get("ad", 0),
                 profile=piece.get("profile", ""),
@@ -915,7 +924,7 @@ class AutomaticoPage(QWidget):
             if success:
                 self._state = STATE_MOVING
                 self._toast(f"▶️ Posizionamento {piece['len']:.0f}mm", "info")
-                logger.info(f"Normal movement started: {piece['len']:.0f}mm")
+                logger.info(f"Normal movement started: {piece['len']:.0f}mm (eff={eff:.2f}mm)")
             else:
                 self._toast("❌ Movimento non avviato", "error")
                 logger.error("Normal movement failed to start")
@@ -923,6 +932,10 @@ class AutomaticoPage(QWidget):
         except Exception as e:
             logger.error(f"Error starting normal movement: {e}")
             self._toast(f"Errore movimento: {e}", "error")
+        
+        # Update UI state
+        self._update_cycle_state_label()
+        self._log_state(f"Normal move started: len={piece['len']:.2f}mm eff={eff:.2f}mm")
 
 
     def _execute_out_of_quota(self, piece: Dict[str, Any]):
@@ -965,6 +978,10 @@ class AutomaticoPage(QWidget):
         except Exception as e:
             logger.error(f"Error starting out of quota: {e}")
             self._toast(f"Errore fuori quota: {e}", "error")
+        
+        # Update UI state
+        self._update_cycle_state_label()
+        self._log_state(f"Out of quota started: len={piece['len']:.2f}mm")
 
 
     def _execute_ultra_short(self, piece: Dict[str, Any]):
@@ -1007,6 +1024,10 @@ class AutomaticoPage(QWidget):
         except Exception as e:
             logger.error(f"Error starting ultra short: {e}")
             self._toast(f"Errore ultra corta: {e}", "error")
+        
+        # Update UI state
+        self._update_cycle_state_label()
+        self._log_state(f"Ultra short started: len={piece['len']:.2f}mm")
 
 
     def _execute_extra_long(self, piece: Dict[str, Any]):
@@ -1049,6 +1070,10 @@ class AutomaticoPage(QWidget):
         except Exception as e:
             logger.error(f"Error starting extra long: {e}")
             self._toast(f"Errore extra lunga: {e}", "error")
+        
+        # Update UI state
+        self._update_cycle_state_label()
+        self._log_state(f"Extra long started: len={piece['len']:.2f}mm")
 
 
     def _on_special_mode_step_complete(self, step_num: int, success: bool, message: str):
@@ -1071,6 +1096,8 @@ class AutomaticoPage(QWidget):
                     if hasattr(self._current_mode_handler, 'is_sequence_complete'):
                         if self._current_mode_handler.is_sequence_complete():
                             self._state = STATE_READY
+                            self._update_cycle_state_label()
+                            self._log_state("Special mode sequence completed")
                             logger.info("Special mode sequence completed")
                             # Auto-continue handled by existing _tick() logic
                 except Exception as e:
@@ -1080,6 +1107,8 @@ class AutomaticoPage(QWidget):
             logger.error(f"Special mode step {step_num} failed: {message}")
             self._state = STATE_IDLE
             self._current_mode_handler = None
+            self._update_cycle_state_label()
+            self._log_state(f"Special mode step {step_num} failed")
 
     def _try_auto_continue(self):
         """
