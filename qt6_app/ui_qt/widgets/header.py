@@ -3,6 +3,14 @@ from typing import Callable, Optional
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QFrame
 
+# Import metro status widget
+try:
+    from ui_qt.widgets.metro_status_widget import MetroStatusWidget
+    HAS_METRO_WIDGET = True
+except Exception:
+    HAS_METRO_WIDGET = False
+    MetroStatusWidget = None
+
 
 class Header(QWidget):
     """
@@ -161,6 +169,14 @@ class Header(QWidget):
                 self.btn_azzera.clicked.connect(self._on_azzera_clicked)
                 right_bar_l.addWidget(self.btn_azzera)
 
+                # Metro status widget
+                if HAS_METRO_WIDGET and MetroStatusWidget:
+                    try:
+                        self.metro_widget = MetroStatusWidget(self)
+                        right_bar_l.addWidget(self.metro_widget)
+                    except Exception:
+                        pass
+
                 self.btn_reset = QPushButton("Reset", right_bar)
                 self.btn_reset.setCursor(Qt.PointingHandCursor)
                 self.btn_reset.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -178,6 +194,14 @@ class Header(QWidget):
                 self.btn_azzera.setStyleSheet(self._azzera_style_base)
                 self.btn_azzera.clicked.connect(self._on_azzera_clicked)
                 left_bar_l.addWidget(self.btn_azzera)
+
+                # Metro status widget
+                if HAS_METRO_WIDGET and MetroStatusWidget:
+                    try:
+                        self.metro_widget = MetroStatusWidget(self)
+                        right_bar_l.addWidget(self.metro_widget)
+                    except Exception:
+                        pass
 
                 self.btn_reset = QPushButton("Reset", right_bar)
                 self.btn_reset.setCursor(Qt.PointingHandCursor)
@@ -198,6 +222,14 @@ class Header(QWidget):
             self.btn_home.setStyleSheet(self._btn_style_3d(HOME_BASE, HOME_DARK, font_px=16))
             self.btn_home.clicked.connect(self._on_home_clicked)
             left_bar_l.addWidget(self.btn_home)
+
+            # Metro status widget
+            if HAS_METRO_WIDGET and MetroStatusWidget:
+                try:
+                    self.metro_widget = MetroStatusWidget(self)
+                    right_bar_l.addWidget(self.metro_widget)
+                except Exception:
+                    pass
 
             self.btn_reset = QPushButton("Reset", right_bar)
             self.btn_reset.setCursor(Qt.PointingHandCursor)

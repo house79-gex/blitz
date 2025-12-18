@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QMessageBox, QAbstractItemView, QSizePolicy,
     QDialog, QFormLayout, QLineEdit, QComboBox, QDialogButtonBox, QCheckBox,
-    QToolTip
+    QToolTip, QListWidget
 )
 from PySide6.QtGui import (
     QKeySequence, QShortcut, QBrush, QColor, QFont, QKeyEvent, QCursor
@@ -32,6 +32,10 @@ from ui_qt.logic.refiner import (
 )
 
 from ui_qt.services.profiles_store import ProfilesStore
+
+# Metro Digitale integration
+from ui_qt.services.metro_digitale_manager import get_metro_manager
+from datetime import datetime
 
 # Mode system imports
 from ui_qt.logic.modes import (
@@ -288,28 +292,9 @@ class AutomaticoPage(QWidget):
         self.machine=appwin.machine            # raw (per StatusPanel)
         self.mio = getattr(appwin, "machine_adapter", None)  # adapter refactor
 
-        # === Mode system initialization ===
-        try:
-            self._mode_config = ModeConfig.from_settings(read_settings())
-            self._mode_detector = ModeDetector(self._mode_config)
-            logger.info(f"✅ Mode system initialized: ultra_short threshold = {self._mode_config.ultra_short_threshold:.1f}mm")
-        except Exception as e:
-            logger.error(f"❌ Error initializing mode system: {e}")
-            # Fallback to defaults
-            self._mode_config = ModeConfig(
-                machine_zero_homing_mm=250.0,
-                machine_offset_battuta_mm=120.0,
-                machine_max_travel_mm=4000.0,
-                stock_length_mm=6500.0
-            )
-            self._mode_detector = ModeDetector(self._mode_config)
-        
-        # Handlers for special modes (created on-demand)
-        self._out_of_quota_handler: Optional[OutOfQuotaHandler] = None
-        self._ultra_short_handler: Optional[UltraShortHandler] = None
-        self._extra_long_handler: Optional[ExtraLongHandler] = None
-        self._current_mode: str = "normal"
-        self._current_mode_step: int = 0
+        # === NEW: Metro Digitale ===
+        self.metro_manager = get_metro_manager()
+        self._metro_measurements_history = []
 
         self.seq=Sequencer(appwin)
         self.seq.step_started.connect(self._on_step_started)
@@ -501,10 +486,234 @@ class AutomaticoPage(QWidget):
         btn_label_test=QPushButton("Test etichetta"); btn_label_test.clicked.connect(self._test_label); lb.addWidget(btn_label_test)
         rl.addWidget(lab_box,0)
 
+        # === NEW: Metro Digitale Section ===
+        if self.metro_manager.is_available():
+            metro_box = self._build_metro_section()
+            rl.addWidget(metro_box, 0)
+
         rl.addStretch(1); body.addWidget(right,0)
         QShortcut(QKeySequence("Space"), self, activated=self._handle_start_trigger)
         QShortcut(QKeySequence("F9"), self, activated=self._handle_start_trigger)
         QShortcut(QKeySequence("F7"), self, activated=self._simulate_cut_key)
+
+    # ---- Metro Digitale Methods ----
+    def _build_metro_section(self) -> QFrame:
+        """Build Metro Digitale Bluetooth section."""
+        frame = QFrame()
+        frame.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        
+        # Title
+        title = QLabel("📡 Metro Digitale")
+        title.setStyleSheet("font-size: 12pt; font-weight: 700; color: #3498db;")
+        layout.addWidget(title)
+        
+        # Connection controls (compact)
+        conn_layout = QHBoxLayout()
+        
+        self.lbl_metro_status = QLabel("⚪")
+        self.lbl_metro_status.setStyleSheet("font-weight: 600;")
+        self.lbl_metro_status.setToolTip("Metro Digitale status")
+        conn_layout.addWidget(self.lbl_metro_status)
+        
+        self.btn_metro_scan = QPushButton("🔍")
+        self.btn_metro_scan.setMaximumWidth(40)
+        self.btn_metro_scan.setToolTip("Cerca Metro Digitale")
+        self.btn_metro_scan.clicked.connect(self._on_metro_scan)
+        conn_layout.addWidget(self.btn_metro_scan)
+        
+        self.combo_metro_devices = QComboBox()
+        self.combo_metro_devices.setMaximumWidth(180)
+        conn_layout.addWidget(self.combo_metro_devices)
+        
+        self.btn_metro_connect = QPushButton("🔌")
+        self.btn_metro_connect.setMaximumWidth(40)
+        self.btn_metro_connect.setToolTip("Connetti")
+        self.btn_metro_connect.clicked.connect(self._on_metro_connect)
+        self.btn_metro_connect.setEnabled(False)
+        conn_layout.addWidget(self.btn_metro_connect)
+        
+        conn_layout.addStretch()
+        layout.addLayout(conn_layout)
+        
+        # History (compact)
+        history_label = QLabel("📋 Ultime 5:")
+        history_label.setStyleSheet("font-size: 9pt; color: #bdc3c7;")
+        layout.addWidget(history_label)
+        
+        self.list_metro_history = QListWidget()
+        self.list_metro_history.setMaximumHeight(80)
+        self.list_metro_history.setStyleSheet("""
+            QListWidget {
+                background: #2c3e50;
+                border: 1px solid #34495e;
+                border-radius: 4px;
+                font-size: 9pt;
+                color: #ecf0f1;
+            }
+        """)
+        layout.addWidget(self.list_metro_history)
+        
+        return frame
+
+    def showEvent(self, event):
+        """Page becomes visible."""
+        super().showEvent(event)
+        
+        # Set as current page in metro manager
+        if self.metro_manager.is_available():
+            self.metro_manager.set_current_page("automatico")
+            try:
+                self.metro_manager.measurement_received.connect(self._on_metro_measurement)
+                self.metro_manager.connection_changed.connect(self._on_metro_connection_changed)
+            except Exception as e:
+                logger.debug(f"Signal already connected: {e}")
+
+    def hideEvent(self, event):
+        """Page hidden."""
+        super().hideEvent(event)
+        
+        # Disconnect signals
+        if self.metro_manager.is_available():
+            try:
+                self.metro_manager.measurement_received.disconnect(self._on_metro_measurement)
+                self.metro_manager.connection_changed.disconnect(self._on_metro_connection_changed)
+            except Exception:
+                pass
+
+    def _on_metro_scan(self):
+        """Scan for metro devices."""
+        self.btn_metro_scan.setEnabled(False)
+        self.btn_metro_scan.setText("⏳")
+        self.combo_metro_devices.clear()
+        
+        QTimer.singleShot(100, self._do_metro_scan)
+
+    def _do_metro_scan(self):
+        """Execute scan (blocking)."""
+        try:
+            devices = self.metro_manager.scan_devices()
+            
+            if devices:
+                for d in devices:
+                    self.combo_metro_devices.addItem(f"{d['name']}", d['address'])
+                self.btn_metro_connect.setEnabled(True)
+                self._toast(f"Trovati {len(devices)} dispositivi", "info")
+            else:
+                self._toast("Nessun Metro Digitale trovato", "warn")
+        
+        except Exception as e:
+            logger.error(f"Scan error: {e}")
+            self._toast("Errore scan", "err")
+        
+        finally:
+            self.btn_metro_scan.setEnabled(True)
+            self.btn_metro_scan.setText("🔍")
+
+    def _on_metro_connect(self):
+        """Connect to selected metro."""
+        if self.combo_metro_devices.currentIndex() < 0:
+            return
+        
+        address = self.combo_metro_devices.currentData()
+        self.btn_metro_connect.setEnabled(False)
+        self.lbl_metro_status.setText("⏳")
+        
+        QTimer.singleShot(100, lambda: self._do_metro_connect(address))
+
+    def _do_metro_connect(self, address: str):
+        """Execute connection."""
+        success = self.metro_manager.connect(address)
+        
+        if success:
+            self._toast("✅ Metro connesso", "info")
+        else:
+            self._toast("❌ Connessione fallita", "err")
+            self.btn_metro_connect.setEnabled(True)
+
+    def _on_metro_connection_changed(self, connected: bool):
+        """Metro connection status changed."""
+        if connected:
+            self.lbl_metro_status.setText("🟢")
+            self.lbl_metro_status.setToolTip("Metro connesso")
+            self.btn_metro_connect.setEnabled(False)
+            self.btn_metro_scan.setEnabled(False)
+            self.combo_metro_devices.setEnabled(False)
+        else:
+            self.lbl_metro_status.setText("⚪")
+            self.lbl_metro_status.setToolTip("Metro disconnesso")
+            self.btn_metro_connect.setEnabled(False)
+            self.btn_metro_scan.setEnabled(True)
+            self.combo_metro_devices.setEnabled(True)
+
+    def _on_metro_measurement(self, mm: float, mode: str, auto_start: bool):
+        """
+        Measurement received from metro.
+        
+        Args:
+            mm: Measurement in millimeters
+            mode: "semi_auto" | "automatico"
+            auto_start: Auto-start flag from metro
+        """
+        # Only process if routed to automatico
+        if mode != "automatico":
+            logger.info(f"Measurement routed to {mode}, ignoring in automatico")
+            return
+        
+        # Validate
+        if mm <= 0 or mm > 10000:  # Reasonable range
+            self._toast(f"Misura invalida: {mm:.1f}mm", "warn")
+            return
+        
+        # Add measurement to cutlist (manual mode entry)
+        if self._mode == "idle" or self._mode == "manual":
+            # Add to table as a manual entry
+            try:
+                self._enter_manual_mode()  # Switch to manual mode if not already
+                
+                # Create a piece entry
+                row_count = self.tbl_cut.rowCount()
+                self.tbl_cut.insertRow(row_count)
+                
+                # Fill row with measurement
+                seq_id = f"M{row_count + 1}"  # Manual entry
+                profile = ""  # User can edit
+                element = f"Metro {row_count + 1}"
+                
+                self.tbl_cut.setItem(row_count, 0, QTableWidgetItem(seq_id))
+                self.tbl_cut.setItem(row_count, 1, QTableWidgetItem(profile))
+                self.tbl_cut.setItem(row_count, 2, QTableWidgetItem(element))
+                self.tbl_cut.setItem(row_count, 3, QTableWidgetItem(f"{mm:.1f}"))
+                self.tbl_cut.setItem(row_count, 4, QTableWidgetItem("0.0"))
+                self.tbl_cut.setItem(row_count, 5, QTableWidgetItem("0.0"))
+                self.tbl_cut.setItem(row_count, 6, QTableWidgetItem("1"))
+                self.tbl_cut.setItem(row_count, 7, QTableWidgetItem("Metro"))
+                
+                logger.info(f"Added metro measurement to table: {mm:.1f}mm")
+            except Exception as e:
+                logger.error(f"Error adding metro measurement: {e}")
+        
+        # Add to history
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._metro_measurements_history.append({
+            "value": mm,
+            "mode": mode,
+            "timestamp": timestamp
+        })
+        
+        # Update history list (last 5 for compact display)
+        self.list_metro_history.clear()
+        for item in self._metro_measurements_history[-5:]:
+            self.list_metro_history.addItem(
+                f"{item['value']:.1f}mm @ {item['timestamp']}"
+            )
+        self.list_metro_history.scrollToBottom()
+        
+        # Feedback
+        self._toast(f"📏 {mm:.1f}mm [AUTO]", "info")
 
     # ---- Helpers stato / log ----
     def _update_cycle_state_label(self):
