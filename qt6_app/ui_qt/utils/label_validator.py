@@ -2,8 +2,10 @@
 Validation utilities for label elements.
 """
 from __future__ import annotations
-from typing import List, Tuple, Optional
-from .label_element import LabelElement, TextElement, FieldElement, BarcodeElement
+from typing import List, Tuple, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..widgets.label_element import LabelElement, TextElement, FieldElement, BarcodeElement
 
 
 class ValidationResult:
@@ -57,21 +59,24 @@ class LabelValidator:
             ))
         
         # Check text elements
-        if isinstance(element, TextElement):
-            if element.font_size < 6:
+        if type(element).__name__ == "TextElement":
+            font_size = getattr(element, "font_size", 12)
+            text = getattr(element, "text", "")
+            
+            if font_size < 6:
                 results.append(ValidationResult(
                     valid=False,
                     message="Font troppo piccolo (< 6pt)",
                     level="warning"
                 ))
-            elif element.font_size < 8:
+            elif font_size < 8:
                 results.append(ValidationResult(
                     valid=True,
                     message="Font molto piccolo, potrebbe non essere leggibile",
                     level="warning"
                 ))
             
-            if not element.text or element.text.strip() == "":
+            if not text or text.strip() == "":
                 results.append(ValidationResult(
                     valid=False,
                     message="Testo vuoto",
@@ -79,15 +84,18 @@ class LabelValidator:
                 ))
         
         # Check field elements
-        if isinstance(element, FieldElement):
-            if not element.source:
+        if type(element).__name__ == "FieldElement":
+            source = getattr(element, "source", "")
+            font_size = getattr(element, "font_size", 12)
+            
+            if not source:
                 results.append(ValidationResult(
                     valid=False,
                     message="Sorgente dati non configurata",
                     level="error"
                 ))
             
-            if element.font_size < 6:
+            if font_size < 6:
                 results.append(ValidationResult(
                     valid=False,
                     message="Font troppo piccolo (< 6pt)",
@@ -95,15 +103,19 @@ class LabelValidator:
                 ))
         
         # Check barcode elements
-        if isinstance(element, BarcodeElement):
-            if not element.source:
+        if type(element).__name__ == "BarcodeElement":
+            source = getattr(element, "source", "")
+            width = getattr(element, "width", 0)
+            height = getattr(element, "height", 0)
+            
+            if not source:
                 results.append(ValidationResult(
                     valid=False,
                     message="Sorgente dati barcode non configurata",
                     level="error"
                 ))
             
-            if element.width < 30 or element.height < 15:
+            if width < 30 or height < 15:
                 results.append(ValidationResult(
                     valid=False,
                     message="Barcode troppo piccolo",

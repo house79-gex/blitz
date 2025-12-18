@@ -3,8 +3,8 @@ Base classes for label elements in the WYSIWYG editor.
 """
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List
-from PySide6.QtGui import QPainter, QFont, QColor, QImage, QPixmap, QPen, QBrush
+from typing import Dict, Any, Optional
+from PySide6.QtGui import QPainter, QFont, QColor, QPixmap, QPen, QBrush
 from PySide6.QtCore import QRectF, Qt
 
 
