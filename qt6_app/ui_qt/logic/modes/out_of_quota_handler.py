@@ -102,6 +102,7 @@ class OutOfQuotaHandler:
         self.mio = machine_io
         self.config = config or OutOfQuotaConfig()
         self.sequence: Optional[OutOfQuotaSequence] = None
+        self.on_step_complete = None
         logger.info(
             f"OutOfQuotaHandler initialized: "
             f"zero={self.config.zero_homing_mm:.0f}mm, "
@@ -152,6 +153,17 @@ class OutOfQuotaHandler:
         )
         
         return True
+    
+    def _invoke_step_callback(self, step_number: int, description: str):
+        """
+        Invoke step completion callback if provided.
+        
+        Args:
+            step_number: Current step number
+            description: Step description
+        """
+        if self.on_step_complete:
+            self.on_step_complete(step_number, description)
     
     def execute_step_1(self) -> bool:
         """
@@ -210,8 +222,7 @@ class OutOfQuotaHandler:
         logger.info("Step 1 (Heading) completed")
         
         # Call step completion callback if provided
-        if self.on_step_complete:
-            self.on_step_complete(1, f"Heading with mobile head DX @ {self.sequence.heading_position:.0f}mm, {self.sequence.heading_angle:.1f}°")
+        self._invoke_step_callback(1, f"Heading with mobile head DX @ {self.sequence.heading_position:.0f}mm, {self.sequence.heading_angle:.1f}°")
         
         return True
     
@@ -267,8 +278,7 @@ class OutOfQuotaHandler:
         logger.info("Step 2 (Final Cut) completed")
         
         # Call step completion callback if provided
-        if self.on_step_complete:
-            self.on_step_complete(2, f"Final cut with fixed head SX @ {self.sequence.final_position:.0f}mm (piece: {self.sequence.target_length_mm:.1f}mm)")
+        self._invoke_step_callback(2, f"Final cut with fixed head SX @ {self.sequence.final_position:.0f}mm (piece: {self.sequence.target_length_mm:.1f}mm)")
         
         return True
     

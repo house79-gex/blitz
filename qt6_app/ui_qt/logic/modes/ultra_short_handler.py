@@ -124,6 +124,7 @@ class UltraShortHandler:
         self.mio = machine_io
         self.config = config or UltraShortConfig()
         self.sequence: Optional[UltraShortSequence] = None
+        self.on_step_complete = None
         logger.info(
             f"UltraShortHandler initialized: "
             f"zero={self.config.zero_homing_mm:.0f}mm, "
@@ -195,6 +196,17 @@ class UltraShortHandler:
         
         return True
     
+    def _invoke_step_callback(self, step_number: int, description: str):
+        """
+        Invoke step completion callback if provided.
+        
+        Args:
+            step_number: Current step number
+            description: Step description
+        """
+        if self.on_step_complete:
+            self.on_step_complete(step_number, description)
+    
     def execute_step_1(self) -> bool:
         """
         Execute Step 1: Heading with fixed head SX.
@@ -252,8 +264,7 @@ class UltraShortHandler:
         logger.info("Step 1 (Heading) completed")
         
         # Call step completion callback if provided
-        if self.on_step_complete:
-            self.on_step_complete(1, f"Heading with fixed head SX @ {self.sequence.heading_position:.0f}mm, {self.sequence.heading_angle_sx:.1f}°")
+        self._invoke_step_callback(1, f"Heading with fixed head SX @ {self.sequence.heading_position:.0f}mm, {self.sequence.heading_angle_sx:.1f}°")
         
         return True
     
@@ -305,8 +316,7 @@ class UltraShortHandler:
         logger.info(f"Step 2 (Retract) completed: moved to {after_retract_position:.1f}mm")
         
         # Call step completion callback if provided
-        if self.on_step_complete:
-            self.on_step_complete(2, f"Retract mobile head DX by {self.sequence.retract_offset:.0f}mm → {after_retract_position:.0f}mm")
+        self._invoke_step_callback(2, f"Retract mobile head DX by {self.sequence.retract_offset:.0f}mm → {after_retract_position:.0f}mm")
         
         return True
     
@@ -362,8 +372,7 @@ class UltraShortHandler:
         logger.info("Step 3 (Final Cut) completed")
         
         # Call step completion callback if provided
-        if self.on_step_complete:
-            self.on_step_complete(3, f"Final cut with mobile head DX @ {self.sequence.final_position:.0f}mm (piece: {self.sequence.target_length_mm:.1f}mm)")
+        self._invoke_step_callback(3, f"Final cut with mobile head DX @ {self.sequence.final_position:.0f}mm (piece: {self.sequence.target_length_mm:.1f}mm)")
         
         return True
     
