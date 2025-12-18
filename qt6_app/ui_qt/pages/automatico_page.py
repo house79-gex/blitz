@@ -506,10 +506,29 @@ class AutomaticoPage(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
         
-        # Title
+        # Header with toggle button
+        header_layout = QHBoxLayout()
+        
         title = QLabel("📡 Metro Digitale")
         title.setStyleSheet("font-size: 12pt; font-weight: 700; color: #3498db;")
-        layout.addWidget(title)
+        header_layout.addWidget(title)
+        
+        self.btn_metro_toggle = QPushButton("▼")
+        self.btn_metro_toggle.setMaximumWidth(30)
+        self.btn_metro_toggle.setCheckable(True)
+        self.btn_metro_toggle.setChecked(True)  # Expanded by default
+        self.btn_metro_toggle.setToolTip("Espandi/Riduci sezione Metro")
+        self.btn_metro_toggle.clicked.connect(self._on_metro_toggle)
+        header_layout.addWidget(self.btn_metro_toggle)
+        
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+        
+        # Collapsible content
+        self.metro_content = QFrame()
+        content_layout = QVBoxLayout(self.metro_content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
         
         # Connection controls (compact)
         conn_layout = QHBoxLayout()
@@ -537,12 +556,12 @@ class AutomaticoPage(QWidget):
         conn_layout.addWidget(self.btn_metro_connect)
         
         conn_layout.addStretch()
-        layout.addLayout(conn_layout)
+        content_layout.addLayout(conn_layout)
         
         # History (compact)
         history_label = QLabel("📋 Ultime 5:")
         history_label.setStyleSheet("font-size: 9pt; color: #bdc3c7;")
-        layout.addWidget(history_label)
+        content_layout.addWidget(history_label)
         
         self.list_metro_history = QListWidget()
         self.list_metro_history.setMaximumHeight(80)
@@ -555,9 +574,38 @@ class AutomaticoPage(QWidget):
                 color: #ecf0f1;
             }
         """)
-        layout.addWidget(self.list_metro_history)
+        content_layout.addWidget(self.list_metro_history)
+        
+        layout.addWidget(self.metro_content)
+        
+        # Load saved state
+        self._load_metro_collapsed_state()
         
         return frame
+    
+    def _on_metro_toggle(self, checked: bool):
+        """Toggle metro section visibility."""
+        self.metro_content.setVisible(checked)
+        self.btn_metro_toggle.setText("▼" if checked else "▶")
+        
+        # Save state
+        try:
+            settings = read_settings()
+            settings["metro_section_expanded"] = checked
+            write_settings(settings)
+        except Exception as e:
+            logger.error(f"Error saving metro state: {e}")
+    
+    def _load_metro_collapsed_state(self):
+        """Load metro section collapsed state from settings."""
+        try:
+            settings = read_settings()
+            expanded = settings.get("metro_section_expanded", True)
+            self.btn_metro_toggle.setChecked(expanded)
+            self.metro_content.setVisible(expanded)
+            self.btn_metro_toggle.setText("▼" if expanded else "▶")
+        except Exception:
+            pass
 
     def showEvent(self, event):
         """Page becomes visible."""
@@ -811,11 +859,13 @@ class AutomaticoPage(QWidget):
             self._knap_cons_angle_deg=float(cfg.get("opt_knap_conservative_angle_deg",45.0))
             self._ripasso_mm=float(cfg.get("opt_ripasso_mm",0.0))
             self._warn_overflow_mm=float(cfg.get("opt_warn_overflow_mm",0.5))
+            # FIX: Reload auto_continue flags
             self._auto_continue_enabled=bool(cfg.get("opt_auto_continue_enabled",False))
             self._auto_continue_across_bars=bool(cfg.get("opt_auto_continue_across_bars",False))
             self._strict_bar_sequence=bool(cfg.get("opt_strict_bar_sequence",True))
             self._tail_refine_enabled=bool(cfg.get("opt_enable_tail_refine",True))
             self._allow_skip_cut=bool(cfg.get("opt_allow_skip_cut",False))
+            logger.info(f"Auto-continue updated: enabled={self._auto_continue_enabled}")
 
     # ---- Import cutlist ----
     def _import_cutlist(self):
@@ -1429,26 +1479,33 @@ class AutomaticoPage(QWidget):
         Fix: Rimosso limite 400mm, corretto skip_move per stessa barra. 
         """
         if not self._auto_continue_enabled:
+            logger.debug("Auto-continue disabled")
             return
         
         cur = self._seq_plan[self._seq_pos] if 0 <= self._seq_pos < len(self._seq_plan) else None
         nxt = self._next_seq_piece()
         
         if not cur or not nxt:
+            logger.debug(f"Auto-continue: cur={bool(cur)}, nxt={bool(nxt)}")
             return
         
         if not self._same_sig(cur, nxt):
+            logger.debug("Auto-continue: pieces not identical")
             return
         
         same_bar = (cur.get("bar") == nxt.get("bar"))
         
         if self._strict_bar_sequence and not same_bar:
+            logger.debug("Auto-continue: strict sequence, different bar")
             return
         
         if not same_bar and not self._auto_continue_across_bars:
+            logger.debug("Auto-continue: cross-bar disabled")
             return
         
-        self._log_state("Auto-continue triggered")
+        # All conditions met
+        logger.info(f"✅ Auto-continue triggered: same_bar={same_bar}")
+        self._log_state("Auto-continue: advancing")
         
         if same_bar:
             self._advance_to_next_piece(skip_move=True)
@@ -1474,17 +1531,21 @@ class AutomaticoPage(QWidget):
         self._log_state("Cut executed → WAIT_BRAKE")
 
     def _simulate_manual_cut(self):
-        if self._mode!="manual": return
-        if self._state!=STATE_READY: return
+        """Execute manual cut in any mode."""
+        if self._state!=STATE_READY: 
+            logger.warning(f"Cannot cut: state={self._state}")
+            return
         piece=self._manual_current_piece
-        if not piece: return
+        if not piece: 
+            logger.warning("No manual piece set")
+            return
         self._dec_row_qty_for_sig(piece["profile"],piece["len"],piece["ax"],piece["ad"])
         self._emit_label(piece)
         self.pieceCut.emit({**piece,"mode":"manual"})
         self._piece_tagliato=True
         self._state=STATE_WAIT_BRAKE
         self._update_cycle_state_label()
-        self._log_state("Manual cut executed → WAIT_BRAKE")
+        self._log_state(f"Manual cut executed in mode={self._mode} → WAIT_BRAKE")
 
     def simulate_cut_from_dialog(self):
         if self._mode=="plan":
@@ -1493,9 +1554,11 @@ class AutomaticoPage(QWidget):
             self._simulate_manual_cut()
 
     def _simulate_cut_key(self):
+        """Handle F7 cut key in any mode."""
         if self._mode=="plan":
             self._simulate_cut_once()
-        elif self._mode=="manual":
+        else:
+            # Allow manual cut in manual, idle, or plan mode
             self._simulate_manual_cut()
 
     # ---- Start (F9 / Space) ----

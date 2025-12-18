@@ -170,10 +170,9 @@ class OutOfQuotaHandler:
         Execute Step 1: Heading with mobile head DX @ 45°.
         
         Actions:
-        1. Set blade inhibits: Left=True, Right=False
-        2. Set morse: Both locked
-        3. Move to heading_position with heading_angle on DX
-        4. Lock brake
+        1. Apply angles FIRST
+        2. Configure morse (both locked)
+        3. Start movement to heading_position
         
         Returns:
             True if step executed successfully
@@ -187,53 +186,46 @@ class OutOfQuotaHandler:
         
         logger.info("Executing Out of Quota Step 1: Heading")
         
-        # Step 1: Set blade inhibits
-        if hasattr(self.mio, "set_blade_inhibits"):
-            self.mio.set_blade_inhibits(left=True, right=False)
-        else:
-            logger.warning("Machine I/O does not support set_blade_inhibits")
-        
-        # Step 2: Set morse (both locked)
-        if hasattr(self.mio, "set_morse"):
-            self.mio.set_morse(left_locked=True, right_locked=True)
-        else:
-            logger.warning("Machine I/O does not support set_morse")
-        
-        # Step 3: Move to heading position
-        if hasattr(self.mio, "command_move"):
-            success = self.mio.command_move(
-                length_mm=self.sequence.heading_position,
-                angle_sx=self.sequence.angle_sx,  # Keep SX angle unchanged
-                angle_dx=self.sequence.heading_angle,  # DX @ 45°
-                profile="default",
-                element="out_of_quota_heading"
+        try:
+            # 1. Apply angles FIRST
+            self.mio.command_set_head_angles(
+                sx=90.0,  # Fixed head always 90°
+                dx=self.sequence.heading_angle
             )
-            if not success:
-                logger.error("Failed to start heading movement")
-                return False
-        else:
-            logger.warning("Machine I/O does not support command_move")
-        
-        # Step 4: Lock brake (typically done after movement completes)
-        if hasattr(self.mio, "command_lock_brake"):
-            self.mio.command_lock_brake()
-        
-        self.sequence.current_step = 1
-        logger.info("Step 1 (Heading) completed")
-        
-        # Call step completion callback if provided
-        self._invoke_step_callback(1, f"Heading with mobile head DX @ {self.sequence.heading_position:.0f}mm, {self.sequence.heading_angle:.1f}°")
-        
-        return True
+            
+            # 2. Configure morse for heading
+            from ui_qt.logic.modes.morse_strategy import MorseStrategy
+            morse_config = MorseStrategy.out_of_quota_heading()
+            self.mio.command_set_morse(
+                morse_config["left_locked"],
+                morse_config["right_locked"]
+            )
+            
+            # 3. Start movement
+            success = self.mio.command_move(
+                self.sequence.heading_position,
+                ang_sx=90.0,
+                ang_dx=self.sequence.heading_angle
+            )
+            
+            if success:
+                self.sequence.current_step = 1
+                logger.info(f"Out of quota step 1: heading @ {self.sequence.heading_position:.1f}mm")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Error executing step 1: {e}")
+            return False
     
     def execute_step_2(self) -> bool:
         """
         Execute Step 2: Final cut with fixed head SX.
         
         Actions:
-        1. Set blade inhibits: Left=False, Right=True
-        2. Set morse: Left released, Right locked
-        3. Move to final_position with final angles
+        1. Apply angles for final cut
+        2. Release brake to allow movement
+        3. Configure morse for final cut
+        4. Start movement
         
         Returns:
             True if step executed successfully
@@ -247,37 +239,39 @@ class OutOfQuotaHandler:
         
         logger.info("Executing Out of Quota Step 2: Final Cut")
         
-        # Step 1: Set blade inhibits
-        if hasattr(self.mio, "set_blade_inhibits"):
-            self.mio.set_blade_inhibits(left=False, right=True)
-        else:
-            logger.warning("Machine I/O does not support set_blade_inhibits")
-        
-        # Step 2: Set morse (left released, right locked)
-        if hasattr(self.mio, "set_morse"):
-            self.mio.set_morse(left_locked=False, right_locked=True)
-        else:
-            logger.warning("Machine I/O does not support set_morse")
-        
-        # Step 3: Move to final position
-        if hasattr(self.mio, "command_move"):
-            success = self.mio.command_move(
-                length_mm=self.sequence.final_position,
-                angle_sx=self.sequence.final_angle_sx,
-                angle_dx=self.sequence.final_angle_dx,
-                profile="default",
-                element="out_of_quota_final"
+        try:
+            # 1. Apply angles for final cut
+            self.mio.command_set_head_angles(
+                sx=self.sequence.final_angle_sx,
+                dx=0.0  # Mobile head not used
             )
-            if not success:
-                logger.error("Failed to start final movement")
-                return False
-        else:
-            logger.warning("Machine I/O does not support command_move")
-        
-        self.sequence.current_step = 2
-        logger.info("Step 2 (Final Cut) completed")
-        
-        # Call step completion callback if provided
+            
+            # 2. Release brake to allow movement
+            self.mio.command_release_brake()
+            
+            # 3. Configure morse for final cut
+            from ui_qt.logic.modes.morse_strategy import MorseStrategy
+            morse_config = MorseStrategy.out_of_quota_final()
+            self.mio.command_set_morse(
+                morse_config["left_locked"],
+                morse_config["right_locked"]
+            )
+            
+            # 4. Start movement
+            success = self.mio.command_move(
+                self.sequence.final_position,
+                ang_sx=self.sequence.final_angle_sx,
+                ang_dx=0.0
+            )
+            
+            if success:
+                self.sequence.current_step = 2
+                logger.info(f"Out of quota step 2: final @ {self.sequence.final_position:.1f}mm")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Error executing step 2: {e}")
+            return False
         self._invoke_step_callback(2, f"Final cut with fixed head SX @ {self.sequence.final_position:.0f}mm (piece: {self.sequence.target_length_mm:.1f}mm)")
         
         return True

@@ -158,10 +158,9 @@ class ExtraLongHandler:
         Execute Step 1: Heading with mobile head DX.
         
         Actions:
-        1. Set blade inhibits: Left=True, Right=False (Right blade DX enabled)
-        2. Set morse: Both locked
-        3. Move to heading position (pos_head_cut_dx)
-        4. Lock brake
+        1. Apply angles FIRST
+        2. Configure morse (both locked)
+        3. Start movement to heading position
         
         Returns:
             True if step executed successfully
@@ -175,58 +174,43 @@ class ExtraLongHandler:
         
         logger.info("Executing Extra Long Step 1: Heading with mobile head DX")
         
-        # Set blade inhibits (Right blade enabled for DX heading)
-        if hasattr(self.mio, "set_blade_inhibits"):
-            self.mio.set_blade_inhibits(
-                left=self.sequence.blade_left_inhibit,
-                right=not self.sequence.blade_right_enable
+        try:
+            # 1. Apply angles FIRST
+            self.mio.command_set_head_angles(
+                sx=90.0,  # Fixed head not used yet
+                dx=self.sequence.angle_head_cut_dx
             )
-        else:
-            logger.warning("Machine I/O does not support set_blade_inhibits")
-        
-        # Set morse (both locked)
-        if hasattr(self.mio, "set_morse"):
-            self.mio.set_morse(
+            
+            # 2. Configure morse for heading
+            self.mio.command_set_morse(
                 left_locked=self.sequence.presser_left_lock,
                 right_locked=self.sequence.presser_right_lock
             )
-        else:
-            logger.warning("Machine I/O does not support set_morse")
-        
-        # Move to heading position
-        if hasattr(self.mio, "command_move"):
+            
+            # 3. Start movement
             success = self.mio.command_move(
-                length_mm=self.sequence.pos_head_cut_dx,
-                angle_sx=self.sequence.angle_final_cut_sx,  # Keep SX angle
-                angle_dx=self.sequence.angle_head_cut_dx,
-                profile="default",
-                element="extra_long_heading"
+                self.sequence.pos_head_cut_dx,
+                ang_sx=90.0,
+                ang_dx=self.sequence.angle_head_cut_dx
             )
-            if not success:
-                logger.error("Failed to start heading movement")
-                return False
-        else:
-            logger.warning("Machine I/O does not support command_move")
-        
-        # Lock brake
-        if hasattr(self.mio, "command_lock_brake"):
-            self.mio.command_lock_brake()
-        
-        self.sequence.current_step = 1
-        logger.info("Step 1 (Heading) completed")
-        
-        # Call step completion callback if provided
-        self._invoke_step_callback(1, f"Heading with mobile head DX @ {self.sequence.pos_head_cut_dx:.0f}mm, {self.sequence.angle_head_cut_dx:.1f}°")
-        
-        return True
+            
+            if success:
+                self.sequence.current_step = 1
+                logger.info(f"Extra long step 1: heading @ {self.sequence.pos_head_cut_dx:.1f}mm")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Error executing step 1: {e}")
+            return False
     
     def execute_step_2(self) -> bool:
         """
         Execute Step 2: Retract mobile head DX.
         
         Actions:
-        1. Set morse: Left locked, Right released (DX pulls material)
-        2. Move DX back by offset_mm
+        1. Release brake to allow movement
+        2. Configure morse (left locked, right released)
+        3. Move DX back by offset_mm
         
         Returns:
             True if step executed successfully
@@ -240,46 +224,41 @@ class ExtraLongHandler:
         
         logger.info("Executing Extra Long Step 2: Retract mobile head DX")
         
-        # Set morse (left locked, right released)
-        if hasattr(self.mio, "set_morse"):
-            self.mio.set_morse(
+        try:
+            # 1. Release brake to allow movement
+            self.mio.command_release_brake()
+            
+            # 2. Configure morse for retract
+            self.mio.command_set_morse(
                 left_locked=self.sequence.presser_left_lock_step2,
                 right_locked=not self.sequence.presser_right_release_step2
             )
-        else:
-            logger.warning("Machine I/O does not support set_morse")
-        
-        # Move to position after retract
-        if hasattr(self.mio, "command_move"):
+            
+            # 3. Move to position after retract
             success = self.mio.command_move(
-                length_mm=self.sequence.pos_after_retract_dx,
-                angle_sx=self.sequence.angle_final_cut_sx,
-                angle_dx=self.sequence.angle_head_cut_dx,
-                profile="default",
-                element="extra_long_retract"
+                self.sequence.pos_after_retract_dx,
+                ang_sx=90.0,
+                ang_dx=self.sequence.angle_head_cut_dx
             )
-            if not success:
-                logger.error("Failed to start retract movement")
-                return False
-        else:
-            logger.warning("Machine I/O does not support command_move")
-        
-        self.sequence.current_step = 2
-        logger.info(f"Step 2 (Retract) completed: moved to {self.sequence.pos_after_retract_dx:.1f}mm")
-        
-        # Call step completion callback if provided
-        self._invoke_step_callback(2, f"Retract mobile head DX by {self.sequence.offset_mm:.0f}mm → {self.sequence.pos_after_retract_dx:.0f}mm")
-        
-        return True
+            
+            if success:
+                self.sequence.current_step = 2
+                logger.info(f"Extra long step 2: retract to {self.sequence.pos_after_retract_dx:.1f}mm")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Error executing step 2: {e}")
+            return False
     
     def execute_step_3(self) -> bool:
         """
         Execute Step 3: Final cut with fixed head SX.
         
         Actions:
-        1. Set blade inhibits: Left=False, Right=True (Left blade SX enabled)
-        2. Set morse: Right locked first, then left released (non-simultaneous)
-        3. Move to final position (pos_final_cut_dx)
+        1. Apply angles for final cut
+        2. Release brake to allow movement
+        3. Configure morse for final cut
+        4. Move to final position
         
         Returns:
             True if step executed successfully
@@ -293,57 +272,37 @@ class ExtraLongHandler:
         
         logger.info("Executing Extra Long Step 3: Final cut with fixed head SX")
         
-        # Set blade inhibits (Left blade enabled for SX final cut)
-        if hasattr(self.mio, "set_blade_inhibits"):
-            self.mio.set_blade_inhibits(
-                left=not self.sequence.blade_left_enable,
-                right=self.sequence.blade_right_inhibit_step3
+        try:
+            # 1. Apply angles for final cut
+            self.mio.command_set_head_angles(
+                sx=self.sequence.angle_final_cut_sx,
+                dx=90.0  # Mobile head not used
             )
-        else:
-            logger.warning("Machine I/O does not support set_blade_inhibits")
-        
-        # Set morse: Right locked first
-        if hasattr(self.mio, "set_morse"):
-            self.mio.set_morse(
-                left_locked=True,  # Keep left locked initially
-                right_locked=self.sequence.presser_right_lock_step3
-            )
-        else:
-            logger.warning("Machine I/O does not support set_morse")
-        
-        # Brief delay before releasing left
-        import time
-        time.sleep(0.1)
-        
-        # Now release left
-        if hasattr(self.mio, "set_morse"):
-            self.mio.set_morse(
+            
+            # 2. Release brake to allow movement
+            self.mio.command_release_brake()
+            
+            # 3. Configure morse for final cut
+            self.mio.command_set_morse(
                 left_locked=not self.sequence.presser_left_release_step3,
                 right_locked=self.sequence.presser_right_lock_step3
             )
-        
-        # Move to final position
-        if hasattr(self.mio, "command_move"):
+            
+            # 4. Move to final position
             success = self.mio.command_move(
-                length_mm=self.sequence.pos_final_cut_dx,
-                angle_sx=self.sequence.angle_final_cut_sx,
-                angle_dx=self.sequence.angle_head_cut_dx,
-                profile="default",
-                element="extra_long_final"
+                self.sequence.pos_final_cut_dx,
+                ang_sx=self.sequence.angle_final_cut_sx,
+                ang_dx=90.0
             )
-            if not success:
-                logger.error("Failed to start final movement")
-                return False
-        else:
-            logger.warning("Machine I/O does not support command_move")
-        
-        self.sequence.current_step = 3
-        logger.info("Step 3 (Final Cut) completed")
-        
-        # Call step completion callback if provided
-        self._invoke_step_callback(3, f"Final cut with fixed head SX @ {self.sequence.pos_final_cut_dx:.0f}mm")
-        
-        return True
+            
+            if success:
+                self.sequence.current_step = 3
+                logger.info(f"Extra long step 3: final @ {self.sequence.pos_final_cut_dx:.1f}mm")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Error executing step 3: {e}")
+            return False
     
     def get_current_step(self) -> int:
         """
