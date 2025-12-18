@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         self._try_add_page("tipologie", "ui_qt.pages.tipologie_page", "TipologiePage")
         self._try_add_page("quotevani", "ui_qt.pages.quotevani_page", "QuoteVaniPage")
         self._try_add_page("utility", "ui_qt.pages.utility_page", "UtilityPage")
+        self._try_add_page("cutlist", "ui_qt.pages.cutlist_page", "CutlistPage")
 
         self.show_page("home")
 
