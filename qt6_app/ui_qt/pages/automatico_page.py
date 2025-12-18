@@ -374,6 +374,29 @@ class AutomaticoPage(QWidget):
 
         self._manual_current_piece=None
 
+        # === Mode system initialization ===
+        try:
+            settings = read_settings()
+            self._mode_config = ModeConfig.from_settings(settings)
+            self._mode_detector = ModeDetector(self._mode_config)
+        except Exception as e:
+            logger.error(f"Error initializing mode system: {e}")
+            # Fallback to default config
+            self._mode_config = ModeConfig(
+                machine_zero_homing_mm=250.0,
+                machine_offset_battuta_mm=120.0,
+                machine_max_travel_mm=4000.0,
+                stock_length_mm=6500.0
+            )
+            self._mode_detector = ModeDetector(self._mode_config)
+        
+        # Handlers for special modes (lazy initialization)
+        self._out_of_quota_handler: Optional[OutOfQuotaHandler] = None
+        self._ultra_short_handler: Optional[UltraShortHandler] = None
+        self._extra_long_handler: Optional[ExtraLongHandler] = None
+        self._current_mode: str = "normal"
+        self._current_mode_handler = None
+
         self._poll=None
         self._build()
 
@@ -1183,6 +1206,11 @@ class AutomaticoPage(QWidget):
             self._toast(f"❌ Errore sequenza: {e}", "error")
             self._state = STATE_IDLE
         
+        except Exception as e:
+            logger.error(f"Error starting normal movement: {e}")
+            self._toast(f"Errore movimento: {e}", "error")
+        
+        # Update UI state
         self._update_cycle_state_label()
 
     def _try_auto_continue(self):
