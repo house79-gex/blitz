@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QSpinBox, QGridLayout, QDoubleSpinBox, QLineEdit, QComboBox,
     QSizePolicy, QCheckBox, QAbstractSpinBox, QToolButton, QStyle, QApplication,
-    QMessageBox
+    QMessageBox, QListWidget
 )
 from PySide6.QtCore import Qt, QTimer, QSize, QLocale, QRect
 from PySide6.QtGui import QKeyEvent, QGuiApplication
@@ -24,6 +24,10 @@ from ui_qt.logic.modes.extra_long_handler import ExtraLongConfig
 from ui_qt.utils.settings import read_settings
 import math
 import logging
+from datetime import datetime
+
+# Metro Digitale integration
+from ui_qt.services.metro_digitale_manager import get_metro_manager
 
 logger = logging.getLogger("semi_auto_page")
 
@@ -57,6 +61,10 @@ class SemiAutoPage(QWidget):
         self.appwin = appwin
         self.machine = appwin.machine               # raw machine (StatusPanel)
         self.mio = getattr(appwin, "machine_adapter", None)
+
+        # === NEW: Metro Digitale ===
+        self.metro_manager = get_metro_manager()
+        self._metro_measurements_history = []
 
         self.profiles_store = ProfilesStore() if ProfilesStore else None
         self._profiles = self._load_profiles_dict()
@@ -345,6 +353,11 @@ class SemiAutoPage(QWidget):
         bottom_box.addLayout(ctrl_row)
         left_col.addLayout(bottom_box, 0)
 
+        # === NEW: Metro Digitale Section ===
+        if self.metro_manager.is_available():
+            metro_frame = self._build_metro_section()
+            left_col.addWidget(metro_frame, 0)
+
         right_container = QFrame()
         right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         right_container.setFixedWidth(STATUS_W)
@@ -401,6 +414,231 @@ class SemiAutoPage(QWidget):
         self.banner.setVisible(True)
         if auto_hide_ms > 0:
             QTimer.singleShot(auto_hide_ms, lambda: self.banner.setVisible(False))
+
+    # ---------- Metro Digitale Methods ----------
+    def _build_metro_section(self) -> QFrame:
+        """Build Metro Digitale Bluetooth section."""
+        frame = QFrame()
+        frame.setStyleSheet("""
+            QFrame {
+                background: #34495e;
+                border: 2px solid #3498db;
+                border-radius: 8px;
+                padding: 12px;
+            }
+        """)
+        
+        layout = QVBoxLayout(frame)
+        layout.setSpacing(10)
+        
+        # Title
+        title = QLabel("📡 Metro Digitale Bluetooth")
+        title.setStyleSheet("font-size: 13pt; font-weight: 700; color: #3498db;")
+        layout.addWidget(title)
+        
+        # Connection controls
+        conn_layout = QHBoxLayout()
+        
+        self.lbl_metro_status = QLabel("⚪ Disconnesso")
+        self.lbl_metro_status.setStyleSheet("font-weight: 600;")
+        conn_layout.addWidget(self.lbl_metro_status)
+        
+        self.btn_metro_scan = QPushButton("🔍 Cerca")
+        self.btn_metro_scan.clicked.connect(self._on_metro_scan)
+        self.btn_metro_scan.setStyleSheet("""
+            QPushButton {
+                background: #3498db;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: #2980b9; }
+        """)
+        conn_layout.addWidget(self.btn_metro_scan)
+        
+        self.combo_metro_devices = QComboBox()
+        self.combo_metro_devices.setMinimumWidth(200)
+        conn_layout.addWidget(self.combo_metro_devices)
+        
+        self.btn_metro_connect = QPushButton("🔌 Connetti")
+        self.btn_metro_connect.clicked.connect(self._on_metro_connect)
+        self.btn_metro_connect.setEnabled(False)
+        self.btn_metro_connect.setStyleSheet("""
+            QPushButton {
+                background: #27ae60;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: #229954; }
+            QPushButton:disabled { background: #7f8c8d; }
+        """)
+        conn_layout.addWidget(self.btn_metro_connect)
+        
+        conn_layout.addStretch()
+        layout.addLayout(conn_layout)
+        
+        # Auto-position checkbox
+        self.chk_auto_position = QCheckBox("⚡ Auto-Posiziona al ricevimento misura")
+        self.chk_auto_position.setStyleSheet("font-size: 11pt; color: #ecf0f1;")
+        self.chk_auto_position.setToolTip("Se attivo, avvia automaticamente il posizionamento quando riceve una misura")
+        layout.addWidget(self.chk_auto_position)
+        
+        # History
+        history_label = QLabel("📋 Cronologia Misure (ultime 10):")
+        history_label.setStyleSheet("font-size: 10pt; color: #bdc3c7; margin-top: 8px;")
+        layout.addWidget(history_label)
+        
+        self.list_metro_history = QListWidget()
+        self.list_metro_history.setMaximumHeight(100)
+        self.list_metro_history.setStyleSheet("""
+            QListWidget {
+                background: #2c3e50;
+                border: 1px solid #34495e;
+                border-radius: 4px;
+                font-size: 10pt;
+                color: #ecf0f1;
+            }
+        """)
+        layout.addWidget(self.list_metro_history)
+        
+        return frame
+
+    def showEvent(self, event):
+        """Page becomes visible."""
+        super().showEvent(event)
+        
+        # Set as current page in metro manager
+        if self.metro_manager.is_available():
+            self.metro_manager.set_current_page("semi_auto")
+            try:
+                self.metro_manager.measurement_received.connect(self._on_metro_measurement)
+                self.metro_manager.connection_changed.connect(self._on_metro_connection_changed)
+            except Exception as e:
+                logger.debug(f"Signal already connected: {e}")
+
+    def hideEvent(self, event):
+        """Page hidden."""
+        super().hideEvent(event)
+        
+        # Disconnect signals
+        if self.metro_manager.is_available():
+            try:
+                self.metro_manager.measurement_received.disconnect(self._on_metro_measurement)
+                self.metro_manager.connection_changed.disconnect(self._on_metro_connection_changed)
+            except Exception:
+                pass
+
+    def _on_metro_scan(self):
+        """Scan for metro devices."""
+        self.btn_metro_scan.setEnabled(False)
+        self.btn_metro_scan.setText("⏳ Scanning...")
+        self.combo_metro_devices.clear()
+        
+        QTimer.singleShot(100, self._do_metro_scan)
+
+    def _do_metro_scan(self):
+        """Execute scan (blocking)."""
+        try:
+            devices = self.metro_manager.scan_devices()
+            
+            if devices:
+                for d in devices:
+                    self.combo_metro_devices.addItem(f"{d['name']} ({d['address']})", d['address'])
+                self.btn_metro_connect.setEnabled(True)
+                self._show_info(f"Trovati {len(devices)} dispositivi", auto_hide_ms=2000)
+            else:
+                self._show_warn("Nessun Metro Digitale trovato", auto_hide_ms=2500)
+        
+        except Exception as e:
+            logger.error(f"Scan error: {e}")
+            self._show_warn("Errore scan", auto_hide_ms=2500)
+        
+        finally:
+            self.btn_metro_scan.setEnabled(True)
+            self.btn_metro_scan.setText("🔍 Cerca")
+
+    def _on_metro_connect(self):
+        """Connect to selected metro."""
+        if self.combo_metro_devices.currentIndex() < 0:
+            return
+        
+        address = self.combo_metro_devices.currentData()
+        self.btn_metro_connect.setEnabled(False)
+        self.lbl_metro_status.setText("⏳ Connessione...")
+        
+        QTimer.singleShot(100, lambda: self._do_metro_connect(address))
+
+    def _do_metro_connect(self, address: str):
+        """Execute connection."""
+        success = self.metro_manager.connect(address)
+        
+        if success:
+            self._show_info("✅ Metro connesso", auto_hide_ms=2000)
+        else:
+            self._show_warn("❌ Connessione fallita", auto_hide_ms=2500)
+            self.btn_metro_connect.setEnabled(True)
+
+    def _on_metro_connection_changed(self, connected: bool):
+        """Metro connection status changed."""
+        if connected:
+            self.lbl_metro_status.setText("🟢 Connesso")
+            self.btn_metro_connect.setEnabled(False)
+            self.btn_metro_scan.setEnabled(False)
+            self.combo_metro_devices.setEnabled(False)
+        else:
+            self.lbl_metro_status.setText("⚪ Disconnesso")
+            self.btn_metro_connect.setEnabled(False)
+            self.btn_metro_scan.setEnabled(True)
+            self.combo_metro_devices.setEnabled(True)
+
+    def _on_metro_measurement(self, mm: float, mode: str, auto_start: bool):
+        """
+        Measurement received from metro.
+        
+        Args:
+            mm: Measurement in millimeters
+            mode: "semi_auto" | "automatico"
+            auto_start: Auto-start flag from metro
+        """
+        # Only process if routed to semi_auto
+        if mode != "semi_auto":
+            logger.info(f"Measurement routed to {mode}, ignoring in semi_auto")
+            return
+        
+        # Validate
+        if mm <= 0 or mm > 10000:  # Reasonable range
+            self._show_warn(f"Misura invalida: {mm:.1f}mm", auto_hide_ms=2500)
+            return
+        
+        # Populate external length field
+        self.ext_len.setText(str(mm))
+        
+        # Add to history
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._metro_measurements_history.append({
+            "value": mm,
+            "mode": mode,
+            "timestamp": timestamp
+        })
+        
+        # Update history list (last 10)
+        self.list_metro_history.clear()
+        for item in self._metro_measurements_history[-10:]:
+            self.list_metro_history.addItem(
+                f"✓ {item['value']:.1f}mm → {item['mode'].upper()} @ {item['timestamp']}"
+            )
+        self.list_metro_history.scrollToBottom()
+        
+        # Feedback
+        self._show_info(f"📏 Misura ricevuta: {mm:.1f}mm [SEMI-AUTO]", auto_hide_ms=2000)
+        
+        # Auto-position if enabled
+        if self.chk_auto_position.isChecked() or auto_start:
+            logger.info("Auto-positioning enabled, starting movement...")
+            QTimer.singleShot(500, self._on_cut)
 
     # ---------- Utils ----------
     def _force_decimal_point(self, spinbox: QDoubleSpinBox, s: str):

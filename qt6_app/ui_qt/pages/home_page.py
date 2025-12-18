@@ -123,7 +123,7 @@ class HomePage(QWidget):
             btn.clicked.connect(lambda: self.appwin.show_page(key))
             return btn
 
-        # Colonna sinistra: Tipologie, Quote Vani Luce, Utility
+        # Colonna sinistra: Tipologie, Quote Vani Luce, Utility, Cutlist
         # Colonna destra: Automatico, Semi-Automatico, Manuale
         tiles = [
             ("Tipologie", "tipologie"),

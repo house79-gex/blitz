@@ -44,3 +44,7 @@ data/*.db-journal
 # Generated documentation artifacts
 docs/blitz/outputs/*.xlsx
 docs/blitz/outputs/*.pdf
+
+# Cutlist projects
+projects/
+*.blz
