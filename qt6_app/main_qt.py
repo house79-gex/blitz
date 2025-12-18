@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         self._try_add_page("tipologie", "ui_qt.pages.tipologie_page", "TipologiePage")
         self._try_add_page("quotevani", "ui_qt.pages.quotevani_page", "QuoteVaniPage")
         self._try_add_page("utility", "ui_qt.pages.utility_page", "UtilityPage")
+        self._try_add_page("label_editor", "ui_qt.pages.label_editor_page", "LabelEditorPage")
 
         self.show_page("home")
 
@@ -107,6 +108,10 @@ class MainWindow(QMainWindow):
             def go_home(nav_self):
                 nav_self._mw.show_page("home")
         self.nav = _Nav(self)
+    
+    def go_home(self):
+        """Navigate to home page."""
+        self.show_page("home")
 
     def _make_machine(self, simulation: bool):
         logger = logging.getLogger("blitz")

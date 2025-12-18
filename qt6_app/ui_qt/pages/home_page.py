@@ -132,6 +132,7 @@ class HomePage(QWidget):
             ("Semi-Automatico", "semi"),
             ("Utility", "utility"),
             ("Manuale", "manuale"),
+            ("🏷️ Editor Etichette", "label_editor"),
         ]
 
         r, c = 0, 0
