@@ -21,7 +21,7 @@ Key Difference from Extra Long:
    - Morse: Left released, Right locked
 """
 from dataclasses import dataclass
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Callable
 import logging
 
 logger = logging.getLogger(__name__)
@@ -124,6 +124,7 @@ class UltraShortHandler:
         self.mio = machine_io
         self.config = config or UltraShortConfig()
         self.sequence: Optional[UltraShortSequence] = None
+        self.on_step_complete = None
         logger.info(
             f"UltraShortHandler initialized: "
             f"zero={self.config.zero_homing_mm:.0f}mm, "
@@ -135,7 +136,8 @@ class UltraShortHandler:
         self,
         target_length_mm: float,
         angle_sx: float,
-        angle_dx: float
+        angle_dx: float,
+        on_step_complete: Optional[Callable[[int, str], None]] = None
     ) -> bool:
         """
         Start ultra short cutting sequence.
@@ -144,10 +146,14 @@ class UltraShortHandler:
             target_length_mm: Target piece length
             angle_sx: Angle for fixed head SX
             angle_dx: Angle for mobile head DX
+            on_step_complete: Optional callback function called after each step completion
+                             Signature: on_step_complete(step_num: int, step_name: str)
         
         Returns:
             True if sequence started successfully
         """
+        # Store callback for use during sequence execution
+        self.on_step_complete = on_step_complete
         # Validate length
         if target_length_mm > self.config.ultra_short_threshold:
             logger.error(
@@ -246,6 +252,11 @@ class UltraShortHandler:
         
         self.sequence.current_step = 1
         logger.info("Step 1 (Heading) completed")
+        
+        # Call completion callback if provided
+        if self.on_step_complete:
+            self.on_step_complete(1, "Heading")
+        
         return True
     
     def execute_step_2(self) -> bool:
@@ -294,6 +305,11 @@ class UltraShortHandler:
         
         self.sequence.current_step = 2
         logger.info(f"Step 2 (Retract) completed: moved to {after_retract_position:.1f}mm")
+        
+        # Call completion callback if provided
+        if self.on_step_complete:
+            self.on_step_complete(2, "Retract")
+        
         return True
     
     def execute_step_3(self) -> bool:
@@ -346,6 +362,11 @@ class UltraShortHandler:
         
         self.sequence.current_step = 3
         logger.info("Step 3 (Final Cut) completed")
+        
+        # Call completion callback if provided
+        if self.on_step_complete:
+            self.on_step_complete(3, "Final Cut")
+        
         return True
     
     def get_current_step(self) -> int:

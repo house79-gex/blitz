@@ -15,7 +15,7 @@ Handler for "Out of Quota" mode extracted from semi_auto_page.py.
    - Morse: Left released, Right locked
 """
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 import logging
 
 logger = logging.getLogger(__name__)
@@ -102,6 +102,7 @@ class OutOfQuotaHandler:
         self.mio = machine_io
         self.config = config or OutOfQuotaConfig()
         self.sequence: Optional[OutOfQuotaSequence] = None
+        self.on_step_complete = None
         logger.info(
             f"OutOfQuotaHandler initialized: "
             f"zero={self.config.zero_homing_mm:.0f}mm, "
@@ -112,7 +113,8 @@ class OutOfQuotaHandler:
         self,
         target_length_mm: float,
         angle_sx: float,
-        angle_dx: float
+        angle_dx: float,
+        on_step_complete: Optional[Callable[[int, str], None]] = None
     ) -> bool:
         """
         Start out of quota cutting sequence.
@@ -121,10 +123,14 @@ class OutOfQuotaHandler:
             target_length_mm: Target piece length (internal measurement)
             angle_sx: Final angle for fixed head SX
             angle_dx: Final angle for mobile head DX
+            on_step_complete: Optional callback function called after each step completion
+                             Signature: on_step_complete(step_num: int, step_name: str)
         
         Returns:
             True if sequence started successfully
         """
+        # Store callback for use during sequence execution
+        self.on_step_complete = on_step_complete
         # Calculate positions
         heading_position = self.config.zero_homing_mm
         final_position = target_length_mm + self.config.offset_battuta_mm
@@ -204,6 +210,11 @@ class OutOfQuotaHandler:
         
         self.sequence.current_step = 1
         logger.info("Step 1 (Heading) completed")
+        
+        # Call completion callback if provided
+        if self.on_step_complete:
+            self.on_step_complete(1, "Heading")
+        
         return True
     
     def execute_step_2(self) -> bool:
@@ -256,6 +267,11 @@ class OutOfQuotaHandler:
         
         self.sequence.current_step = 2
         logger.info("Step 2 (Final Cut) completed")
+        
+        # Call completion callback if provided
+        if self.on_step_complete:
+            self.on_step_complete(2, "Final Cut")
+        
         return True
     
     def get_current_step(self) -> int:

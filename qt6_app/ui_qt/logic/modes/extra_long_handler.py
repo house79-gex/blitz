@@ -11,7 +11,7 @@ This module provides a consistent interface while delegating to the existing
 calculate_ultra_long_sequence function.
 """
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 import logging
 from ..ultra_long_mode import (
     UltraLongConfig as BaseUltraLongConfig,
@@ -88,6 +88,7 @@ class ExtraLongHandler:
             stock_length_mm=6500.0
         )
         self.sequence: Optional[UltraLongSequence] = None
+        self.on_step_complete = None
         logger.info(
             f"ExtraLongHandler initialized: "
             f"max_travel={self.config.max_travel_mm:.0f}mm, "
@@ -98,7 +99,8 @@ class ExtraLongHandler:
         self,
         target_length_mm: float,
         angle_sx: float,
-        angle_dx: float
+        angle_dx: float,
+        on_step_complete: Optional[Callable[[int, str], None]] = None
     ) -> bool:
         """
         Start extra long cutting sequence.
@@ -107,10 +109,14 @@ class ExtraLongHandler:
             target_length_mm: Target piece length
             angle_sx: Angle for fixed head SX
             angle_dx: Angle for mobile head DX
+            on_step_complete: Optional callback function called after each step completion
+                             Signature: on_step_complete(step_num: int, step_name: str)
         
         Returns:
             True if sequence started successfully, False otherwise
         """
+        # Store callback for use during sequence execution
+        self.on_step_complete = on_step_complete
         # Use existing calculate_ultra_long_sequence from ultra_long_mode.py
         base_config = self.config.to_base_config()
         
@@ -198,6 +204,11 @@ class ExtraLongHandler:
         
         self.sequence.current_step = 1
         logger.info("Step 1 (Heading) completed")
+        
+        # Call completion callback if provided
+        if self.on_step_complete:
+            self.on_step_complete(1, "Heading")
+        
         return True
     
     def execute_step_2(self) -> bool:
@@ -246,6 +257,11 @@ class ExtraLongHandler:
         
         self.sequence.current_step = 2
         logger.info(f"Step 2 (Retract) completed: moved to {self.sequence.pos_after_retract_dx:.1f}mm")
+        
+        # Call completion callback if provided
+        if self.on_step_complete:
+            self.on_step_complete(2, "Retract")
+        
         return True
     
     def execute_step_3(self) -> bool:
@@ -315,6 +331,11 @@ class ExtraLongHandler:
         
         self.sequence.current_step = 3
         logger.info("Step 3 (Final Cut) completed")
+        
+        # Call completion callback if provided
+        if self.on_step_complete:
+            self.on_step_complete(3, "Final Cut")
+        
         return True
     
     def get_current_step(self) -> int:
