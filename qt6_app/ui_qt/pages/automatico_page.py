@@ -1608,6 +1608,11 @@ class AutomaticoPage(QWidget):
         if self._state==STATE_WAIT_BRAKE and not self._brake_locked:
             self._try_auto_continue()
         self._log_state("Brake unlocked.")
+    
+    def _unlock_brake_and_continue(self):
+        """Unlock brake and continue multi-step sequence."""
+        self._unlock_brake(silent=True)
+        self._continue_multi_step_sequence()
 
     # ---- Manuale posizionamento ----
     def _trigger_manual_cut(self):
@@ -1867,8 +1872,8 @@ class AutomaticoPage(QWidget):
             
             # Check if we're in a multi-step mode and need to continue
             if self._state==STATE_MOVING and self._should_continue_multi_step():
-                # Execute next step of multi-step sequence
-                self._continue_multi_step_sequence()
+                # CRITICAL: Release brake before next step!
+                QTimer.singleShot(self._after_cut_pause_ms, self._unlock_brake_and_continue)
             elif self._state==STATE_MOVING:
                 # Normal single-step completion
                 self._emit_active_piece()
