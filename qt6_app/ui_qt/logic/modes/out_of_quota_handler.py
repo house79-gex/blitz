@@ -112,7 +112,8 @@ class OutOfQuotaHandler:
         self,
         target_length_mm: float,
         angle_sx: float,
-        angle_dx: float
+        angle_dx: float,
+        on_step_complete=None
     ) -> bool:
         """
         Start out of quota cutting sequence.
@@ -121,10 +122,13 @@ class OutOfQuotaHandler:
             target_length_mm: Target piece length (internal measurement)
             angle_sx: Final angle for fixed head SX
             angle_dx: Final angle for mobile head DX
+            on_step_complete: Optional callback function called after each step completes.
+                            Signature: (step_number: int, description: str) -> None
         
         Returns:
             True if sequence started successfully
         """
+        self.on_step_complete = on_step_complete
         # Calculate positions
         heading_position = self.config.zero_homing_mm
         final_position = target_length_mm + self.config.offset_battuta_mm
@@ -204,6 +208,11 @@ class OutOfQuotaHandler:
         
         self.sequence.current_step = 1
         logger.info("Step 1 (Heading) completed")
+        
+        # Call step completion callback if provided
+        if self.on_step_complete:
+            self.on_step_complete(1, f"Heading with mobile head DX @ {self.sequence.heading_position:.0f}mm, {self.sequence.heading_angle:.1f}°")
+        
         return True
     
     def execute_step_2(self) -> bool:
@@ -256,6 +265,11 @@ class OutOfQuotaHandler:
         
         self.sequence.current_step = 2
         logger.info("Step 2 (Final Cut) completed")
+        
+        # Call step completion callback if provided
+        if self.on_step_complete:
+            self.on_step_complete(2, f"Final cut with fixed head SX @ {self.sequence.final_position:.0f}mm (piece: {self.sequence.target_length_mm:.1f}mm)")
+        
         return True
     
     def get_current_step(self) -> int:
