@@ -15,7 +15,7 @@ Handler for "Out of Quota" mode extracted from semi_auto_page.py.
    - Morse: Left released, Right locked
 """
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 import logging
 
 logger = logging.getLogger(__name__)

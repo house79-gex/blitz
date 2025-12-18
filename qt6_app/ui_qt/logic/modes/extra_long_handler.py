@@ -11,7 +11,7 @@ This module provides a consistent interface while delegating to the existing
 calculate_ultra_long_sequence function.
 """
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 import logging
 from ..ultra_long_mode import (
     UltraLongConfig as BaseUltraLongConfig,

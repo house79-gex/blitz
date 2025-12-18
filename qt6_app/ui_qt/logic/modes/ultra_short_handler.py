@@ -21,7 +21,7 @@ Key Difference from Extra Long:
    - Morse: Left released, Right locked
 """
 from dataclasses import dataclass
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Callable
 import logging
 
 logger = logging.getLogger(__name__)
