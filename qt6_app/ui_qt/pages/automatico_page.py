@@ -1061,37 +1061,32 @@ class AutomaticoPage(QWidget):
         Start movement with automatic mode detection.
         
         Uses ModeDetector + handlers for special modes.
-        Preserves all existing functionality.
+        Maintains all existing functionality for normal mode.
+        
+        Args:
+            piece: Dict with keys: len, ax, ad, profile, element
         """
         
-        if not piece:
-            return
-        
         # === 1. Detect mode ===
-        try:
-            mode_info = self._mode_detector.detect(piece["len"])
-        except Exception as e:
-            logger.error(f"Error detecting mode: {e}")
-            self._toast(f"Errore rilevamento modalità: {e}", "error")
-            return
+        mode_info = self._mode_detector.detect(piece["len"])
         
-        # === 2. Validate ===
         if not mode_info.is_valid:
             self._toast(mode_info.error_message, "error")
-            return
+            return False
         
         self._current_mode = mode_info.mode_name
+        self._current_mode_step = 0
         
-        # === 3. Log warning for special modes ===
+        # === 2. Warn for special modes ===
         if mode_info.mode_range and mode_info.mode_range.requires_confirmation:
-            # Log warning (dialog will be added in PR #21)
-            logger.warning(f"Special mode: {mode_info.mode_name}")
-            logger.warning(mode_info.warning_message)
-            # Display mode name with proper capitalization
-            mode_display = mode_info.mode_name.replace("_", " ").title()
-            self._toast(f"⚠️ Modalità {mode_display}", "warn", 3000)
+            # TODO PR #21: Show confirmation dialog
+            # For now: log warning and show toast
+            mode_name_display = mode_info.mode_name.replace("_", " ").title()
+            self._toast(f"⚠️  Modalità {mode_name_display}", "warn")
+            if mode_info.warning_message:
+                logger.warning(mode_info.warning_message)
         
-        # === 4. Notify machine context ===
+        # === 3. Notify machine context ===
         if self.mio and hasattr(self.mio, "set_mode_context"):
             try:
                 self.mio.set_mode_context(
@@ -1102,82 +1097,88 @@ class AutomaticoPage(QWidget):
             except Exception as e:
                 logger.error(f"Error setting mode context: {e}")
         
-        # === 5. Execute movement for detected mode ===
+        # === 4. Execute movement by mode ===
+        success = False
+        
         if mode_info.mode_name == "out_of_quota":
-            self._execute_out_of_quota(piece)
+            success = self._execute_out_of_quota(piece)
         
         elif mode_info.mode_name == "ultra_short":
-            self._execute_ultra_short(piece)
+            success = self._execute_ultra_short(piece)
         
         elif mode_info.mode_name == "extra_long":
-            self._execute_extra_long(piece)
+            success = self._execute_extra_long(piece)
         
-        else:  # normal
-            self._execute_normal_move(piece)
+        else:  # normal mode
+            success = self._execute_normal_move(piece)
+        
+        return success
 
-    def _execute_normal_move(self, piece: Dict[str, Any]):
-        """Execute normal mode movement (250-4000mm)."""
+    def _execute_normal_move(self, piece: Dict[str, Any]) -> bool:
+        """
+        Execute normal mode movement (250-4000mm).
         
-        if not self.mio:
-            logger.error("Machine adapter not available")
-            return
+        Morse controlled by control panel (software does not send commands).
+        Blades configured based on angles.
+        """
         
-        # Calculate effective position considering angles and thickness
-        thickness = self._get_profile_thickness(piece.get("profile", ""))
-        eff = self._effective_position_length(
-            piece["len"],
-            piece.get("ax", 0),
-            piece.get("ad", 0),
-            thickness
-        )
+        # Calculate effective position
+        thickness = self._get_profile_thickness(piece["profile"])
+        eff = self._effective_position_length(piece["len"], piece["ax"], piece["ad"], thickness)
         
-        # Configure blades (normal mode)
-        try:
-            self.mio.command_set_blade_inhibit(
-                left=(piece.get("ax", 0) == 0),
-                right=(piece.get("ad", 0) == 0)
-            )
-        except Exception as e:
-            logger.error(f"Error configuring blades: {e}")
-        
-        # NOTE: In normal mode, morse (clamps) controlled by button panel
-        # Software does NOT send morse commands
+        # Configure blades based on angles
+        if self.mio:
+            try:
+                self.mio.command_set_blade_inhibit(
+                    left=(piece.get("ax", 0) == 0),
+                    right=(piece.get("ad", 0) == 0)
+                )
+            except Exception as e:
+                logger.error(f"Error configuring blades: {e}")
         
         # Execute movement
-        try:
-            success = self.mio.command_move(
-                eff,
-                piece.get("ax", 0),
-                piece.get("ad", 0),
-                profile=piece.get("profile", ""),
-                element=piece.get("element", "")
-            )
-            
-            if success:
-                self._state = STATE_MOVING
-                self._toast(f"▶️ Posizionamento {piece['len']:.0f}mm", "info")
-                logger.info(f"Normal movement started: {piece['len']:.0f}mm (eff={eff:.2f}mm)")
-            else:
-                self._toast("❌ Movimento non avviato", "error")
-                logger.error("Normal movement failed to start")
+        if self.mio:
+            try:
+                success = self.mio.command_move(
+                    eff,
+                    piece.get("ax", 0.0),
+                    piece.get("ad", 0.0),
+                    profile=piece.get("profile", ""),
+                    element=piece.get("element", "")
+                )
+                
+                if success:
+                    self._state = STATE_MOVING
+                    self._toast(f"▶️ Posizionamento {piece['len']:.0f}mm", "info")
+                    self._update_cycle_state_label()
+                    self._log_state(f"Start normal move len_eff={eff:.2f}")
+                    return True
+                else:
+                    self._toast("❌ Movimento non avviato", "error")
+                    return False
+            except Exception as e:
+                logger.error(f"Error starting movement: {e}")
+                self._toast(f"❌ Errore movimento: {e}", "error")
+                return False
+        else:
+            # Fallback to legacy positioning if no mio
+            self._position_machine_exact(eff, piece["ax"], piece["ad"], piece["profile"], piece["element"])
+            self._state = STATE_MOVING
+            self._update_cycle_state_label()
+            self._log_state(f"Start normal move (legacy) len_eff={eff:.2f}")
+            return True
         
-        except Exception as e:
-            logger.error(f"Error starting normal movement: {e}")
-            self._toast(f"Errore movimento: {e}", "error")
-        
-        # Update UI state
-        self._update_cycle_state_label()
-        self._log_state(f"Normal move started: len={piece['len']:.2f}mm eff={eff:.2f}mm")
+        return False
 
-
-    def _execute_out_of_quota(self, piece: Dict[str, Any]):
-        """Execute out of quota mode (2-step sequence)."""
+    def _execute_out_of_quota(self, piece: Dict[str, Any]) -> bool:
+        """
+        Execute out of quota cycle (2-step with heading).
         
-        if not self.mio:
-            logger.error("Machine adapter not available")
-            return
+        Step 1: Heading with mobile head DX @ 45° at min position
+        Step 2: Final cut with fixed head SX at target + offset
+        """
         
-        # Lazy initialize handler
+        # Create handler if not exists
         if not self._out_of_quota_handler:
             try:
                 config = OutOfQuotaConfig(
@@ -1185,45 +1186,49 @@ class AutomaticoPage(QWidget):
                     offset_battuta_mm=self._mode_config.machine_offset_battuta_mm
                 )
                 self._out_of_quota_handler = OutOfQuotaHandler(self.mio, config)
+                logger.info("✅ Out of quota handler created")
             except Exception as e:
-                logger.error(f"Error creating OutOfQuotaHandler: {e}")
-                self._toast(f"Errore inizializzazione fuori quota: {e}", "error")
-                return
+                logger.error(f"❌ Error creating out of quota handler: {e}")
+                return False
         
-        # Start sequence
+        # Start sequence (creates the sequence plan, doesn't execute yet)
         try:
             success = self._out_of_quota_handler.start_sequence(
                 target_length_mm=piece["len"],
-                angle_sx=piece.get("ax", 0),
-                angle_dx=piece.get("ad", 0)
+                angle_sx=piece.get("ax", 90.0),
+                angle_dx=piece.get("ad", 90.0)
             )
             
             if success:
-                self._state = STATE_MOVING
-                self._current_mode_handler = self._out_of_quota_handler
-                self._toast(f"🔴 Fuori Quota: Step 1/2 - Intestatura", "warn")
-                logger.info(f"Out of quota sequence started: {piece['len']:.0f}mm")
+                # Execute Step 1 immediately
+                if self._out_of_quota_handler.execute_step_1():
+                    self._state = STATE_MOVING
+                    self._current_mode_step = 1
+                    self._toast(f"🔴 Fuori Quota: Step 1/2 - Intestatura", "warn")
+                    self._update_cycle_state_label()
+                    self._log_state("Out of quota step 1 started")
+                    return True
+                else:
+                    self._toast("❌ Step 1 fuori quota fallito", "error")
+                    return False
             else:
                 self._toast("❌ Fuori quota non avviato", "error")
-                logger.error("Out of quota sequence failed to start")
-        
+                return False
         except Exception as e:
-            logger.error(f"Error starting out of quota: {e}")
-            self._toast(f"Errore fuori quota: {e}", "error")
-        
-        # Update UI state
-        self._update_cycle_state_label()
-        self._log_state(f"Out of quota started: len={piece['len']:.2f}mm")
+            logger.error(f"Error starting out of quota sequence: {e}")
+            self._toast(f"❌ Errore fuori quota: {e}", "error")
+            return False
 
-
-    def _execute_ultra_short(self, piece: Dict[str, Any]):
-        """Execute ultra short mode (3-step sequence, inverted heads)."""
+    def _execute_ultra_short(self, piece: Dict[str, Any]) -> bool:
+        """
+        Execute ultra short cycle (3-step, inverted heads).
         
-        if not self.mio:
-            logger.error("Machine adapter not available")
-            return
+        Step 1: Heading with fixed head SX
+        Step 2: Retract mobile head DX
+        Step 3: Final cut with mobile head DX (measurement OUTSIDE blade)
+        """
         
-        # Lazy initialize handler
+        # Create handler if not exists
         if not self._ultra_short_handler:
             try:
                 config = UltraShortConfig(
@@ -1231,45 +1236,49 @@ class AutomaticoPage(QWidget):
                     offset_battuta_mm=self._mode_config.machine_offset_battuta_mm
                 )
                 self._ultra_short_handler = UltraShortHandler(self.mio, config)
+                logger.info("✅ Ultra short handler created")
             except Exception as e:
-                logger.error(f"Error creating UltraShortHandler: {e}")
-                self._toast(f"Errore inizializzazione ultra corta: {e}", "error")
-                return
+                logger.error(f"❌ Error creating ultra short handler: {e}")
+                return False
         
-        # Start sequence
+        # Start sequence (creates the sequence plan, doesn't execute yet)
         try:
             success = self._ultra_short_handler.start_sequence(
                 target_length_mm=piece["len"],
-                angle_sx=piece.get("ax", 0),
-                angle_dx=piece.get("ad", 0)
+                angle_sx=piece.get("ax", 90.0),
+                angle_dx=piece.get("ad", 90.0)
             )
             
             if success:
-                self._state = STATE_MOVING
-                self._current_mode_handler = self._ultra_short_handler
-                self._toast(f"🟡 Ultra Corta: Step 1/3 - Intestatura SX", "warn")
-                logger.info(f"Ultra short sequence started: {piece['len']:.0f}mm")
+                # Execute Step 1 immediately
+                if self._ultra_short_handler.execute_step_1():
+                    self._state = STATE_MOVING
+                    self._current_mode_step = 1
+                    self._toast(f"🟡 Ultra Corta: Step 1/3 - Intestatura SX", "warn")
+                    self._update_cycle_state_label()
+                    self._log_state("Ultra short step 1 started")
+                    return True
+                else:
+                    self._toast("❌ Step 1 ultra corta fallito", "error")
+                    return False
             else:
                 self._toast("❌ Ultra corta non avviato", "error")
-                logger.error("Ultra short sequence failed to start")
-        
+                return False
         except Exception as e:
-            logger.error(f"Error starting ultra short: {e}")
-            self._toast(f"Errore ultra corta: {e}", "error")
-        
-        # Update UI state
-        self._update_cycle_state_label()
-        self._log_state(f"Ultra short started: len={piece['len']:.2f}mm")
+            logger.error(f"Error starting ultra short sequence: {e}")
+            self._toast(f"❌ Errore ultra corta: {e}", "error")
+            return False
 
-
-    def _execute_extra_long(self, piece: Dict[str, Any]):
-        """Execute extra long mode (3-step sequence)."""
+    def _execute_extra_long(self, piece: Dict[str, Any]) -> bool:
+        """
+        Execute extra long cycle (3-step with heading).
         
-        if not self.mio:
-            logger.error("Machine adapter not available")
-            return
+        Step 1: Heading with mobile head DX @ safe position
+        Step 2: Retract mobile head DX (offset)
+        Step 3: Final cut with fixed head SX
+        """
         
-        # Lazy initialize handler
+        # Create handler if not exists
         if not self._extra_long_handler:
             try:
                 config = ExtraLongConfig(
@@ -1277,70 +1286,141 @@ class AutomaticoPage(QWidget):
                     stock_length_mm=self._mode_config.stock_length_mm
                 )
                 self._extra_long_handler = ExtraLongHandler(self.mio, config)
+                logger.info("✅ Extra long handler created")
             except Exception as e:
-                logger.error(f"Error creating ExtraLongHandler: {e}")
-                self._toast(f"Errore inizializzazione extra lunga: {e}", "error")
-                return
+                logger.error(f"❌ Error creating extra long handler: {e}")
+                return False
         
-        # Start sequence
+        # Start sequence (creates the sequence plan, doesn't execute yet)
         try:
             success = self._extra_long_handler.start_sequence(
                 target_length_mm=piece["len"],
-                angle_sx=piece.get("ax", 0),
-                angle_dx=piece.get("ad", 0)
+                angle_sx=piece.get("ax", 90.0),
+                angle_dx=piece.get("ad", 90.0)
             )
             
             if success:
-                self._state = STATE_MOVING
-                self._current_mode_handler = self._extra_long_handler
-                self._toast(f"🔵 Extra Lunga: Step 1/3 - Intestatura DX", "info")
-                logger.info(f"Extra long sequence started: {piece['len']:.0f}mm")
+                # Execute Step 1 immediately
+                if self._extra_long_handler.execute_step_1():
+                    self._state = STATE_MOVING
+                    self._current_mode_step = 1
+                    self._toast(f"🔵 Extra Lunga: Step 1/3 - Intestatura DX", "info")
+                    self._update_cycle_state_label()
+                    self._log_state("Extra long step 1 started")
+                    return True
+                else:
+                    self._toast("❌ Step 1 extra lunga fallito", "error")
+                    return False
             else:
                 self._toast("❌ Extra lunga non avviato", "error")
-                logger.error("Extra long sequence failed to start")
+                return False
+        except Exception as e:
+            logger.error(f"Error starting extra long sequence: {e}")
+            self._toast(f"❌ Errore extra lunga: {e}", "error")
+            return False
+
+    def _should_continue_multi_step(self) -> bool:
+        """
+        Check if current mode requires continuing to next step.
+        
+        Returns:
+            True if there are more steps to execute in the current sequence
+        """
+        if self._current_mode == "out_of_quota":
+            if self._out_of_quota_handler:
+                current_step = self._out_of_quota_handler.get_current_step()
+                return current_step == 1  # After step 1, we need step 2
+        
+        elif self._current_mode == "ultra_short":
+            if self._ultra_short_handler:
+                current_step = self._ultra_short_handler.get_current_step()
+                return current_step in (1, 2)  # After step 1 or 2, continue
+        
+        elif self._current_mode == "extra_long":
+            if self._extra_long_handler:
+                current_step = self._extra_long_handler.get_current_step()
+                return current_step in (1, 2)  # After step 1 or 2, continue
+        
+        return False
+
+    def _continue_multi_step_sequence(self):
+        """
+        Continue to the next step of a multi-step sequence.
+        
+        Called when movement completes and there are more steps.
+        """
+        try:
+            if self._current_mode == "out_of_quota" and self._out_of_quota_handler:
+                current_step = self._out_of_quota_handler.get_current_step()
+                if current_step == 1:
+                    # Execute step 2
+                    if self._out_of_quota_handler.execute_step_2():
+                        self._current_mode_step = 2
+                        self._toast("🔴 Fuori Quota: Step 2/2 - Taglio Finale", "warn")
+                        logger.info("Out of quota step 2 started")
+                        # Stay in STATE_MOVING for next movement
+                    else:
+                        logger.error("Out of quota step 2 failed")
+                        self._toast("❌ Step 2 fuori quota fallito", "error")
+                        self._state = STATE_IDLE
+            
+            elif self._current_mode == "ultra_short" and self._ultra_short_handler:
+                current_step = self._ultra_short_handler.get_current_step()
+                if current_step == 1:
+                    # Execute step 2
+                    if self._ultra_short_handler.execute_step_2():
+                        self._current_mode_step = 2
+                        self._toast("🟡 Ultra Corta: Step 2/3 - Retrazione", "warn")
+                        logger.info("Ultra short step 2 started")
+                    else:
+                        logger.error("Ultra short step 2 failed")
+                        self._toast("❌ Step 2 ultra corta fallito", "error")
+                        self._state = STATE_IDLE
+                elif current_step == 2:
+                    # Execute step 3
+                    if self._ultra_short_handler.execute_step_3():
+                        self._current_mode_step = 3
+                        self._toast("🟡 Ultra Corta: Step 3/3 - Taglio Finale", "warn")
+                        logger.info("Ultra short step 3 started")
+                    else:
+                        logger.error("Ultra short step 3 failed")
+                        self._toast("❌ Step 3 ultra corta fallito", "error")
+                        self._state = STATE_IDLE
+            
+            elif self._current_mode == "extra_long" and self._extra_long_handler:
+                current_step = self._extra_long_handler.get_current_step()
+                if current_step == 1:
+                    # Execute step 2
+                    if self._extra_long_handler.execute_step_2():
+                        self._current_mode_step = 2
+                        self._toast("🔵 Extra Lunga: Step 2/3 - Retrazione", "info")
+                        logger.info("Extra long step 2 started")
+                    else:
+                        logger.error("Extra long step 2 failed")
+                        self._toast("❌ Step 2 extra lunga fallito", "error")
+                        self._state = STATE_IDLE
+                elif current_step == 2:
+                    # Execute step 3
+                    if self._extra_long_handler.execute_step_3():
+                        self._current_mode_step = 3
+                        self._toast("🔵 Extra Lunga: Step 3/3 - Taglio Finale", "info")
+                        logger.info("Extra long step 3 started")
+                    else:
+                        logger.error("Extra long step 3 failed")
+                        self._toast("❌ Step 3 extra lunga fallito", "error")
+                        self._state = STATE_IDLE
         
         except Exception as e:
-            logger.error(f"Error starting extra long: {e}")
-            self._toast(f"Errore extra lunga: {e}", "error")
+            logger.error(f"Error continuing multi-step sequence: {e}")
+            self._toast(f"❌ Errore sequenza: {e}", "error")
+            self._state = STATE_IDLE
+        
+        except Exception as e:
+            logger.error(f"Error starting normal movement: {e}")
+            self._toast(f"Errore movimento: {e}", "error")
         
         # Update UI state
         self._update_cycle_state_label()
-        self._log_state(f"Extra long started: len={piece['len']:.2f}mm")
-
-
-    def _on_special_mode_step_complete(self, step_num: int, success: bool, message: str):
-        """
-        Callback for special mode step completion.
-        
-        Args:
-            step_num: Step number completed (1, 2, 3)
-            success: True if completed successfully
-            message: Descriptive message
-        """
-        
-        if success:
-            self._toast(f"✅ Step {step_num} completato: {message}", "ok")
-            logger.info(f"Special mode step {step_num} completed: {message}")
-            
-            # Check if sequence complete
-            if self._current_mode_handler:
-                try:
-                    if hasattr(self._current_mode_handler, 'is_sequence_complete'):
-                        if self._current_mode_handler.is_sequence_complete():
-                            self._state = STATE_READY
-                            self._update_cycle_state_label()
-                            self._log_state("Special mode sequence completed")
-                            logger.info("Special mode sequence completed")
-                            # Auto-continue handled by existing _tick() logic
-                except Exception as e:
-                    logger.error(f"Error checking sequence completion: {e}")
-        else:
-            self._toast(f"❌ Step {step_num} fallito: {message}", "error")
-            logger.error(f"Special mode step {step_num} failed: {message}")
-            self._state = STATE_IDLE
-            self._current_mode_handler = None
-            self._update_cycle_state_label()
-            self._log_state(f"Special mode step {step_num} failed")
 
     def _try_auto_continue(self):
         """
@@ -1718,10 +1798,16 @@ class AutomaticoPage(QWidget):
         self._refresh_brake_flag()
         moving = self.mio.is_positioning_active() if self.mio else bool(getattr(self.machine,"positioning_active",False))
         if self._state==STATE_MOVING and not moving:
-            # Arrivo: lock brake se non già, poi READY
+            # Arrivo: lock brake se non già
             if not self._brake_locked:
                 self._lock_brake()
-            if self._state==STATE_MOVING:
+            
+            # Check if we're in a multi-step mode and need to continue
+            if self._state==STATE_MOVING and self._should_continue_multi_step():
+                # Execute next step of multi-step sequence
+                self._continue_multi_step_sequence()
+            elif self._state==STATE_MOVING:
+                # Normal single-step completion
                 self._emit_active_piece()
 
         # Auto-continue se in WAIT_BRAKE e freno rilasciato
