@@ -172,7 +172,7 @@ class CutlistExporter:
                     c.drawString(70, y, text)
                     y -= 15
                 
-                c.setFont("Helvetica-Italic", 10)
+                c.setFont("Helvetica-Oblique", 10)
                 c.drawString(70, y, f"Waste: {bar.get('waste', 0)} mm")
                 y -= 30
             
