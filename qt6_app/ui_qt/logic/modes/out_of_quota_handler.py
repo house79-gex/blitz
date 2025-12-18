@@ -114,7 +114,7 @@ class OutOfQuotaHandler:
         target_length_mm: float,
         angle_sx: float,
         angle_dx: float,
-        on_step_complete: Optional[Callable[[int, str], None]] = None
+        on_step_complete=None
     ) -> bool:
         """
         Start out of quota cutting sequence.
@@ -123,13 +123,12 @@ class OutOfQuotaHandler:
             target_length_mm: Target piece length (internal measurement)
             angle_sx: Final angle for fixed head SX
             angle_dx: Final angle for mobile head DX
-            on_step_complete: Optional callback function called after each step completion
-                             Signature: on_step_complete(step_num: int, step_name: str)
+            on_step_complete: Optional callback function called after each step completes.
+                            Signature: (step_number: int, description: str) -> None
         
         Returns:
             True if sequence started successfully
         """
-        # Store callback for use during sequence execution
         self.on_step_complete = on_step_complete
         # Calculate positions
         heading_position = self.config.zero_homing_mm
@@ -154,6 +153,17 @@ class OutOfQuotaHandler:
         )
         
         return True
+    
+    def _invoke_step_callback(self, step_number: int, description: str):
+        """
+        Invoke step completion callback if provided.
+        
+        Args:
+            step_number: Current step number
+            description: Step description
+        """
+        if self.on_step_complete:
+            self.on_step_complete(step_number, description)
     
     def execute_step_1(self) -> bool:
         """
@@ -211,9 +221,8 @@ class OutOfQuotaHandler:
         self.sequence.current_step = 1
         logger.info("Step 1 (Heading) completed")
         
-        # Call completion callback if provided
-        if self.on_step_complete:
-            self.on_step_complete(1, "Heading")
+        # Call step completion callback if provided
+        self._invoke_step_callback(1, f"Heading with mobile head DX @ {self.sequence.heading_position:.0f}mm, {self.sequence.heading_angle:.1f}°")
         
         return True
     
@@ -268,9 +277,8 @@ class OutOfQuotaHandler:
         self.sequence.current_step = 2
         logger.info("Step 2 (Final Cut) completed")
         
-        # Call completion callback if provided
-        if self.on_step_complete:
-            self.on_step_complete(2, "Final Cut")
+        # Call step completion callback if provided
+        self._invoke_step_callback(2, f"Final cut with fixed head SX @ {self.sequence.final_position:.0f}mm (piece: {self.sequence.target_length_mm:.1f}mm)")
         
         return True
     

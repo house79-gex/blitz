@@ -100,7 +100,7 @@ class ExtraLongHandler:
         target_length_mm: float,
         angle_sx: float,
         angle_dx: float,
-        on_step_complete: Optional[Callable[[int, str], None]] = None
+        on_step_complete=None
     ) -> bool:
         """
         Start extra long cutting sequence.
@@ -109,13 +109,12 @@ class ExtraLongHandler:
             target_length_mm: Target piece length
             angle_sx: Angle for fixed head SX
             angle_dx: Angle for mobile head DX
-            on_step_complete: Optional callback function called after each step completion
-                             Signature: on_step_complete(step_num: int, step_name: str)
+            on_step_complete: Optional callback function called after each step completes.
+                            Signature: (step_number: int, description: str) -> None
         
         Returns:
             True if sequence started successfully, False otherwise
         """
-        # Store callback for use during sequence execution
         self.on_step_complete = on_step_complete
         # Use existing calculate_ultra_long_sequence from ultra_long_mode.py
         base_config = self.config.to_base_config()
@@ -142,6 +141,17 @@ class ExtraLongHandler:
         logger.info(f"  Measurement: INSIDE mobile blade DX")
         
         return True
+    
+    def _invoke_step_callback(self, step_number: int, description: str):
+        """
+        Invoke step completion callback if provided.
+        
+        Args:
+            step_number: Current step number
+            description: Step description
+        """
+        if self.on_step_complete:
+            self.on_step_complete(step_number, description)
     
     def execute_step_1(self) -> bool:
         """
@@ -205,9 +215,8 @@ class ExtraLongHandler:
         self.sequence.current_step = 1
         logger.info("Step 1 (Heading) completed")
         
-        # Call completion callback if provided
-        if self.on_step_complete:
-            self.on_step_complete(1, "Heading")
+        # Call step completion callback if provided
+        self._invoke_step_callback(1, f"Heading with mobile head DX @ {self.sequence.pos_head_cut_dx:.0f}mm, {self.sequence.angle_head_cut_dx:.1f}°")
         
         return True
     
@@ -258,9 +267,8 @@ class ExtraLongHandler:
         self.sequence.current_step = 2
         logger.info(f"Step 2 (Retract) completed: moved to {self.sequence.pos_after_retract_dx:.1f}mm")
         
-        # Call completion callback if provided
-        if self.on_step_complete:
-            self.on_step_complete(2, "Retract")
+        # Call step completion callback if provided
+        self._invoke_step_callback(2, f"Retract mobile head DX by {self.sequence.offset_mm:.0f}mm → {self.sequence.pos_after_retract_dx:.0f}mm")
         
         return True
     
@@ -332,9 +340,8 @@ class ExtraLongHandler:
         self.sequence.current_step = 3
         logger.info("Step 3 (Final Cut) completed")
         
-        # Call completion callback if provided
-        if self.on_step_complete:
-            self.on_step_complete(3, "Final Cut")
+        # Call step completion callback if provided
+        self._invoke_step_callback(3, f"Final cut with fixed head SX @ {self.sequence.pos_final_cut_dx:.0f}mm")
         
         return True
     
