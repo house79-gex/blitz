@@ -69,7 +69,7 @@ class CutlistExporter:
                     try:
                         if len(str(cell.value)) > max_length:
                             max_length = len(str(cell.value))
-                    except:
+                    except (TypeError, AttributeError):
                         pass
                 ws1.column_dimensions[col[0].column_letter].width = min(max_length + 2, 50)
             

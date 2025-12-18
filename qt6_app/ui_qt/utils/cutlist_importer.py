@@ -41,6 +41,17 @@ class CutlistImporter:
         return pieces
     
     @staticmethod
+    def _has_header_row(worksheet) -> bool:
+        """
+        Check if Excel worksheet has a header row.
+        Returns True if first cell looks like 'length' or similar header text.
+        """
+        first_cell = worksheet['A1'].value
+        if not first_cell or not isinstance(first_cell, str):
+            return False
+        return 'length' in first_cell.lower()
+    
+    @staticmethod
     def from_excel(filepath: str) -> List[Dict[str, Any]]:
         """
         Import from Excel file.
@@ -56,7 +67,7 @@ class CutlistImporter:
             ws = wb.active
             
             # Skip header row if it exists
-            start_row = 2 if ws['A1'].value and isinstance(ws['A1'].value, str) and 'length' in str(ws['A1'].value).lower() else 1
+            start_row = 2 if CutlistImporter._has_header_row(ws) else 1
             
             for row in ws.iter_rows(min_row=start_row, values_only=True):
                 if not row or len(row) < 2:

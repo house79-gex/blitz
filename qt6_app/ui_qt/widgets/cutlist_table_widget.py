@@ -11,6 +11,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QBrush
 
+# Color constants for validation feedback
+COLOR_ERROR = QColor(255, 200, 200)      # Light red
+COLOR_WARNING = QColor(255, 230, 200)    # Orange
+COLOR_NORMAL = QColor(255, 255, 255)     # White
+
 
 class CutlistTableWidget(QTableWidget):
     """
@@ -227,17 +232,17 @@ class CutlistTableWidget(QTableWidget):
     
     def _set_cell_error(self, item: QTableWidgetItem, tooltip: str):
         """Set error styling on cell."""
-        item.setBackground(QBrush(QColor(255, 200, 200)))
+        item.setBackground(QBrush(COLOR_ERROR))
         item.setToolTip(f"⚠️ {tooltip}")
     
     def _set_cell_warning(self, item: QTableWidgetItem, tooltip: str):
         """Set warning styling on cell."""
-        item.setBackground(QBrush(QColor(255, 230, 200)))
+        item.setBackground(QBrush(COLOR_WARNING))
         item.setToolTip(f"⚠️ {tooltip}")
     
     def _clear_cell_style(self, item: QTableWidgetItem):
         """Clear cell styling."""
-        item.setBackground(QBrush(QColor(255, 255, 255)))
+        item.setBackground(QBrush(COLOR_NORMAL))
         item.setToolTip("")
     
     def _on_item_changed(self, item: QTableWidgetItem):

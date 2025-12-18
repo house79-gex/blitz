@@ -297,7 +297,7 @@ class CutlistPage(QWidget):
                 from datetime import datetime
                 dt = datetime.fromisoformat(project['modified_at'])
                 details += f" | {dt.strftime('%d/%m/%Y %H:%M')}"
-            except:
+            except (ValueError, TypeError):
                 pass
         
         details_label = QLabel(details)
@@ -366,7 +366,10 @@ class CutlistPage(QWidget):
     
     def _duplicate_row(self):
         """Duplicate selected row."""
-        self.table_widget.duplicate_selected_row()
+        try:
+            self.table_widget.duplicate_selected_row()
+        except (ValueError, TypeError, AttributeError) as e:
+            ImportExportDialog.show_error(self, "Errore", f"Impossibile duplicare la riga: {e}")
     
     def _clear_all(self):
         """Clear all rows after confirmation."""
