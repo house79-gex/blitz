@@ -231,12 +231,14 @@ class LabelCanvas(QWidget):
             if self.show_grid:
                 new_x, new_y = self._snap_to_grid(new_x, new_y)
             
-            self.selected_element.move_to(new_x, new_y)
-            
-            # Update alignment guides
+            # Apply snap to alignment guides
             if self.show_guides:
-                self._alignment_guides = self._find_alignment_guides(self.selected_element)
+                new_x, new_y, guides = self._find_alignment_guides_and_snap(
+                    self.selected_element, new_x, new_y
+                )
+                self._alignment_guides = guides
             
+            self.selected_element.move_to(new_x, new_y)
             self.update()
     
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -289,39 +291,59 @@ class LabelCanvas(QWidget):
         return None
     
     def _handle_resize(self, pos_mm: QPointF):
-        """Handle element resize."""
+        """Handle element resize with bounds checking."""
         if not self.selected_element or not self._resize_handle:
             return
         
         elem = self.selected_element
         handle = self._resize_handle
         
+        # Calculate new dimensions and position based on handle
         if handle == "se":
             # Bottom-right corner
             new_width = pos_mm.x() - elem.x
             new_height = pos_mm.y() - elem.y
-            elem.resize(new_width, new_height)
+            new_x = elem.x
+            new_y = elem.y
         elif handle == "sw":
             # Bottom-left corner
             new_width = (elem.x + elem.width) - pos_mm.x()
             new_height = pos_mm.y() - elem.y
-            elem.x = pos_mm.x()
-            elem.resize(new_width, new_height)
+            new_x = pos_mm.x()
+            new_y = elem.y
         elif handle == "ne":
             # Top-right corner
             new_width = pos_mm.x() - elem.x
             new_height = (elem.y + elem.height) - pos_mm.y()
-            elem.y = pos_mm.y()
-            elem.resize(new_width, new_height)
+            new_x = elem.x
+            new_y = pos_mm.y()
         elif handle == "nw":
             # Top-left corner
             new_width = (elem.x + elem.width) - pos_mm.x()
             new_height = (elem.y + elem.height) - pos_mm.y()
-            elem.x = pos_mm.x()
-            elem.y = pos_mm.y()
-            elem.resize(new_width, new_height)
+            new_x = pos_mm.x()
+            new_y = pos_mm.y()
+        else:
+            return
         
-        self.update()
+        # Validate bounds - ensure element stays in canvas
+        if new_x < 0:
+            new_width += new_x
+            new_x = 0
+        if new_y < 0:
+            new_height += new_y
+            new_y = 0
+        if new_x + new_width > self.label_width_mm:
+            new_width = self.label_width_mm - new_x
+        if new_y + new_height > self.label_height_mm:
+            new_height = self.label_height_mm - new_y
+        
+        # Ensure minimum size
+        if new_width >= 10 and new_height >= 10:
+            elem.x = new_x
+            elem.y = new_y
+            elem.resize(new_width, new_height)
+            self.update()
     
     def _snap_to_grid(self, x: float, y: float) -> Tuple[float, float]:
         """Snap coordinates to grid."""
@@ -329,33 +351,41 @@ class LabelCanvas(QWidget):
         y = round(y / self.grid_size) * self.grid_size
         return x, y
     
-    def _find_alignment_guides(self, dragged_element: LabelElement) -> List[Tuple[str, float]]:
-        """Find alignment guides for dragged element."""
+    def _find_alignment_guides_and_snap(self, dragged_element: LabelElement, 
+                                        new_x: float, new_y: float) -> Tuple[float, float, List[Tuple[str, float]]]:
+        """
+        Find alignment guides and snap element to them.
+        
+        Returns:
+            Tuple of (snapped_x, snapped_y, guides)
+        """
         guides = []
+        snapped_x = new_x
+        snapped_y = new_y
         
         for elem in self.elements:
             if elem == dragged_element:
                 continue
             
             # Check vertical alignment (left edges)
-            if abs(dragged_element.x - elem.x) < self.snap_threshold:
+            if abs(new_x - elem.x) < self.snap_threshold:
                 guides.append(("vertical", elem.x))
-                dragged_element.x = elem.x
+                snapped_x = elem.x
             
             # Check vertical alignment (right edges)
-            elif abs((dragged_element.x + dragged_element.width) - (elem.x + elem.width)) < self.snap_threshold:
+            elif abs((new_x + dragged_element.width) - (elem.x + elem.width)) < self.snap_threshold:
                 guides.append(("vertical", elem.x + elem.width))
             
             # Check horizontal alignment (top edges)
-            if abs(dragged_element.y - elem.y) < self.snap_threshold:
+            if abs(new_y - elem.y) < self.snap_threshold:
                 guides.append(("horizontal", elem.y))
-                dragged_element.y = elem.y
+                snapped_y = elem.y
             
             # Check horizontal alignment (bottom edges)
-            elif abs((dragged_element.y + dragged_element.height) - (elem.y + elem.height)) < self.snap_threshold:
+            elif abs((new_y + dragged_element.height) - (elem.y + elem.height)) < self.snap_threshold:
                 guides.append(("horizontal", elem.y + elem.height))
         
-        return guides
+        return snapped_x, snapped_y, guides
     
     def zoom_in(self):
         """Increase zoom level."""

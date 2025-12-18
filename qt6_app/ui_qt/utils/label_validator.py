@@ -2,10 +2,7 @@
 Validation utilities for label elements.
 """
 from __future__ import annotations
-from typing import List, Tuple, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ..widgets.label_element import LabelElement, TextElement, FieldElement, BarcodeElement
+from typing import List, Tuple, Optional, TYPE_CHECKING, Any
 
 
 class ValidationResult:

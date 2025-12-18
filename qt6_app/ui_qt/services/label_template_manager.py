@@ -4,8 +4,12 @@ Template manager for saving, loading, and managing label templates.
 from __future__ import annotations
 import json
 import os
+import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+
+
+logger = logging.getLogger("blitz.label_templates")
 
 
 class LabelTemplateManager:
@@ -180,7 +184,7 @@ class LabelTemplateManager:
             
             return True
         except Exception as e:
-            print(f"Error saving template: {e}")
+            logger.error(f"Error saving template: {e}")
             return False
     
     def load_template(self, name: str) -> Optional[Dict[str, Any]]:
@@ -203,7 +207,7 @@ class LabelTemplateManager:
             with open(filepath, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            print(f"Error loading template: {e}")
+            logger.error(f"Error loading template: {e}")
             return None
     
     def list_templates(self) -> List[Dict[str, Any]]:
@@ -234,9 +238,9 @@ class LabelTemplateManager:
                                 "element_count": len(template.get("elements", []))
                             })
                     except Exception as e:
-                        print(f"Error reading template {filename}: {e}")
+                        logger.warning(f"Error reading template {filename}: {e}")
         except Exception as e:
-            print(f"Error listing templates: {e}")
+            logger.error(f"Error listing templates: {e}")
         
         return sorted(templates, key=lambda t: t.get("name", ""))
     
@@ -259,7 +263,7 @@ class LabelTemplateManager:
                 return True
             return False
         except Exception as e:
-            print(f"Error deleting template: {e}")
+            logger.error(f"Error deleting template: {e}")
             return False
     
     def duplicate_template(self, src_name: str, new_name: str) -> bool:
@@ -298,7 +302,7 @@ class LabelTemplateManager:
                     json.dump(template, f, ensure_ascii=False, indent=2)
                 return True
             except Exception as e:
-                print(f"Error exporting template: {e}")
+                logger.error(f"Error exporting template: {e}")
         return False
     
     def import_template(self, import_path: str, name: Optional[str] = None) -> bool:
@@ -322,7 +326,7 @@ class LabelTemplateManager:
             template_name = template.get("name", "Imported")
             return self.save_template(template_name, template)
         except Exception as e:
-            print(f"Error importing template: {e}")
+            logger.error(f"Error importing template: {e}")
             return False
     
     def _sanitize_filename(self, name: str) -> str:
