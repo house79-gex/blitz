@@ -21,7 +21,7 @@ Key Difference from Extra Long:
    - Morse: Left released, Right locked
 """
 from dataclasses import dataclass
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Callable
 import logging
 
 logger = logging.getLogger(__name__)
@@ -137,7 +137,7 @@ class UltraShortHandler:
         target_length_mm: float,
         angle_sx: float,
         angle_dx: float,
-        on_step_complete=None
+        on_step_complete: Optional[Callable[[int, str], None]] = None
     ) -> bool:
         """
         Start ultra short cutting sequence.

@@ -15,7 +15,7 @@ Handler for "Out of Quota" mode extracted from semi_auto_page.py.
    - Morse: Left released, Right locked
 """
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 import logging
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,7 @@ class OutOfQuotaHandler:
         target_length_mm: float,
         angle_sx: float,
         angle_dx: float,
-        on_step_complete=None
+        on_step_complete: Optional[Callable[[int, str], None]] = None
     ) -> bool:
         """
         Start out of quota cutting sequence.

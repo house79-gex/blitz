@@ -211,7 +211,8 @@ class BarcodeElement(LabelElement):
     BARCODE_TYPES = ["code128", "qr", "ean13", "code39"]
     
     def __init__(self, source: str = "order_id", barcode_type: str = "code128", **kwargs):
-        # Set default width/height if not provided in kwargs
+        # Use setdefault to provide default width/height without causing
+        # 'multiple values for keyword argument' error when deserializing
         kwargs.setdefault('width', 90)
         kwargs.setdefault('height', 30)
         super().__init__(**kwargs)
@@ -278,7 +279,8 @@ class ImageElement(LabelElement):
     """Image/logo element."""
     
     def __init__(self, image_path: str = "", **kwargs):
-        # Set default width/height if not provided in kwargs
+        # Use setdefault to provide default width/height without causing
+        # 'multiple values for keyword argument' error when deserializing
         kwargs.setdefault('width', 50)
         kwargs.setdefault('height', 30)
         super().__init__(**kwargs)
@@ -335,7 +337,8 @@ class LineElement(LabelElement):
     """Line separator element."""
     
     def __init__(self, thickness: int = 1, **kwargs):
-        # Set default width/height if not provided in kwargs
+        # Use setdefault to provide default width/height without causing
+        # 'multiple values for keyword argument' error when deserializing
         kwargs.setdefault('width', 100)
         kwargs.setdefault('height', 1)
         super().__init__(**kwargs)
@@ -387,7 +390,8 @@ class ShapeElement(LabelElement):
     SHAPE_TYPES = ["rectangle", "circle"]
     
     def __init__(self, shape_type: str = "rectangle", **kwargs):
-        # Set default width/height if not provided in kwargs
+        # Use setdefault to provide default width/height without causing
+        # 'multiple values for keyword argument' error when deserializing
         kwargs.setdefault('width', 50)
         kwargs.setdefault('height', 30)
         super().__init__(**kwargs)
