@@ -98,7 +98,7 @@ class MainWindow(QMainWindow):
         self._try_add_page("tipologie", "ui_qt.pages.tipologie_page", "TipologiePage")
         self._try_add_page("quotevani", "ui_qt.pages.quotevani_page", "QuoteVaniPage")
         self._try_add_page("utility", "ui_qt.pages.utility_page", "UtilityPage")
-        self._try_add_page("label_editor", "ui_qt.pages.label_editor_page", "LabelEditorPage")
+        # Note: Label editor is now integrated in UtilityPage → LabelsSubPage
 
         self.show_page("home")
 

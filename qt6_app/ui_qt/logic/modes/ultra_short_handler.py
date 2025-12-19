@@ -212,10 +212,9 @@ class UltraShortHandler:
         Execute Step 1: Heading with fixed head SX.
         
         Actions:
-        1. Set blade inhibits: Left=False, Right=True
-        2. Set morse: Both locked
-        3. Move to heading_position
-        4. Lock brake
+        1. Apply angles FIRST
+        2. Configure morse (both locked)
+        3. Start movement to heading_position
         
         Returns:
             True if step executed successfully
@@ -229,52 +228,45 @@ class UltraShortHandler:
         
         logger.info("Executing Ultra Short Step 1: Heading with fixed head SX")
         
-        # Set blade inhibits
-        if hasattr(self.mio, "set_blade_inhibits"):
-            self.mio.set_blade_inhibits(left=False, right=True)
-        else:
-            logger.warning("Machine I/O does not support set_blade_inhibits")
-        
-        # Set morse (both locked)
-        if hasattr(self.mio, "set_morse"):
-            self.mio.set_morse(left_locked=True, right_locked=True)
-        else:
-            logger.warning("Machine I/O does not support set_morse")
-        
-        # Move to heading position
-        if hasattr(self.mio, "command_move"):
-            success = self.mio.command_move(
-                length_mm=self.sequence.heading_position,
-                angle_sx=self.sequence.heading_angle_sx,
-                angle_dx=self.sequence.angle_dx,  # Keep DX angle
-                profile="default",
-                element="ultra_short_heading"
+        try:
+            # 1. Apply angles FIRST
+            self.mio.command_set_head_angles(
+                sx=self.sequence.heading_angle_sx,
+                dx=90.0  # Mobile head at 90° for now
             )
-            if not success:
-                logger.error("Failed to start heading movement")
-                return False
-        else:
-            logger.warning("Machine I/O does not support command_move")
-        
-        # Lock brake
-        if hasattr(self.mio, "command_lock_brake"):
-            self.mio.command_lock_brake()
-        
-        self.sequence.current_step = 1
-        logger.info("Step 1 (Heading) completed")
-        
-        # Call step completion callback if provided
-        self._invoke_step_callback(1, f"Heading with fixed head SX @ {self.sequence.heading_position:.0f}mm, {self.sequence.heading_angle_sx:.1f}°")
-        
-        return True
+            
+            # 2. Configure morse for heading
+            from ui_qt.logic.modes.morse_strategy import MorseStrategy
+            morse_config = MorseStrategy.ultra_short_heading()
+            self.mio.command_set_morse(
+                morse_config["left_locked"],
+                morse_config["right_locked"]
+            )
+            
+            # 3. Start movement
+            success = self.mio.command_move(
+                self.sequence.heading_position,
+                ang_sx=self.sequence.heading_angle_sx,
+                ang_dx=90.0
+            )
+            
+            if success:
+                self.sequence.current_step = 1
+                logger.info(f"Ultra short step 1: heading @ {self.sequence.heading_position:.1f}mm")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Error executing step 1: {e}")
+            return False
     
     def execute_step_2(self) -> bool:
         """
         Execute Step 2: Retract mobile head DX.
         
         Actions:
-        1. Set morse: Left locked, Right released (DX pulls material)
-        2. Move DX back by retract_offset
+        1. Release brake to allow movement
+        2. Configure morse (left locked, right released)
+        3. Move DX back by retract_offset
         
         Returns:
             True if step executed successfully
@@ -288,46 +280,45 @@ class UltraShortHandler:
         
         logger.info("Executing Ultra Short Step 2: Retract mobile head DX")
         
-        # Set morse (left locked, right released)
-        if hasattr(self.mio, "set_morse"):
-            self.mio.set_morse(left_locked=True, right_locked=False)
-        else:
-            logger.warning("Machine I/O does not support set_morse")
-        
-        # Calculate retract position
-        after_retract_position = self.sequence.heading_position - self.sequence.retract_offset
-        
-        # Move to retract position
-        if hasattr(self.mio, "command_move"):
-            success = self.mio.command_move(
-                length_mm=after_retract_position,
-                angle_sx=self.sequence.angle_sx,
-                angle_dx=self.sequence.angle_dx,
-                profile="default",
-                element="ultra_short_retract"
+        try:
+            # 1. Release brake to allow movement
+            self.mio.command_release_brake()
+            
+            # 2. Configure morse for retract
+            from ui_qt.logic.modes.morse_strategy import MorseStrategy
+            morse_config = MorseStrategy.ultra_short_retract()
+            self.mio.command_set_morse(
+                morse_config["left_locked"],
+                morse_config["right_locked"]
             )
-            if not success:
-                logger.error("Failed to start retract movement")
-                return False
-        else:
-            logger.warning("Machine I/O does not support command_move")
-        
-        self.sequence.current_step = 2
-        logger.info(f"Step 2 (Retract) completed: moved to {after_retract_position:.1f}mm")
-        
-        # Call step completion callback if provided
-        self._invoke_step_callback(2, f"Retract mobile head DX by {self.sequence.retract_offset:.0f}mm → {after_retract_position:.0f}mm")
-        
-        return True
+            
+            # 3. Calculate and move to retract position
+            after_retract_position = self.sequence.heading_position - self.sequence.retract_offset
+            
+            success = self.mio.command_move(
+                after_retract_position,
+                ang_sx=self.sequence.angle_sx,
+                ang_dx=90.0
+            )
+            
+            if success:
+                self.sequence.current_step = 2
+                logger.info(f"Ultra short step 2: retract to {after_retract_position:.1f}mm")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Error executing step 2: {e}")
+            return False
     
     def execute_step_3(self) -> bool:
         """
         Execute Step 3: Final cut with mobile head DX.
         
         Actions:
-        1. Set blade inhibits: Left=True, Right=False
-        2. Set morse: Left released, Right locked
-        3. Move to final_position for cutting
+        1. Apply angles for final cut
+        2. Release brake to allow movement
+        3. Configure morse for final cut
+        4. Move to final_position for cutting
         
         Returns:
             True if step executed successfully
@@ -341,40 +332,39 @@ class UltraShortHandler:
         
         logger.info("Executing Ultra Short Step 3: Final cut with mobile head DX")
         
-        # Set blade inhibits
-        if hasattr(self.mio, "set_blade_inhibits"):
-            self.mio.set_blade_inhibits(left=True, right=False)
-        else:
-            logger.warning("Machine I/O does not support set_blade_inhibits")
-        
-        # Set morse (left released, right locked)
-        if hasattr(self.mio, "set_morse"):
-            self.mio.set_morse(left_locked=False, right_locked=True)
-        else:
-            logger.warning("Machine I/O does not support set_morse")
-        
-        # Move to final position
-        if hasattr(self.mio, "command_move"):
-            success = self.mio.command_move(
-                length_mm=self.sequence.final_position,
-                angle_sx=self.sequence.angle_sx,
-                angle_dx=self.sequence.final_angle_dx,
-                profile="default",
-                element="ultra_short_final"
+        try:
+            # 1. Apply angles for final cut
+            self.mio.command_set_head_angles(
+                sx=90.0,  # Fixed head not used
+                dx=self.sequence.final_angle_dx
             )
-            if not success:
-                logger.error("Failed to start final movement")
-                return False
-        else:
-            logger.warning("Machine I/O does not support command_move")
-        
-        self.sequence.current_step = 3
-        logger.info("Step 3 (Final Cut) completed")
-        
-        # Call step completion callback if provided
-        self._invoke_step_callback(3, f"Final cut with mobile head DX @ {self.sequence.final_position:.0f}mm (piece: {self.sequence.target_length_mm:.1f}mm)")
-        
-        return True
+            
+            # 2. Release brake to allow movement
+            self.mio.command_release_brake()
+            
+            # 3. Configure morse for final cut
+            from ui_qt.logic.modes.morse_strategy import MorseStrategy
+            morse_config = MorseStrategy.ultra_short_final()
+            self.mio.command_set_morse(
+                morse_config["left_locked"],
+                morse_config["right_locked"]
+            )
+            
+            # 4. Start movement
+            success = self.mio.command_move(
+                self.sequence.final_position,
+                ang_sx=90.0,
+                ang_dx=self.sequence.final_angle_dx
+            )
+            
+            if success:
+                self.sequence.current_step = 3
+                logger.info(f"Ultra short step 3: final @ {self.sequence.final_position:.1f}mm")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Error executing step 3: {e}")
+            return False
     
     def get_current_step(self) -> int:
         """

@@ -14,9 +14,10 @@ def _pill(text: str, bg: str) -> QLabel:
     w = QLabel(text)
     w.setAlignment(Qt.AlignCenter)
     w.setStyleSheet(
-        f"font-weight:800; font-size: 11pt; color:white; background:{bg}; "
-        "border-radius:10px; padding:2px 6px;"
+        f"font-weight:800; font-size: 10pt; color:white; background:{bg}; "
+        "border-radius:10px; padding:6px 12px; min-height:24px;"
     )
+    w.setMinimumHeight(24)
     return w
 
 class StatusPanel(QWidget):
@@ -53,13 +54,17 @@ class StatusPanel(QWidget):
         grid = QGridLayout(card)
         grid.setContentsMargins(8, 8, 8, 8)
         grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(8)
+        grid.setVerticalSpacing(12)
 
         def add_row(r, name, w):
             lbl = QLabel(name)
-            lbl.setStyleSheet("font-weight:600; font-size:11pt; color:#2c3e50;")
-            grid.addWidget(lbl, r, 0, alignment=Qt.AlignLeft)
-            grid.addWidget(w, r, 1, alignment=Qt.AlignRight)
+            lbl.setStyleSheet(
+                "font-weight:600; font-size:10pt; color:#2c3e50; "
+                "padding:4px 0px; min-height:24px;"
+            )
+            lbl.setMinimumHeight(24)
+            grid.addWidget(lbl, r, 0, alignment=Qt.AlignLeft | Qt.AlignVCenter)
+            grid.addWidget(w, r, 1, alignment=Qt.AlignRight | Qt.AlignVCenter)
 
         self.w_emg = _pill("-", MUTED)
         self.w_homed = _pill("-", MUTED)
@@ -166,10 +171,10 @@ class StatusPanel(QWidget):
     def _style(active: bool, err_on: bool = False) -> str:
         if err_on:
             return (
-                f"font-weight:800; font-size:11pt; color:white; background:{ERR if active else OK}; "
-                "border-radius:10px; padding:2px 6px;"
+                f"font-weight:800; font-size:10pt; color:white; background:{ERR if active else OK}; "
+                "border-radius:10px; padding:6px 12px; min-height:24px;"
             )
         return (
-            f"font-weight:800; font-size:11pt; color:white; background:{OK if active else WARN}; "
-            "border-radius:10px; padding:2px 6px;"
+            f"font-weight:800; font-size:10pt; color:white; background:{OK if active else WARN}; "
+            "border-radius:10px; padding:6px 12px; min-height:24px;"
         )

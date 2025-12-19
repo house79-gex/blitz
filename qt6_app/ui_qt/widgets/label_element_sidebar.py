@@ -2,12 +2,15 @@
 Element toolbox sidebar for label editor.
 """
 from __future__ import annotations
+import logging
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, 
                                QScrollArea, QFrame, QSizePolicy)
 from PySide6.QtCore import Qt, Signal
 
 from .label_element import (TextElement, FieldElement, BarcodeElement, 
                             ImageElement, LineElement, ShapeElement)
+
+logger = logging.getLogger(__name__)
 
 
 class LabelElementSidebar(QWidget):
@@ -17,7 +20,15 @@ class LabelElementSidebar(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.typologies_store = None
+        try:
+            from ui_qt.services.typologies_store import TypologiesStore
+            self.typologies_store = TypologiesStore()
+        except Exception as e:
+            logger.warning(f"Could not load TypologiesStore: {e}")
+        
         self._build()
+        self._load_elements_from_typologies()
     
     def _build(self):
         """Build the sidebar UI."""
@@ -37,28 +48,29 @@ class LabelElementSidebar(QWidget):
         scroll.setStyleSheet("QScrollArea { border: none; }")
         
         # Container for element buttons
-        container = QWidget()
-        container_layout = QVBoxLayout(container)
-        container_layout.setSpacing(8)
-        container_layout.setContentsMargins(0, 0, 0, 0)
+        self.container = QWidget()
+        self.container_layout = QVBoxLayout(self.container)
+        self.container_layout.setSpacing(8)
+        self.container_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Add element buttons
-        self._add_element_button(container_layout, "📝 Testo", "text", 
+        # Add standard element buttons
+        self._add_element_button(self.container_layout, "📝 Testo", "text", 
                                 "Aggiungi testo statico")
-        self._add_element_button(container_layout, "🔢 Campo Dati", "field",
+        self._add_element_button(self.container_layout, "🔢 Campo Dati", "field",
                                 "Aggiungi campo dinamico")
-        self._add_element_button(container_layout, "📊 Barcode", "barcode",
+        self._add_element_button(self.container_layout, "📊 Barcode", "barcode",
                                 "Aggiungi barcode/QR")
-        self._add_element_button(container_layout, "🖼️ Immagine", "image",
+        self._add_element_button(self.container_layout, "🖼️ Immagine", "image",
                                 "Aggiungi logo/immagine")
-        self._add_element_button(container_layout, "➖ Linea", "line",
+        self._add_element_button(self.container_layout, "➖ Linea", "line",
                                 "Aggiungi linea separatore")
-        self._add_element_button(container_layout, "⬜ Forma", "shape",
+        self._add_element_button(self.container_layout, "⬜ Forma", "shape",
                                 "Aggiungi rettangolo/cerchio")
         
-        container_layout.addStretch()
+        # Add stretch after standard elements
+        self.container_layout.addStretch()
         
-        scroll.setWidget(container)
+        scroll.setWidget(self.container)
         layout.addWidget(scroll)
         
         self.setMaximumWidth(200)
@@ -67,6 +79,80 @@ class LabelElementSidebar(QWidget):
                 background-color: #f5f5f5;
             }
         """)
+    
+    def _load_elements_from_typologies(self):
+        """Carica elementi dinamicamente da tipologie."""
+        if not self.typologies_store:
+            return
+        
+        try:
+            # Insert separator before typologies if we have any
+            separator = QLabel("─ Tipologie ─")
+            separator.setStyleSheet("color: #999; font-size: 10px; padding: 5px;")
+            separator.setAlignment(Qt.AlignCenter)
+            # Insert before stretch
+            self.container_layout.insertWidget(self.container_layout.count() - 1, separator)
+            
+            typologies = self.typologies_store.list_typologies()
+            element_names_added = set()
+            
+            for typo in typologies:
+                try:
+                    typo_full = self.typologies_store.get_typology_full(typo["id"])
+                    if not typo_full:
+                        continue
+                    
+                    components = typo_full.get("componenti", [])
+                    for comp in components:
+                        element_name = comp.get("nome", "").strip()
+                        if element_name and element_name not in element_names_added:
+                            # Add element button for this component
+                            self._add_typology_element_button(
+                                self.container_layout,
+                                f"🏷️ {element_name}",
+                                element_name,
+                                f"Elemento da tipologia: {typo.get('name', '')}"
+                            )
+                            element_names_added.add(element_name)
+                except Exception as e:
+                    logger.error(f"Error loading typology {typo.get('id')}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error loading elements from typologies: {e}")
+    
+    def _add_typology_element_button(self, layout: QVBoxLayout, label: str, 
+                                    element_name: str, tooltip: str):
+        """Add a typology element button to the sidebar."""
+        btn = QPushButton(label)
+        btn.setToolTip(tooltip)
+        btn.setMinimumHeight(35)
+        btn.setStyleSheet("""
+            QPushButton {
+                background-color: #fff9e6;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 6px;
+                text-align: left;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #fff4cc;
+                border-color: #ff9900;
+            }
+            QPushButton:pressed {
+                background-color: #ffe599;
+            }
+        """)
+        
+        btn.clicked.connect(lambda: self._on_typology_element_clicked(element_name))
+        # Insert before stretch
+        layout.insertWidget(layout.count() - 1, btn)
+    
+    def _on_typology_element_clicked(self, element_name: str):
+        """Handle typology element button click."""
+        # Create a text element with the component name
+        element = TextElement(text=element_name, x=10, y=10)
+        self.element_requested.emit(element)
     
     def _add_element_button(self, layout: QVBoxLayout, label: str, 
                            element_type: str, tooltip: str):

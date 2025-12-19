@@ -92,7 +92,8 @@ class LabelEditorPage(QWidget):
         
         canvas_scroll = QScrollArea()
         canvas_scroll.setWidget(self.canvas)
-        canvas_scroll.setWidgetResizable(False)
+        canvas_scroll.setWidgetResizable(True)
+        canvas_scroll.setMinimumSize(400, 500)
         canvas_scroll.setStyleSheet("QScrollArea { background-color: #e0e0e0; }")
         
         canvas_layout.addWidget(canvas_scroll)
