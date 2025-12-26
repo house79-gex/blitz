@@ -9,6 +9,9 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QFrame, QSizePo
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, Signal
 from PySide6.QtGui import QFont
 
+# Qt's maximum widget size constant
+QWIDGETSIZE_MAX = 16777215
+
 
 class CollapsibleSection(QWidget):
     """
@@ -102,7 +105,7 @@ class CollapsibleSection(QWidget):
             self.content_container.setVisible(False)
         else:
             # Let it expand naturally
-            self.content_container.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+            self.content_container.setMaximumHeight(QWIDGETSIZE_MAX)
     
     def _update_header_text(self):
         """Update header text with arrow indicator."""
@@ -141,7 +144,9 @@ class CollapsibleSection(QWidget):
         self.content_container.setVisible(False)
         try:
             self.animation.finished.disconnect(self._on_collapse_finished)
-        except:
+        except (TypeError, RuntimeError):
+            # TypeError: signal already disconnected
+            # RuntimeError: wrapped C/C++ object has been deleted
             pass
     
     def expand(self):
@@ -157,7 +162,7 @@ class CollapsibleSection(QWidget):
         self.content_container.setVisible(True)
         
         # Calculate target height
-        self.content_container.setMaximumHeight(16777215)
+        self.content_container.setMaximumHeight(QWIDGETSIZE_MAX)
         target_height = self.content_container.sizeHint().height()
         
         # Animate from 0 to target height
@@ -171,10 +176,12 @@ class CollapsibleSection(QWidget):
     def _on_expand_finished(self):
         """Called when expand animation finishes."""
         # Remove height constraint so content can resize naturally
-        self.content_container.setMaximumHeight(16777215)
+        self.content_container.setMaximumHeight(QWIDGETSIZE_MAX)
         try:
             self.animation.finished.disconnect(self._on_expand_finished)
-        except:
+        except (TypeError, RuntimeError):
+            # TypeError: signal already disconnected
+            # RuntimeError: wrapped C/C++ object has been deleted
             pass
     
     def add_content(self, widget: QWidget):
@@ -218,5 +225,5 @@ class CollapsibleSection(QWidget):
                 self._is_collapsed = False
                 self._update_header_text()
                 self.header.setChecked(True)
-                self.content_container.setMaximumHeight(16777215)
+                self.content_container.setMaximumHeight(QWIDGETSIZE_MAX)
                 self.content_container.setVisible(True)
