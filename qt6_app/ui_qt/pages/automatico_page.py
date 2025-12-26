@@ -722,25 +722,59 @@ class AutomaticoPage(QWidget):
             try:
                 self._enter_manual_mode()  # Switch to manual mode if not already
                 
-                # Create a piece entry
-                row_count = self.tbl_cut.rowCount()
-                self.tbl_cut.insertRow(row_count)
+                # Check if same length already exists - if so, increment quantity
+                existing_row = None
+                for row in range(self.tbl_cut.rowCount()):
+                    try:
+                        length_item = self.tbl_cut.item(row, 3)
+                        if length_item:
+                            existing_length = float(length_item.text())
+                            if abs(existing_length - mm) < 0.1:  # Within 0.1mm tolerance
+                                existing_row = row
+                                break
+                    except (ValueError, AttributeError):
+                        continue
                 
-                # Fill row with measurement
-                seq_id = f"M{row_count + 1}"  # Manual entry
-                profile = ""  # User can edit
-                element = f"Metro {row_count + 1}"
-                
-                self.tbl_cut.setItem(row_count, 0, QTableWidgetItem(seq_id))
-                self.tbl_cut.setItem(row_count, 1, QTableWidgetItem(profile))
-                self.tbl_cut.setItem(row_count, 2, QTableWidgetItem(element))
-                self.tbl_cut.setItem(row_count, 3, QTableWidgetItem(f"{mm:.1f}"))
-                self.tbl_cut.setItem(row_count, 4, QTableWidgetItem("0.0"))
-                self.tbl_cut.setItem(row_count, 5, QTableWidgetItem("0.0"))
-                self.tbl_cut.setItem(row_count, 6, QTableWidgetItem("1"))
-                self.tbl_cut.setItem(row_count, 7, QTableWidgetItem("Metro"))
-                
-                logger.info(f"Added metro measurement to table: {mm:.1f}mm")
+                if existing_row is not None:
+                    # Increment quantity instead of adding new row
+                    qty_item = self.tbl_cut.item(existing_row, 6)
+                    if qty_item:
+                        current_qty = int(qty_item.text())
+                        qty_item.setText(str(current_qty + 1))
+                        
+                        # Highlight updated row
+                        self._highlight_table_row(existing_row, duration_ms=1500)
+                        
+                        logger.info(f"Updated quantity for {mm:.1f}mm to {current_qty + 1}")
+                        self._toast(f"📏 {mm:.1f}mm - Quantità: {current_qty + 1}", "info")
+                else:
+                    # Create a piece entry
+                    row_count = self.tbl_cut.rowCount()
+                    self.tbl_cut.insertRow(row_count)
+                    
+                    # Fill row with measurement
+                    seq_id = f"M{row_count + 1}"  # Manual entry
+                    profile = ""  # User can edit
+                    element = f"Metro {row_count + 1}"
+                    
+                    self.tbl_cut.setItem(row_count, 0, QTableWidgetItem(seq_id))
+                    self.tbl_cut.setItem(row_count, 1, QTableWidgetItem(profile))
+                    self.tbl_cut.setItem(row_count, 2, QTableWidgetItem(element))
+                    self.tbl_cut.setItem(row_count, 3, QTableWidgetItem(f"{mm:.1f}"))
+                    self.tbl_cut.setItem(row_count, 4, QTableWidgetItem("0.0"))
+                    self.tbl_cut.setItem(row_count, 5, QTableWidgetItem("0.0"))
+                    self.tbl_cut.setItem(row_count, 6, QTableWidgetItem("1"))
+                    self.tbl_cut.setItem(row_count, 7, QTableWidgetItem("Metro"))
+                    
+                    # Highlight new row
+                    self._highlight_table_row(row_count, duration_ms=1500)
+                    
+                    # Scroll to bottom to show new row
+                    self.tbl_cut.scrollToBottom()
+                    
+                    logger.info(f"Added metro measurement to table: {mm:.1f}mm")
+                    self._toast(f"📏 {mm:.1f}mm aggiunto", "info")
+                    
             except Exception as e:
                 logger.error(f"Error adding metro measurement: {e}")
         
@@ -759,9 +793,43 @@ class AutomaticoPage(QWidget):
                 f"{item['value']:.1f}mm @ {item['timestamp']}"
             )
         self.list_metro_history.scrollToBottom()
+    
+    def _highlight_table_row(self, row: int, duration_ms: int = 1000):
+        """
+        Highlight a table row temporarily with yellow color animation.
         
-        # Feedback
-        self._toast(f"📏 {mm:.1f}mm [AUTO]", "info")
+        Args:
+            row: Row index to highlight
+            duration_ms: Duration of highlight in milliseconds
+        """
+        try:
+            # Apply yellow highlight to all columns
+            for col in range(self.tbl_cut.columnCount()):
+                item = self.tbl_cut.item(row, col)
+                if item:
+                    original_bg = item.background()
+                    item.setBackground(QColor(255, 255, 0, 120))  # Yellow with transparency
+                    
+                    # Store original background for restoration
+                    if not hasattr(item, '_original_bg'):
+                        item._original_bg = original_bg
+            
+            # Schedule removal of highlight after duration
+            QTimer.singleShot(duration_ms, lambda: self._clear_row_highlight(row))
+            
+        except Exception as e:
+            logger.error(f"Error highlighting row {row}: {e}")
+    
+    def _clear_row_highlight(self, row: int):
+        """Clear highlight from a table row."""
+        try:
+            for col in range(self.tbl_cut.columnCount()):
+                item = self.tbl_cut.item(row, col)
+                if item and hasattr(item, '_original_bg'):
+                    item.setBackground(item._original_bg)
+                    delattr(item, '_original_bg')
+        except Exception as e:
+            logger.debug(f"Error clearing highlight from row {row}: {e}")
 
     # ---- Helpers stato / log ----
     def _update_cycle_state_label(self):

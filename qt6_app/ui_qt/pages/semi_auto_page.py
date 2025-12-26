@@ -10,6 +10,7 @@ from PySide6.QtGui import QKeyEvent, QGuiApplication
 from ui_qt.widgets.header import Header
 from ui_qt.widgets.status_panel import StatusPanel
 from ui_qt.widgets.heads_view import HeadsView
+from ui_qt.widgets.collapsible_section import CollapsibleSection
 from ui_qt.logic.modes import (
     ModeConfig,
     ModeDetector,
@@ -353,10 +354,12 @@ class SemiAutoPage(QWidget):
         bottom_box.addLayout(ctrl_row)
         left_col.addLayout(bottom_box, 0)
 
-        # === NEW: Metro Digitale Section ===
+        # === NEW: Metro Digitale Section (Collapsible) ===
         if self.metro_manager.is_available():
-            metro_frame = self._build_metro_section()
-            left_col.addWidget(metro_frame, 0)
+            metro_collapsible = CollapsibleSection("📡 Metro Digitale", start_collapsed=False)
+            metro_content = self._build_metro_section_content()
+            metro_collapsible.add_content(metro_content)
+            left_col.addWidget(metro_collapsible, 0)
 
         right_container = QFrame()
         right_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
@@ -416,31 +419,18 @@ class SemiAutoPage(QWidget):
             QTimer.singleShot(auto_hide_ms, lambda: self.banner.setVisible(False))
 
     # ---------- Metro Digitale Methods ----------
-    def _build_metro_section(self) -> QFrame:
-        """Build Metro Digitale Bluetooth section."""
-        frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame {
-                background: #34495e;
-                border: 2px solid #3498db;
-                border-radius: 8px;
-                padding: 12px;
-            }
-        """)
-        
-        layout = QVBoxLayout(frame)
+    def _build_metro_section_content(self) -> QWidget:
+        """Build Metro Digitale Bluetooth section content (without outer frame)."""
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
-        
-        # Title
-        title = QLabel("📡 Metro Digitale Bluetooth")
-        title.setStyleSheet("font-size: 13pt; font-weight: 700; color: #3498db;")
-        layout.addWidget(title)
         
         # Connection controls
         conn_layout = QHBoxLayout()
         
         self.lbl_metro_status = QLabel("⚪ Disconnesso")
-        self.lbl_metro_status.setStyleSheet("font-weight: 600;")
+        self.lbl_metro_status.setStyleSheet("font-weight: 600; color: #2c3e50;")
         conn_layout.addWidget(self.lbl_metro_status)
         
         self.btn_metro_scan = QPushButton("🔍 Cerca")
@@ -482,29 +472,29 @@ class SemiAutoPage(QWidget):
         
         # Auto-position checkbox
         self.chk_auto_position = QCheckBox("⚡ Auto-Posiziona al ricevimento misura")
-        self.chk_auto_position.setStyleSheet("font-size: 11pt; color: #ecf0f1;")
+        self.chk_auto_position.setStyleSheet("font-size: 11pt; color: #2c3e50;")
         self.chk_auto_position.setToolTip("Se attivo, avvia automaticamente il posizionamento quando riceve una misura")
         layout.addWidget(self.chk_auto_position)
         
         # History
         history_label = QLabel("📋 Cronologia Misure (ultime 10):")
-        history_label.setStyleSheet("font-size: 10pt; color: #bdc3c7; margin-top: 8px;")
+        history_label.setStyleSheet("font-size: 10pt; color: #7f8c8d; margin-top: 8px;")
         layout.addWidget(history_label)
         
         self.list_metro_history = QListWidget()
         self.list_metro_history.setMaximumHeight(100)
         self.list_metro_history.setStyleSheet("""
             QListWidget {
-                background: #2c3e50;
-                border: 1px solid #34495e;
+                background: #ffffff;
+                border: 1px solid #bdc3c7;
                 border-radius: 4px;
                 font-size: 10pt;
-                color: #ecf0f1;
+                color: #2c3e50;
             }
         """)
         layout.addWidget(self.list_metro_history)
         
-        return frame
+        return content
 
     def showEvent(self, event):
         """Page becomes visible."""

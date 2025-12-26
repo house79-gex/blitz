@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
         self._try_add_page("manuale", "ui_qt.pages.manuale_page", "ManualePage")
         self._try_add_page("automatico", "ui_qt.pages.automatico_page", "AutomaticoPage")
         self._try_add_page("semi", "ui_qt.pages.semi_auto_page", "SemiAutoPage")
+        self._try_add_page("cutlist", "ui_qt.pages.cutlist_page", "CutlistPage")
         self._try_add_page("tipologie", "ui_qt.pages.tipologie_page", "TipologiePage")
         self._try_add_page("quotevani", "ui_qt.pages.quotevani_page", "QuoteVaniPage")
         self._try_add_page("utility", "ui_qt.pages.utility_page", "UtilityPage")
