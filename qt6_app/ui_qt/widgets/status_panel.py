@@ -13,11 +13,15 @@ CARD_BG = "#ecf0f3"
 def _pill(text: str, bg: str) -> QLabel:
     w = QLabel(text)
     w.setAlignment(Qt.AlignCenter)
+    # Use word wrap and adjust size policy for better text display
+    w.setWordWrap(False)
+    w.setTextFormat(Qt.TextFormat.PlainText)
     w.setStyleSheet(
         f"font-weight:800; font-size: 10pt; color:white; background:{bg}; "
         "border-radius:10px; padding:6px 12px; min-height:24px;"
     )
     w.setMinimumHeight(24)
+    w.setMinimumWidth(100)  # Ensure minimum width to prevent truncation
     return w
 
 class StatusPanel(QWidget):
