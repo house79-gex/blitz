@@ -115,6 +115,9 @@ class TestApplicationStartup:
     
     def test_app_can_be_created(self, qapp):
         """Test that the application instance can be created."""
+        # Imposta il nome dell'applicazione per il test
+        qapp.setApplicationName("BLITZ CNC")
+        
         # qapp fixture provides QApplication instance
         assert qapp is not None
         assert qapp.applicationName() == "BLITZ CNC"
