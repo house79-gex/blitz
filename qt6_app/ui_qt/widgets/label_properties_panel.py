@@ -2,6 +2,7 @@
 Properties panel for editing selected element.
 """
 from __future__ import annotations
+import logging
 from typing import Optional
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit, 
                                QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox,
@@ -13,6 +14,8 @@ from PySide6.QtGui import QColor
 from .label_element import (LabelElement, TextElement, FieldElement, 
                             BarcodeElement, ImageElement, LineElement, ShapeElement)
 
+logger = logging.getLogger(__name__)
+
 
 class LabelPropertiesPanel(QWidget):
     """Properties editor for selected label element."""
@@ -22,6 +25,7 @@ class LabelPropertiesPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_element: Optional[LabelElement] = None
+        self._updating = False  # Flag to prevent recursive updates
         self._build()
     
     def _build(self):
@@ -79,7 +83,9 @@ class LabelPropertiesPanel(QWidget):
     def set_element(self, element: Optional[LabelElement]):
         """Set the element to edit."""
         self.current_element = element
+        self._updating = True  # Block signals during update
         self._rebuild_properties()
+        self._updating = False  # Re-enable signals
     
     def _rebuild_properties(self):
         """Rebuild properties form for current element."""
@@ -288,9 +294,15 @@ class LabelPropertiesPanel(QWidget):
     
     def _update_property(self, prop_name: str, value):
         """Update element property."""
-        if self.current_element:
+        if self._updating or not self.current_element:
+            return
+        
+        # Apply property to element
+        try:
             setattr(self.current_element, prop_name, value)
             self.property_changed.emit()
+        except Exception as e:
+            logger.error(f"Error setting property {prop_name}: {e}")
     
     def _on_delete_clicked(self):
         """Handle delete button click."""

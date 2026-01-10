@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, 
                                QScrollArea, QFrame, QSizePolicy)
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QMimeData, QPoint
+from PySide6.QtGui import QDrag, QPixmap, QPainter
 
 from .label_element import (TextElement, FieldElement, BarcodeElement, 
                             ImageElement, LineElement, ShapeElement)
@@ -157,27 +158,9 @@ class LabelElementSidebar(QWidget):
     def _add_element_button(self, layout: QVBoxLayout, label: str, 
                            element_type: str, tooltip: str):
         """Add an element button to the sidebar."""
-        btn = QPushButton(label)
-        btn.setToolTip(tooltip)
-        btn.setMinimumHeight(40)
-        btn.setStyleSheet("""
-            QPushButton {
-                background-color: white;
-                border: 1px solid #ddd;
-                border-radius: 4px;
-                padding: 8px;
-                text-align: left;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #e8f4f8;
-                border-color: #0066cc;
-            }
-            QPushButton:pressed {
-                background-color: #d0e8f0;
-            }
-        """)
-        
+        btn = ElementDragButton(element_type, label, tooltip)
+        btn.drag_started.connect(lambda et: logger.debug(f"Drag started: {et}"))
+        # Keep click functionality as fallback
         btn.clicked.connect(lambda: self._on_element_clicked(element_type))
         layout.addWidget(btn)
     
@@ -201,3 +184,86 @@ class LabelElementSidebar(QWidget):
         
         if element:
             self.element_requested.emit(element)
+
+
+class ElementDragButton(QPushButton):
+    """Draggable button for label elements."""
+    
+    drag_started = Signal(str)  # element_type
+    
+    def __init__(self, element_type: str, label: str, tooltip: str = "", parent=None):
+        super().__init__(label, parent)
+        self.element_type = element_type
+        self.setToolTip(tooltip)
+        self.setCursor(Qt.OpenHandCursor)
+        self.setMinimumHeight(40)
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: white;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 8px;
+                text-align: left;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #e8f4f8;
+                border-color: #0066cc;
+            }
+            QPushButton:pressed {
+                background-color: #d0e8f0;
+            }
+        """)
+    
+    def mousePressEvent(self, event):
+        """Start drag operation."""
+        if event.button() == Qt.LeftButton:
+            self._drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        """Handle drag movement."""
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        
+        # Check if we've moved enough to start a drag
+        if (event.pos() - self._drag_start_pos).manhattanLength() < 5:
+            return
+        
+        self.setCursor(Qt.ClosedHandCursor)
+        
+        # Create drag
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        
+        # Set element type in mimeData
+        mime_data.setData(
+            'application/x-label-element',
+            self.element_type.encode('utf-8')
+        )
+        
+        drag.setMimeData(mime_data)
+        
+        # Set drag pixmap (preview)
+        pixmap = QPixmap(120, 40)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setPen(Qt.black)
+        painter.setBrush(Qt.white)
+        painter.drawRoundedRect(0, 0, 120, 40, 4, 4)
+        painter.drawText(pixmap.rect(), Qt.AlignCenter, self.text())
+        painter.end()
+        
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(QPoint(60, 20))
+        
+        # Start drag
+        self.drag_started.emit(self.element_type)
+        drag.exec(Qt.CopyAction)
+        
+        self.setCursor(Qt.OpenHandCursor)
+    
+    def mouseReleaseEvent(self, event):
+        """Handle mouse release."""
+        self.setCursor(Qt.OpenHandCursor)
+        super().mouseReleaseEvent(event)
