@@ -93,7 +93,7 @@ except Exception:
     def clear_element_association(*args, **kwargs): pass
     def resolve_templates(p,e=None): return [get_template("DEFAULT")]
 
-STATUS_W = 260
+STATUS_W = 280
 
 
 class HardwareConfigTab(QFrame):
