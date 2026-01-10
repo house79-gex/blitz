@@ -1211,6 +1211,7 @@ class SemiAutoPage(QWidget):
             return
         
         try:
+            # Note: do_homing DOES support callback parameter (see MachineIO interface line 31)
             self.mio.do_homing(callback=self._on_homing_complete)
             self._show_info("⏳ Azzeramento in corso...", auto_hide_ms=3000)
             logger.info("Homing started from semi-auto page")
@@ -1251,9 +1252,8 @@ class SemiAutoPage(QWidget):
         
         # Check if movement completed and re-enable inputs
         if self._movement_in_progress:
-            # Check movement status: prefer machine_adapter if available, fallback to raw machine
-            mov = self.mio.is_positioning_active() if self.mio else bool(getattr(self.machine, "positioning_active", False))
-            if not mov:
+            # Check movement status using helper method
+            if not self._is_movement_active():
                 # Movement completed - re-enable inputs with error handling
                 try:
                     self._enable_inputs_after_movement()
@@ -1261,6 +1261,15 @@ class SemiAutoPage(QWidget):
                     logger.info("Movement completed, inputs re-enabled")
                 except Exception as e:
                     logger.error(f"Error re-enabling inputs after movement: {e}")
+                    # Ensure UI is restored even if _enable_inputs_after_movement fails
+                    try:
+                        self.ext_len.setEnabled(True)
+                        self.spin_sx.setEnabled(True)
+                        self.spin_dx.setEnabled(True)
+                        self.thickness.setEnabled(True)
+                        self.cb_profilo.setEnabled(True)
+                    except Exception:
+                        pass
                     # Force flag reset to prevent permanent lock
                     self._movement_in_progress = False
 
@@ -1285,10 +1294,19 @@ class SemiAutoPage(QWidget):
         if self.mio:
             self.mio.tick()
 
+    def _is_movement_active(self) -> bool:
+        """
+        Check if machine is currently moving.
+        Uses machine_adapter if available, otherwise falls back to raw machine.
+        """
+        if self.mio:
+            return self.mio.is_positioning_active()
+        return bool(getattr(self.machine, "positioning_active", False))
+    
     def _update_buttons(self):
         homed = bool(getattr(self.machine, "machine_homed", False))
         emg = bool(getattr(self.machine, "emergency_active", False))
-        mov = self.mio.is_positioning_active() if self.mio else bool(getattr(self.machine, "positioning_active", False))
+        mov = self._is_movement_active()
         try:
             self.btn_start.setEnabled(homed and not emg and not mov)
         except Exception:
