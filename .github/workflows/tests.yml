@@ -21,7 +21,7 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 libxcb-shape0 libxcb-sync1 x11-utils libxcb-cursor0
+        sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 libxcb-shape0 libxcb-sync1 libxcb-cursor0
         sudo apt-get install -y xvfb x11-xserver-utils
     
     - name: Install Python dependencies
@@ -32,6 +32,7 @@ jobs:
     
     - name: Run tests with xvfb
       run: |
+        export PYTHONPATH=$PYTHONPATH:$(pwd)
         xvfb-run -a pytest --cov --cov-report=xml --cov-report=term-missing -v
       env:
         QT_QPA_PLATFORM: offscreen
