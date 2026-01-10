@@ -93,6 +93,9 @@ class SemiAutoPage(QWidget):
         self._extra_long_handler: Optional[ExtraLongHandler] = None
         self._current_mode: str = "normal"
         self._current_mode_handler = None
+        
+        # Movement tracking for UI state management
+        self._movement_in_progress = False
 
         # Stato intestatura / FQ (keep for backward compatibility)
         self._intest_in_progress = False
@@ -154,7 +157,7 @@ class SemiAutoPage(QWidget):
         left_col.setContentsMargins(0, 0, 0, 0)
         left_col.setSpacing(8)
 
-        header = Header(self.appwin, "SEMI-AUTOMATICO")
+        header = Header(self.appwin, "SEMI-AUTOMATICO", on_azzera=self._on_homing)
         left_col.addWidget(header, 0)
 
         self.banner = QLabel("")
@@ -955,7 +958,7 @@ class SemiAutoPage(QWidget):
         if self.mio and hasattr(self.mio, "set_mode_context"):
             try:
                 self.mio.set_mode_context(
-                    self._current_mode,
+                    "SEMI_AUTO",
                     piece_length_mm=length,
                     bar_length_mm=self._mode_config.stock_length_mm
                 )
@@ -1011,9 +1014,10 @@ class SemiAutoPage(QWidget):
             )
             
             if success:
+                self._movement_in_progress = True
+                self._disable_inputs_during_movement()
                 self._show_info(f"▶️ Posizionamento {piece['len']:.0f}mm", auto_hide_ms=2000)
                 logger.info(f"Semi-auto normal movement started: {piece['len']:.0f}mm")
-                self._update_buttons()
             else:
                 self._show_warn("❌ Movimento non avviato", auto_hide_ms=2500)
                 logger.error("Normal movement failed to start")
@@ -1199,6 +1203,25 @@ class SemiAutoPage(QWidget):
                 except Exception: pass
         self._update_buttons()
 
+    def _on_homing(self):
+        """Handle homing button click."""
+        if not self.mio:
+            self._show_warn("Adattatore macchina non disponibile", auto_hide_ms=2500)
+            return
+        
+        try:
+            self.mio.do_homing(callback=self._on_homing_complete)
+            self._show_info("⏳ Azzeramento in corso...", auto_hide_ms=3000)
+            logger.info("Homing started from semi-auto page")
+        except Exception as e:
+            logger.error(f"Error starting homing: {e}")
+            self._show_warn(f"Errore azzeramento: {e}", auto_hide_ms=2500)
+    
+    def _on_homing_complete(self):
+        """Callback when homing completes."""
+        self._show_info("✅ Azzeramento completato", auto_hide_ms=2000)
+        logger.info("Homing completed")
+
     # ---------- Poll ----------
     def _start_poll(self):
         self._poll = QTimer(self)
@@ -1224,6 +1247,15 @@ class SemiAutoPage(QWidget):
             self.lbl_target_big.setText(f"Quota: {float(pos):.1f} mm" if pos is not None else "Quota: — mm")
         except Exception:
             self.lbl_target_big.setText("Quota: — mm")
+        
+        # Check if movement completed and re-enable inputs
+        if self._movement_in_progress:
+            mov = self.mio.is_positioning_active() if self.mio else bool(getattr(self.machine, "positioning_active", False))
+            if not mov:
+                # Movement completed
+                self._enable_inputs_after_movement()
+                self._show_info("✅ Posizionamento completato", auto_hide_ms=2000)
+                logger.info("Movement completed, inputs re-enabled")
 
         # NOTE: Legacy intestatura system removed - now handled by mode handlers
         # if self._intest_in_progress:
@@ -1260,6 +1292,31 @@ class SemiAutoPage(QWidget):
             self.btn_brake.setText("SBLOCCA" if brk else "BLOCCA")
         except Exception:
             pass
+    
+    def _disable_inputs_during_movement(self):
+        """Disable UI inputs while movement is in progress."""
+        try:
+            self.ext_len.setEnabled(False)
+            self.spin_sx.setEnabled(False)
+            self.spin_dx.setEnabled(False)
+            self.thickness.setEnabled(False)
+            self.cb_profilo.setEnabled(False)
+            logger.debug("UI inputs disabled during movement")
+        except Exception as e:
+            logger.error(f"Error disabling inputs: {e}")
+    
+    def _enable_inputs_after_movement(self):
+        """Re-enable UI inputs after movement completes."""
+        try:
+            self.ext_len.setEnabled(True)
+            self.spin_sx.setEnabled(True)
+            self.spin_dx.setEnabled(True)
+            self.thickness.setEnabled(True)
+            self.cb_profilo.setEnabled(True)
+            self._movement_in_progress = False
+            logger.debug("UI inputs re-enabled after movement")
+        except Exception as e:
+            logger.error(f"Error enabling inputs: {e}")
 
     # ---------- Simulazioni tastiera ----------
     def keyPressEvent(self, event: QKeyEvent):
