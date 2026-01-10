@@ -143,5 +143,106 @@
       "Vedere docs/blitz/tables/ per mapping completo I/O",
       "Vedere docs/blitz/recap/ per schema elettrico"
     ]
+  },
+  
+  "motion_control": {
+    "description": "Configurazione stack controllo movimento con MD25HV + 8AL-ZARD + PID",
+    "enabled": true,
+    "driver": "MD25HV",
+    "encoder_interface": "8AL-ZARD",
+    
+    "gpio_motor": {
+      "pwm_pin": 12,
+      "dir_pin": 13,
+      "enable_pin": 16,
+      "pwm_frequency_hz": 20000,
+      "notes": [
+        "GPIO 12: PWM speed control (0-100%)",
+        "GPIO 13: Direction (0=forward, 1=reverse)",
+        "GPIO 16: Enable/brake (1=enabled, 0=brake)"
+      ]
+    },
+    
+    "gpio_encoder": {
+      "channel_a_pin": 17,
+      "channel_b_pin": 27,
+      "index_z_pin": 22,
+      "enable_index": true,
+      "notes": [
+        "Encoder → 8AL-ZARD input (12V, galvanic isolation)",
+        "8AL-ZARD → RPi GPIO (3.3V)",
+        "GPIO 17: Quadrature channel A",
+        "GPIO 27: Quadrature channel B",
+        "GPIO 22: Index pulse Z (for homing)"
+      ]
+    },
+    
+    "encoder_calibration": {
+      "encoder_ppr": 1000,
+      "quadrature_mode": "x4",
+      "pulley_diameter_mm": 60.0,
+      "pulses_per_revolution": 4000,
+      "pulses_per_mm": 84.880,
+      "calculation": "PPR × 4 / (π × pulley_diameter) = 1000 × 4 / (3.14159 × 60) = 84.880"
+    },
+    
+    "pid_parameters": {
+      "description": "Parametri PID da tarare sul campo",
+      "kp": 2.0,
+      "ki": 0.5,
+      "kd": 0.1,
+      "position_tolerance_mm": 0.5,
+      "control_loop_hz": 50.0,
+      "notes": [
+        "Kp: guadagno proporzionale - aumentare per risposta più rapida",
+        "Ki: guadagno integrale - aumentare per eliminare errore stazionario",
+        "Kd: guadagno derivativo - aumentare per ridurre overshoot",
+        "Valori iniziali conservativi - tarare incrementalmente"
+      ]
+    },
+    
+    "motion_limits": {
+      "max_speed_percent": 80.0,
+      "ramp_time_s": 0.5,
+      "position_tolerance_mm": 0.5,
+      "soft_limit_enabled": true,
+      "notes": [
+        "max_speed_percent: velocità massima PID (% del PWM massimo)",
+        "ramp_time_s: tempo rampa accelerazione/decelerazione",
+        "position_tolerance_mm: tolleranza posizionamento target"
+      ]
+    },
+    
+    "safety": {
+      "enable_soft_limits": true,
+      "emergency_stop_deceleration": "immediate",
+      "position_check_enabled": true,
+      "encoder_fault_detection": false,
+      "notes": [
+        "Soft limits: fermata automatica ai limiti software",
+        "Emergency stop: disabilitazione immediata motore + freno",
+        "Controllo posizione: verifica encoder durante movimento"
+      ]
+    },
+    
+    "replacement_info": {
+      "replaces": "Leadshine DCS810",
+      "reason": "Maggiore controllo software, costi ridotti, integrazione diretta",
+      "advantages": [
+        "Controllo PID software flessibile e tarabile",
+        "Encoder lettura diretta via GPIO (no RS232)",
+        "Eliminazione dipendenza da driver proprietario",
+        "Diagnostica e logging migliorati",
+        "Costi hardware inferiori"
+      ],
+      "testing_required": [
+        "Verifica GPIO pin assignments",
+        "Taratura encoder pulses_per_mm",
+        "Ottimizzazione parametri PID",
+        "Test limiti software",
+        "Test emergency stop",
+        "Test homing con index pulse"
+      ]
+    }
   }
 }

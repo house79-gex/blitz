@@ -22,7 +22,7 @@ pigpio>=1.78
 # CONTROLLO E AUTOMAZIONE
 # -----------------------------------------------------------------------------
 # Implementazione algoritmo PID per controllo preciso - Regolazione velocità e posizione
-simple-pid>=2.0.0
+simple-pid>=1.2.1
 
 # Google OR-Tools per ottimizzazione percorsi - Calcolo traiettorie ottimali CNC
 ortools>=9.8.0
