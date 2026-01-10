@@ -9,29 +9,26 @@ import sys
 import os
 from pathlib import Path
 
-# ========== CRITICAL FIX: Add project root to Python path ==========
-# This ensures qt6_app module is importable regardless of execution directory
-project_root = Path(__file__).parent.parent.resolve()
+# ========== CRITICAL:  Add project root to Python path ==========
+project_root = Path(__file__).parent. parent. resolve()
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
-print(f"[STARTUP] Project root:  {project_root}")
-# ====================================================================
+print(f"[STARTUP] Project root: {project_root}")
+# ================================================================
 
 import logging
 from typing import Optional, Dict, Any, Tuple
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QStackedWidget, QVBoxLayout,
-    QHBoxLayout, QLabel, QPushButton, QFrame, QSizePolicy, QMessageBox
+    QApplication, QMainWindow, QWidget, QStackedWidget,
+    QMessageBox
 )
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtCore import QTimer
 
-# Application imports
+# Application imports with fallbacks
 try:
-    from qt6_app.ui_qt.utils.logger import setup_logging
+    from qt6_app.ui_qt. utils. logger import setup_logging
 except ImportError:
-    # Fallback if logger module not available
     def setup_logging(log_dir=None, level=logging.INFO):
         logging.basicConfig(
             level=level,
@@ -40,7 +37,7 @@ except ImportError:
 
 try:
     from qt6_app.ui_qt.utils.settings import read_settings, write_settings
-except ImportError:
+except ImportError: 
     def read_settings():
         return {}
     def write_settings(settings):
@@ -53,7 +50,7 @@ from qt6_app.ui_qt.widgets.toast import Toast
 logger = logging.getLogger("blitz")
 
 # Configuration
-USE_SIMULATION = os.environ.get('SIMULATION', '1') == '1'  # Default to simulation
+USE_SIMULATION = os.environ.get('SIMULATION', '1') == '1'
 APP_VERSION = "1.0.0"
 
 
@@ -76,18 +73,18 @@ class BlitzMainWindow(QMainWindow):
         
         # Stack for pages
         self.stack = QStackedWidget()
-        self.setCentralWidget(self. stack)
+        self.setCentralWidget(self.stack)
         
         # Page registry:  {key: (wrapper, index, page_widget)}
         self._pages: Dict[str, Tuple[QWidget, int, QWidget]] = {}
         
         # Initialize machine
-        self. machine = None
+        self.machine = None
         self.machine_adapter = None
         self._init_machine()
         
-        # Toast notifications
-        self.toast = Toast(self)
+        # Toast notifications (create on-demand)
+        self._toast_instances = []
         
         # Global exception handler
         sys.excepthook = self._global_exception_handler
@@ -100,25 +97,59 @@ class BlitzMainWindow(QMainWindow):
         
         logger.info(f"BLITZ CNC v{APP_VERSION} started (simulation={USE_SIMULATION})")
     
+    def show_toast(self, message: str, toast_type:  str = "info", duration_ms: int = 3000):
+        """
+        Show toast notification. 
+        
+        Args:
+            message: Message to display
+            toast_type: 'info', 'warn', 'error', 'success'
+            duration_ms: Duration in milliseconds
+        """
+        try: 
+            colors = {
+                'info': ('#3498db', '#ffffff'),
+                'warn': ('#f39c12', '#ffffff'),
+                'error': ('#e74c3c', '#ffffff'),
+                'success': ('#27ae60', '#ffffff'),
+            }
+            bg, fg = colors. get(toast_type, colors['info'])
+            
+            toast = Toast(self, message, bg, fg)
+            self._toast_instances.append(toast)
+            toast.show()
+            
+            QTimer.singleShot(duration_ms, lambda: self._hide_toast(toast))
+        except Exception as e:
+            logger. error(f"Error showing toast:  {e}")
+    
+    def _hide_toast(self, toast):
+        """Hide and cleanup toast."""
+        try:
+            toast.hide()
+            if toast in self._toast_instances:
+                self._toast_instances.remove(toast)
+        except Exception: 
+            pass
+    
     def _init_machine(self):
         """Initialize machine instance."""
         try:
             if USE_SIMULATION:
-                self.machine, self.machine_adapter = self._create_simulation_machine()
-                logger.info("Machine initialized:  SIMULATION mode")
+                self. machine, self.machine_adapter = self._create_simulation_machine()
+                logger.info("Machine initialized: SIMULATION mode")
             else:
                 self.machine, self.machine_adapter = self._create_real_machine()
                 logger.info("Machine initialized: REAL HARDWARE mode")
         except Exception as e:
             logger.exception(f"Error initializing machine: {e}")
-            # Fallback to simulation
-            self.machine, self. machine_adapter = self._create_fallback_machine()
-            self.toast.show(f"Machine init failed, using fallback: {e}", "warn", 5000)
+            self.machine, self.machine_adapter = self._create_fallback_machine()
+            self.show_toast(f"Machine init failed, using fallback: {e}", "warn", 5000)
     
     def _create_simulation_machine(self):
         """Create simulation machine."""
         try:
-            from qt6_app.ui_qt.machine.simulation_machine import SimulationMachine
+            from qt6_app.ui_qt. machine.simulation_machine import SimulationMachine
             from qt6_app.ui_qt.machine.machine_adapter import MachineAdapter
             
             raw = SimulationMachine()
@@ -134,9 +165,8 @@ class BlitzMainWindow(QMainWindow):
             from qt6_app.ui_qt.machine.real_machine import RealMachine
             from qt6_app.ui_qt. machine.machine_adapter import MachineAdapter
             
-            # Load hardware config
             import json
-            config_path = Path(__file__).parent. parent / "data" / "hardware_config.json"
+            config_path = Path(__file__).parent.parent / "data" / "hardware_config.json"
             with open(config_path, 'r') as f:
                 config = json.load(f)
             
@@ -151,12 +181,11 @@ class BlitzMainWindow(QMainWindow):
         """Create minimal fallback machine."""
         logger.warning("Using fallback machine (minimal simulation)")
         
-        # Minimal machine mock
         class _FallbackMachine:
             def __init__(self):
                 self.emergency_active = False
-                self.homed = False
-                self.brake_active = True
+                self. homed = False
+                self. brake_active = True
                 self.clutch_active = True
                 self._position_mm = 250.0
                 self._positioning_active = False
@@ -181,9 +210,9 @@ class BlitzMainWindow(QMainWindow):
             def get_state(self):
                 return {
                     'emergency_active': self.emergency_active,
-                    'homed':  self.homed,
+                    'homed': self.homed,
                     'brake_active': self.brake_active,
-                    'clutch_active': self.clutch_active,
+                    'clutch_active':  self.clutch_active,
                     'position_mm': self._position_mm,
                 }
             
@@ -194,18 +223,17 @@ class BlitzMainWindow(QMainWindow):
                 pass
             
             def do_homing(self, callback=None):
-                self. homed = True
+                self.homed = True
                 self._position_mm = 250.0
                 if callback:
                     callback()
             
             def reset(self):
                 self.emergency_active = False
-                self. brake_active = True
+                self.brake_active = True
         
         raw = _FallbackMachine()
         
-        # Adapter
         class _FallbackAdapter:
             def __init__(self, r):
                 self._r = r
@@ -241,16 +269,16 @@ class BlitzMainWindow(QMainWindow):
                 self._r.clutch_active = bool(active)
                 return True
             
-            def set_mode_context(self, mode, piece_length_mm=0.0, bar_length_mm=6500.0):
+            def set_mode_context(self, mode, piece_length_mm=0. 0, bar_length_mm=6500.0):
                 pass
             
             def command_set_head_angles(self, sx, dx):
-                self._r.testa_sx_angle = sx
+                self._r. testa_sx_angle = sx
                 self._r.testa_dx_angle = dx
                 return True
             
             def command_set_morse(self, left, right):
-                self._r.left_morse_locked = left
+                self._r. left_morse_locked = left
                 self._r.right_morse_locked = right
                 return True
             
@@ -283,7 +311,6 @@ class BlitzMainWindow(QMainWindow):
     
     def _load_pages(self):
         """Load all application pages."""
-        # Try to load each page, continue on error
         self._try_add_page("home", "qt6_app. ui_qt.pages.home_page", "HomePage")
         self._try_add_page("semi_auto", "qt6_app.ui_qt.pages.semi_auto_page", "SemiAutoPage")
         self._try_add_page("automatico", "qt6_app. ui_qt.pages.automatico_page", "AutomaticoPage")
@@ -309,16 +336,16 @@ class BlitzMainWindow(QMainWindow):
         except Exception as e:
             logger.exception(f"Error loading page '{key}' ({mod_name}.{cls_name}): {e}")
             try:
-                self. toast.show(f"Errore caricamento pagina '{key}' (vedi log)", "warn", 4000)
+                self.show_toast(f"Errore caricamento pagina '{key}' (vedi log)", "warn", 4000)
             except Exception: 
                 pass
     
-    def show_page(self, key:  str):
+    def show_page(self, key: str):
         """Show page by key."""
         rec = self._pages.get(key)
         if not rec:
             try:
-                self.toast.show(f"Pagina '{key}' non disponibile", "warn", 2000)
+                self.show_toast(f"Pagina '{key}' non disponibile", "warn", 2000)
             except Exception: 
                 pass
             logger.warning(f"Attempted to open non-existent page: {key}")
@@ -327,14 +354,13 @@ class BlitzMainWindow(QMainWindow):
         wrapper, idx, page = rec
         self.stack.setCurrentIndex(idx)
         
-        # Call on_show if available
         if hasattr(page, "on_show") and callable(getattr(page, "on_show")):
             try:
                 page.on_show()
             except Exception: 
                 logger.exception(f"Error in on_show() for page '{key}'")
                 try:
-                    self.toast. show(f"Errore on_show '{key}'", "warn", 3000)
+                    self.show_toast(f"Errore on_show '{key}'", "warn", 3000)
                 except Exception: 
                     pass
     
@@ -355,11 +381,9 @@ class BlitzMainWindow(QMainWindow):
             exc_info=(exc_type, exc_value, exc_tb)
         )
         
-        # Print to console
-        print(f"Uncaught exception: {exc_type.__name__}:  {exc_value}")
+        print(f"Uncaught exception: {exc_type.__name__}: {exc_value}")
         traceback.print_tb(exc_tb)
         
-        # Show dialog
         try:
             QMessageBox.critical(
                 self,
@@ -372,14 +396,12 @@ class BlitzMainWindow(QMainWindow):
         except Exception:
             pass
         
-        # Call default handler
         sys.__excepthook__(exc_type, exc_value, exc_tb)
     
     def closeEvent(self, event):
         """Handle window close."""
         logger.info("Application closing")
         
-        # Cleanup machine
         try:
             if self.machine_adapter:
                 self.machine_adapter.close()
@@ -393,7 +415,6 @@ class BlitzMainWindow(QMainWindow):
 
 def main():
     """Application entry point."""
-    # Setup logging
     try:
         setup_logging()
     except Exception as e:
@@ -406,29 +427,23 @@ def main():
     logger.info(f"Simulation mode: {USE_SIMULATION}")
     logger.info("="*60)
     
-    # Create application
     app = QApplication. instance()
     if app is None:
         app = QApplication(sys.argv)
     
-    # Set application properties
     app.setApplicationName("BLITZ CNC")
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("BLITZ")
     
-    # Apply theme
     try:
-        from qt6_app.ui_qt.theme import apply_theme
-        apply_theme(app)
-        logger.info("Theme applied")
+        from qt6_app.ui_qt import theme
+        logger.info("Using default Qt theme")
     except Exception as e:
-        logger.warning(f"Could not apply theme: {e}")
+        logger.warning(f"Could not load theme module: {e}")
     
-    # Create main window
     window = BlitzMainWindow()
     window.show()
     
-    # Run event loop
     exit_code = app.exec()
     
     logger.info(f"Application exited with code: {exit_code}")
