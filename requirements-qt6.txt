@@ -1,7 +1,302 @@
-PySide6>=6.7
-numpy>=1.26
-ortools>=9.10
-bleak>=0.21.0
+# ============================================================================
+# REQUIREMENTS. TXT - BLITZ3 CNC RETROFITTING PROJECT
+# ============================================================================
+# Progetto:  Retrofitting troncatrice FOM Industrie Blitz3
+# Hardware: Raspberry Pi 4 + Cytron MD25HV + Encoder ELTRA EH63D
+# Python: 3.11+
+# Data: 2026-01-09
+# Autore: house79-gex
+# Repository: https://github.com/house79-gex/blitz
+# ============================================================================
+
+# ──────────────────────────────────────────────────────────────────────────
+# 1. INTERFACCIA GRAFICA (Qt6)
+# ──────────────────────────────────────────────────────────────────────────
+PySide6>=6.7.0
+# Framework GUI completo Qt6 per Python
+# Include:  QtWidgets, QtCore, QtGui, QtCharts, QtSvg
+# Usato per: Interfaccia grafica principale applicazione
+
+# ──────────────────────────────────────────────────────────────────────────
+# 2. CONTROLLO HARDWARE RASPBERRY PI
+# ──────────────────────────────────────────────────────────────────────────
+RPi.GPIO>=0.7.1
+# Controllo GPIO base Raspberry Pi
+# Usato per: direzione motore, enable, finecorsa, emergenza
+# NOTA: Solo su Raspberry Pi!  Non installabile su Windows/Mac
+
+pigpio>=1.78
+# Libreria avanzata GPIO con daemon per interrupt hardware
+# Usato per: PWM hardware preciso (20kHz), lettura encoder con callback
+# Richiede: sudo systemctl start pigpiod
+# Documentazione: https://abyz.me.uk/rpi/pigpio/
+
+# ──────────────────────────────────────────────────────────────────────────
+# 3. CONTROLLO MOTORE E PID
+# ──────────────────────────────────────────────────────────────────────────
+simple-pid>=2.0.0
+# Implementazione controller PID pulita e testata
+# Usato per:  controllo posizione asse lineare
+# Features: auto-tuning, anti-windup, output limits
+
+# ──────────────────────────────────────────────────────────────────────────
+# 4. OTTIMIZZAZIONE E CALCOLO NUMERICO
+# ──────────────────────────────────────────────────────────────────────────
+ortools>=9.10.0
+# Google OR-Tools - ottimizzazione combinatoria e linear programming
+# Usato per:  ottimizzazione piano di taglio (cutting stock problem)
+# Algoritmi: knapsack, bin packing, constraint programming
+# Documentazione: https://developers.google.com/optimization
+
+numpy>=1.26.0
+# Libreria fondamentale per calcolo numerico
+# Usato per: calcoli geometrici, trasformazioni angolari, matrici
+# Arrays multidimensionali ad alte prestazioni
+
+scipy>=1.11.0
+# Algoritmi scientifici e matematici
+# Usato per:  interpolazione, ottimizzazione numerica, signal processing
+
+# ──────────────────────────────────────────────────────────────────────────
+# 5. DATABASE E VALIDAZIONE DATI
+# ──────────────────────────────────────────────────────────────────────────
+# SQLite3 è incluso in Python standard library (nessun pacchetto extra)
+
+pydantic>=2.5.0
+# Validazione dati e settings con type hints moderni
+# Usato per:  validazione configurazioni, modelli dati tipizzati
+# Features: automatic data conversion, JSON schema generation
+
+# ──────────────────────────────────────────────────────────────────────────
+# 6. IMPORT/EXPORT DATI
+# ──────────────────────────────────────────────────────────────────────────
+pandas>=2.1.0
+# Analisi e manipolazione dati strutturati (DataFrame)
+# Usato per: import/export CSV, elaborazione liste taglio
+# Features: filtering, grouping, pivot tables
+
+openpyxl>=3.1.2
+# Lettura/scrittura file Excel (. xlsx) senza Microsoft Office
+# Usato per:  import/export commesse da Excel
+# Supporta: formule, grafici, formattazione
+
+xlrd>=2.0.1
+# Lettura vecchi file Excel (.xls)
+# Usato per: compatibilità file Excel legacy
+
+python-barcode>=0.15.1
+# Generazione codici a barre (EAN13, Code128, QR, etc.)
+# Usato per: etichettatura pezzi con barcode
+# Output: PNG, SVG, PDF
+
+qrcode>=7.4. 2
+# Generazione QR codes
+# Usato per:  identificazione pezzi, tracking commesse
+# Include: error correction, custom colors
+
+pillow>=10.2.0
+# Elaborazione immagini (fork mantenuto di PIL)
+# Usato per: rendering etichette, preview, resize, filters
+# Formati: JPEG, PNG, BMP, GIF, TIFF, WebP
+
+reportlab>=4.0.9
+# Generazione documenti PDF programmaticamente
+# Usato per: report taglio, documentazione commesse
+# Features: text, graphics, tables, charts
+
+# ──────────────────────────────────────────────────────────────────────────
+# 7. STAMPA ETICHETTE
+# ──────────────────────────────────────────────────────────────────────────
 brother-ql>=0.9.4
-python-barcode>=0.15.0
-pillow>=10.0.0
+# Driver ufficiale stampanti etichette Brother QL
+# Usato per:  stampa etichette identificazione pezzi
+# Modelli: QL-500, QL-570, QL-700, QL-800, QL-820NWB
+# Connessioni: USB, Network, Bluetooth
+
+pyusb>=1.2.1
+# Accesso dispositivi USB da Python
+# Usato per:  comunicazione diretta stampante Brother QL via USB
+# Richiede: libusb-1.0 (sistema)
+
+# ──────────────────────────────────────────────────────────────────────────
+# 8. COMUNICAZIONE SERIALE E BLUETOOTH
+# ──────────────────────────────────────────────────────────────────────────
+pyserial>=3.5
+# Comunicazione seriale (RS232, RS485, USB-Serial)
+# Usato per: comunicazione dispositivi industriali
+# Supporta: timeout, non-blocking I/O
+
+bleak>=0.21.1
+# Bluetooth Low Energy (BLE) cross-platform async
+# Usato per: connessione wireless dispositivi, stampante Brother BLE
+# Piattaforme: Windows, Linux, macOS, Raspberry Pi
+
+# ──────────────────────────────────────────────────────────────────────────
+# 9. CONFIGURAZIONE E LOGGING
+# ──────────────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+# Caricamento variabili ambiente da file .env
+# Usato per: configurazione sviluppo/produzione, secrets
+# File: .env, .env.local, .env. production
+
+pyyaml>=6.0.1
+# Parser e serializer YAML
+# Usato per: file configurazione complessi, settings macchina
+# Supporta: nested structures, anchors, tags
+
+colorlog>=6.8.0
+# Logging con output colorato in console
+# Usato per:  debug visuale, monitoring real-time
+# Colori: ERROR=rosso, WARNING=giallo, INFO=verde, DEBUG=blu
+
+# ──────────────────────────────────────────────────────────────────────────
+# 10. SISTEMA E MONITORING
+# ──────────────────────────────────────────────────────────────────────────
+psutil>=5.9.7
+# Informazioni sistema cross-platform
+# Usato per: monitoring CPU, RAM, temperatura Raspberry Pi
+# Features: process management, disk I/O, network stats
+
+watchdog>=4.0.0
+# Monitoraggio filesystem per eventi (create, modify, delete)
+# Usato per: hot-reload configurazioni, auto-import file
+# Events: file created, modified, moved, deleted
+
+click>=8.1.7
+# Framework CLI moderno e user-friendly
+# Usato per: scripts utility, comandi manutenzione
+# Features: sub-commands, options, arguments, help generation
+
+python-dateutil>=2.8.2
+# Estensioni per manipolazione date/time
+# Usato per: parsing date flessibile, timezone handling
+# Complementa datetime standard library
+
+# ──────────────────────────────────────────────────────────────────────────
+# 11. NETWORK E HTTP (opzionali)
+# ──────────────────────────────────────────────────────────────────────────
+requests>=2.31.0
+# HTTP library user-friendly
+# Usato per: download aggiornamenti, API calls
+# Features: sessions, authentication, SSL/TLS
+
+urllib3>=2.1.0
+# HTTP client potente e thread-safe
+# Dipendenza di requests, specificato per sicurezza
+# Features: connection pooling, retry logic
+
+# ──────────────────────────────────────────────────────────────────────────
+# 12. TESTING E QUALITY ASSURANCE
+# ──────────────────────────────────────────────────────────────────────────
+pytest>=7.4.3
+# Framework testing Python moderno
+# Usato per:  unit tests, integration tests, fixtures
+# Comandi: pytest, pytest --cov, pytest -v
+
+pytest-qt>=4.2.0
+# Plugin pytest per testing applicazioni Qt/PySide
+# Usato per: test interfaccia grafica, click simulation
+# Features: qtbot fixture, wait_signal, exceptions
+
+pytest-cov>=4.1.0
+# Plugin pytest per code coverage
+# Usato per:  misurare copertura test
+# Output: terminal, HTML, XML
+
+pytest-mock>=3.12.0
+# Plugin pytest per mocking semplificato
+# Usato per: mock hardware, simulazioni
+# Wrapper su unittest.mock
+
+black>=23.12.1
+# Code formatter Python opinionated
+# Usato per:  formattazione automatica codice consistente
+# Configurazione: pyproject.toml o . black.toml
+
+flake8>=7.0.0
+# Linter Python (pep8 + pyflakes + mccabe)
+# Usato per: controllo qualità codice, stile PEP8
+# Comandi: flake8 .  --count --show-source
+
+mypy>=1.8.0
+# Type checker statico per Python
+# Usato per: validazione type hints, catch errori tipo
+# Richiede: type stubs (types-* packages)
+
+isort>=5.13.2
+# Ordinamento automatico import Python
+# Usato per: organizzazione import consistente
+# Configurazione: pyproject.toml
+
+# ──────────────────────────────────────────────────────────────────────────
+# 13. DOCUMENTAZIONE
+# ──────────────────────────────────────────────────────────────────────────
+sphinx>=7.2.6
+# Generatore documentazione tecnica
+# Usato per:  documentazione API, user manual
+# Output: HTML, PDF, ePub
+
+sphinx-rtd-theme>=2.0.0
+# Tema Read The Docs per Sphinx
+# Usato per:  documentazione HTML professionale
+# Features: responsive, search, navigation
+
+# ──────────────────────────────────────────────────────────────────────────
+# 14. UTILITIES E HELPERS
+# ──────────────────────────────────────────────────────────────────────────
+python-slugify>=8.0.1
+# Conversione stringhe in slug URL-safe
+# Usato per: nomi file, identificatori sicuri
+# Example: "Profilo 90°" → "profilo-90"
+
+tqdm>=4.66.1
+# Progress bar per loop e operazioni lunghe
+# Usato per:  feedback visuale import/export, processing
+# Output: console, notebook, GUI
+
+# ============================================================================
+# INSTALLAZIONE
+# ============================================================================
+#
+# RASPBERRY PI - Installazione completa: 
+# --------------------------------------
+# 1. Aggiorna sistema
+#    sudo apt-get update && sudo apt-get upgrade -y
+#
+# 2. Installa dipendenze di sistema
+#    sudo apt-get install -y \
+#        python3-pip python3-dev git \
+#        pigpiod \
+#        libatlas-base-dev \
+#        libopenjp2-7 libtiff5 \
+#        libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 \
+#        libusb-1.0-0-dev
+#
+# 3. Abilita pigpio daemon
+#    sudo systemctl enable pigpiod
+#    sudo systemctl start pigpiod
+#
+# 4. Crea virtual environment
+#    python3 -m venv venv
+#    source venv/bin/activate
+#
+# 5. Installa dipendenze Python
+#    pip install --upgrade pip
+#    pip install -r requirements.txt
+#
+# 6. Verifica installazione
+#    python3 -c "import RPi.GPIO; import pigpio; import PySide6; print('OK')"
+#
+# WINDOWS/MAC - Solo sviluppo GUI (no hardware):
+# -----------------------------------------------
+# Usa invece:  requirements-windows.txt
+# pip install -r requirements-windows.txt
+#
+# ============================================================================
+# NOTES
+# ============================================================================
+# - Versioni minime specificate con >= per compatibilità futura
+# - Testato su:  Raspberry Pi 4 (4GB), Raspberry Pi OS 64-bit, Python 3.11
+# - Per produzione: considerare pinning versioni esatte (==)
+# - Aggiornare regolarmente per security patches
+# ============================================================================
