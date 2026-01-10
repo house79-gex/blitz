@@ -14,7 +14,7 @@ Hardware connections:
 
 import time
 import threading
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple
 import logging
 
 try:
@@ -264,7 +264,7 @@ class EncoderReader8ALZARD:
         """
         self._index_callback = callback
     
-    def get_index_status(self) -> tuple[bool, int]:
+    def get_index_status(self) -> Tuple[bool, int]:
         """
         Get index pulse detection status.
         
