@@ -38,6 +38,7 @@ class ToastManager:
             "ok": ("#27ae60", "white"),
             "warn": ("#e67e22", "white"),
             "error": ("#c0392b", "white"),
+            "critical": ("#8b0000", "white"),  # Dark red for critical
         }
         bg, fg = colors.get(level, colors["info"])
 

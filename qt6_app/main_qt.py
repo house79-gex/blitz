@@ -5,7 +5,7 @@ import logging
 import traceback
 from typing import Optional
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QStatusBar, QSizePolicy
+from PySide6.QtWidgets import QApplication, QMainWindow, QStatusBar, QSizePolicy, QMessageBox
 
 try:
     from ui_qt.theme import apply_global_stylesheet
@@ -24,47 +24,55 @@ except Exception:
     SimulationMachine = None
     RealMachine = None
 
-def _setup_logging():
+
+def exception_hook(exc_type, exc_value, exc_tb):
+    """
+    Global exception handler for uncaught exceptions.
+    
+    Logs exception and shows user-friendly dialog.
+    """
+    logger = logging.getLogger("global")
+    
+    # Format traceback
+    tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
+    tb_text = ''.join(tb_lines)
+    
+    # Log exception with full context
+    logger.critical(
+        f"Uncaught exception: {exc_type.__name__}: {exc_value}",
+        exc_info=(exc_type, exc_value, exc_tb),
+        extra={
+            'extra_data': {
+                'exception_type': exc_type.__name__,
+                'exception_message': str(exc_value),
+                'traceback': tb_text
+            }
+        }
+    )
+    
+    # Show user-friendly dialog
     try:
-        from pathlib import Path
-        log_dir = Path.home() / "blitz" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "blitz.log"
-    except Exception:
-        log_file = None
-
-    logger = logging.getLogger("blitz")
-    logger.setLevel(logging.INFO)
-    if not logger.handlers:
-        fmt = logging.Formatter(
-            fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Critical)
+        msg.setWindowTitle("Errore Critico")
+        msg.setText(
+            f"Si è verificato un errore imprevisto.\n\n"
+            f"Tipo: {exc_type.__name__}\n"
+            f"Dettagli: {exc_value}"
         )
-        sh = logging.StreamHandler(sys.stderr)
-        sh.setLevel(logging.INFO)
-        sh.setFormatter(fmt)
-        logger.addHandler(sh)
-        if log_file is not None:
-            try:
-                fh = logging.FileHandler(log_file, encoding="utf-8")
-                fh.setLevel(logging.INFO)
-                fh.setFormatter(fmt)
-                logger.addHandler(fh)
-            except Exception:
-                pass
-
-        def _global_excepthook(exctype, value, tb):
-            try:
-                logger.error("Uncaught exception", exc_info=(exctype, value, tb))
-            except Exception:
-                pass
-            try:
-                traceback.print_exception(exctype, value, tb, file=sys.stderr)
-            except Exception:
-                pass
-
-        sys.excepthook = _global_excepthook
-    return logger
+        msg.setDetailedText(tb_text)
+        msg.setInformativeText(
+            "L'errore è stato salvato nei log.\n"
+            "Si prega di segnalare questo problema al supporto tecnico."
+        )
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec()
+    except Exception:
+        # If we can't show the dialog, just print to stderr
+        traceback.print_exception(exc_type, exc_value, exc_tb, file=sys.stderr)
+    
+    # Call default handler
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 class _Toast:
     def __init__(self, win: QMainWindow):
@@ -256,25 +264,33 @@ class MainWindow(QMainWindow):
             self.toast.show("Reset eseguito (uniforme)", "ok", 2000)
 
 def main():
-    _setup_logging()
+    # Install global exception handler
+    sys.excepthook = exception_hook
+    
+    # Setup production-grade logging
+    from ui_qt.utils.logger import setup_logging
+    log_dir = setup_logging()
     logger = logging.getLogger("blitz")
-    logger.info("Avvio BLITZ 3")
+    logger.info("Application starting...")
+    logger.info(f"Log directory: {log_dir}")
 
     simulation = True
     for a in sys.argv[1:]:
         if a.strip().lower() in ("--real", "--hardware", "--hw"):
             simulation = False
+    
+    logger.info(f"Mode: {'simulation' if simulation else 'real hardware'}")
 
     app = QApplication(sys.argv)
     try:
         apply_global_stylesheet(app)
     except Exception as e:
-        logging.getLogger("blitz").warning(f"apply_global_stylesheet fallita: {e}")
+        logger.warning(f"apply_global_stylesheet fallita: {e}")
 
     win = MainWindow(simulation=simulation)
     win.showMaximized()
     rc = app.exec()
-    logging.getLogger("blitz").info(f"Chiusura BLITZ 3 (exit code {rc})")
+    logger.info(f"Application closing (exit code {rc})")
     try:
         win.machine_adapter.close()
     except Exception:
