@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QGridLayout
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QGridLayout, QSizePolicy
 from PySide6.QtCore import Qt
 
 OK = "#27ae60"
@@ -22,7 +22,6 @@ def _pill(text: str, bg: str) -> QLabel:
     )
     w.setMinimumHeight(22)
     w.setMinimumWidth(90)  # Reduced for better fit
-    from PySide6.QtWidgets import QSizePolicy
     w.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
     return w
 
