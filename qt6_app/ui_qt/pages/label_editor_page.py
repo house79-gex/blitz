@@ -18,6 +18,7 @@ from ..widgets.label_help_widget import LabelHelpWidget
 from ..services.label_template_manager import LabelTemplateManager
 from ..utils.label_history import EditorHistory
 from ..utils.label_validator import LabelValidator
+from .label_editor_wizard import LabelEditorWizard
 
 
 class LabelEditorPage(QWidget):
@@ -181,6 +182,11 @@ class LabelEditorPage(QWidget):
         new_btn.clicked.connect(self._new_template)
         toolbar.addWidget(new_btn)
         
+        wizard_btn = QPushButton("🎓 Wizard")
+        wizard_btn.setToolTip("Crea template con wizard guidato")
+        wizard_btn.clicked.connect(self._show_wizard)
+        toolbar.addWidget(wizard_btn)
+        
         open_btn = QPushButton("📂 Apri")
         open_btn.setToolTip("Apri template esistente")
         open_btn.clicked.connect(self._open_template)
@@ -340,6 +346,14 @@ class LabelEditorPage(QWidget):
         self.unsaved_changes = False
         self.history.clear()
         self._save_history_state()
+    
+    def _show_wizard(self):
+        """Show template creation wizard."""
+        wizard = LabelEditorWizard(self)
+        if wizard.exec():
+            template_name = wizard.get_selected_template()
+            if template_name:
+                self._load_template(template_name)
     
     def _open_template(self):
         """Open template from gallery."""

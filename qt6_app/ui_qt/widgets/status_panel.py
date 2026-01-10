@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QGridLayout
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QGridLayout, QSizePolicy
 from PySide6.QtCore import Qt
 
 OK = "#27ae60"
@@ -17,11 +17,12 @@ def _pill(text: str, bg: str) -> QLabel:
     w.setWordWrap(False)
     w.setTextFormat(Qt.TextFormat.PlainText)
     w.setStyleSheet(
-        f"font-weight:800; font-size: 10pt; color:white; background:{bg}; "
-        "border-radius:10px; padding:6px 12px; min-height:24px;"
+        f"font-weight:800; font-size: 9pt; color:white; background:{bg}; "
+        "border-radius:10px; padding:4px 10px; min-height:22px;"
     )
-    w.setMinimumHeight(24)
-    w.setMinimumWidth(100)  # Ensure minimum width to prevent truncation
+    w.setMinimumHeight(22)
+    w.setMinimumWidth(90)  # Reduced for better fit
+    w.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
     return w
 
 class StatusPanel(QWidget):
@@ -57,8 +58,9 @@ class StatusPanel(QWidget):
 
         grid = QGridLayout(card)
         grid.setContentsMargins(8, 8, 8, 8)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(12)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(14)
+        grid.setColumnStretch(1, 1)  # Allow status column to expand
 
         def add_row(r, name, w):
             lbl = QLabel(name)
@@ -175,10 +177,10 @@ class StatusPanel(QWidget):
     def _style(active: bool, err_on: bool = False) -> str:
         if err_on:
             return (
-                f"font-weight:800; font-size:10pt; color:white; background:{ERR if active else OK}; "
-                "border-radius:10px; padding:6px 12px; min-height:24px;"
+                f"font-weight:800; font-size:9pt; color:white; background:{ERR if active else OK}; "
+                "border-radius:10px; padding:4px 10px; min-height:22px;"
             )
         return (
-            f"font-weight:800; font-size:10pt; color:white; background:{OK if active else WARN}; "
-            "border-radius:10px; padding:6px 12px; min-height:24px;"
+            f"font-weight:800; font-size:9pt; color:white; background:{OK if active else WARN}; "
+            "border-radius:10px; padding:4px 10px; min-height:22px;"
         )

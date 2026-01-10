@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QRectF, Signal, QPointF
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QMouseEvent, QPaintEvent
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QMouseEvent, QPaintEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent
 
-from .label_element import LabelElement, deserialize_element
+from .label_element import LabelElement, deserialize_element, TextElement, FieldElement, BarcodeElement, ImageElement, LineElement, ShapeElement
 
 
 class LabelCanvas(QWidget):
@@ -45,8 +45,13 @@ class LabelCanvas(QWidget):
         # Alignment guides
         self._alignment_guides: List[Tuple[str, float]] = []  # List of ("vertical"|"horizontal", position)
         
+        # Drop preview
+        self._drop_preview_pos: Optional[QPointF] = None
+        self._drop_preview_type: Optional[str] = None
+        
         self.setMinimumSize(int(width_mm * self.scale), int(height_mm * self.scale))
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)  # Enable drag & drop
     
     def add_element(self, element: LabelElement):
         """Add element to canvas."""
@@ -116,6 +121,10 @@ class LabelCanvas(QWidget):
         # Draw selection handles
         if self.selected_element:
             self._draw_selection_handles(painter)
+        
+        # Draw drop preview
+        if self._drop_preview_pos and self._drop_preview_type:
+            self._draw_drop_preview(painter)
     
     def _draw_grid(self, painter: QPainter):
         """Draw grid lines."""
@@ -410,3 +419,129 @@ class LabelCanvas(QWidget):
         """Toggle alignment guides."""
         self.show_guides = not self.show_guides
         self.update()
+    
+    def _draw_drop_preview(self, painter: QPainter):
+        """Draw preview of element being dropped."""
+        if not self._drop_preview_pos or not self._drop_preview_type:
+            return
+        
+        x = self._drop_preview_pos.x()
+        y = self._drop_preview_pos.y()
+        
+        # Default size based on element type
+        if self._drop_preview_type == 'text' or self._drop_preview_type == 'field':
+            width, height = 100, 20
+        elif self._drop_preview_type == 'barcode':
+            width, height = 90, 30
+        elif self._drop_preview_type == 'image' or self._drop_preview_type == 'shape':
+            width, height = 50, 30
+        elif self._drop_preview_type == 'line':
+            width, height = 100, 1
+        else:
+            width, height = 50, 30
+        
+        # Draw semi-transparent preview
+        painter.setPen(QPen(QColor("#0066cc"), 2, Qt.DashLine))
+        painter.setBrush(QBrush(QColor(0, 102, 204, 50)))  # Semi-transparent blue
+        painter.drawRect(QRectF(x * self.scale, y * self.scale, 
+                               width * self.scale, height * self.scale))
+        
+        # Draw label
+        painter.setPen(QColor("#0066cc"))
+        painter.drawText(QRectF(x * self.scale, (y - 5) * self.scale, 
+                               width * self.scale, 10 * self.scale),
+                        Qt.AlignCenter, self._drop_preview_type.upper())
+    
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Accept drag from sidebar."""
+        if event.mimeData().hasFormat('application/x-label-element'):
+            event.acceptProposedAction()
+            self.setCursor(Qt.CrossCursor)
+        else:
+            event.ignore()
+    
+    def dragMoveEvent(self, event: QDragMoveEvent):
+        """Show drop preview."""
+        if event.mimeData().hasFormat('application/x-label-element'):
+            event.acceptProposedAction()
+            
+            # Get drop position and convert to mm
+            pos_mm = self._screen_to_mm(event.position())
+            
+            # Snap to grid if enabled
+            if self.show_grid:
+                pos_mm.setX(round(pos_mm.x() / self.grid_size) * self.grid_size)
+                pos_mm.setY(round(pos_mm.y() / self.grid_size) * self.grid_size)
+            
+            # Store preview position
+            self._drop_preview_pos = pos_mm
+            
+            # Get element type for preview
+            element_data = event.mimeData().data('application/x-label-element')
+            self._drop_preview_type = bytes(element_data).decode('utf-8')
+            
+            self.update()
+    
+    def dragLeaveEvent(self, event):
+        """Clear drop preview."""
+        self._drop_preview_pos = None
+        self._drop_preview_type = None
+        self.setCursor(Qt.ArrowCursor)
+        self.update()
+    
+    def dropEvent(self, event: QDropEvent):
+        """Create element at drop position."""
+        if not event.mimeData().hasFormat('application/x-label-element'):
+            return
+        
+        # Parse element type
+        element_data = event.mimeData().data('application/x-label-element')
+        element_type = bytes(element_data).decode('utf-8')
+        
+        # Get drop position (widget coords)
+        pos_mm = self._screen_to_mm(event.position())
+        
+        # Snap to grid if enabled
+        if self.show_grid:
+            pos_mm.setX(round(pos_mm.x() / self.grid_size) * self.grid_size)
+            pos_mm.setY(round(pos_mm.y() / self.grid_size) * self.grid_size)
+        
+        # Create element
+        element = self._create_element_from_type(element_type, pos_mm.x(), pos_mm.y())
+        if element:
+            self.elements.append(element)
+            element.z_index = len(self.elements)
+            
+            # Select the new element
+            if self.selected_element:
+                self.selected_element.selected = False
+            self.selected_element = element
+            self.selected_element.selected = True
+            
+            self.element_selected.emit(element)
+            self.element_modified.emit()
+            self.update()
+        
+        # Clear preview
+        self._drop_preview_pos = None
+        self._drop_preview_type = None
+        
+        event.acceptProposedAction()
+        self.setCursor(Qt.ArrowCursor)
+    
+    def _create_element_from_type(self, element_type: str, x_mm: float, y_mm: float) -> Optional[LabelElement]:
+        """Factory for creating label elements from type string."""
+        if element_type == 'text':
+            return TextElement(text="Testo", x=x_mm, y=y_mm, width=100, height=20)
+        elif element_type == 'field':
+            return FieldElement(source="length", format_string="{} mm", x=x_mm, y=y_mm, width=100, height=20)
+        elif element_type == 'barcode':
+            return BarcodeElement(source="order_id", x=x_mm, y=y_mm, width=90, height=30)
+        elif element_type == 'image':
+            return ImageElement(x=x_mm, y=y_mm, width=50, height=30)
+        elif element_type == 'line':
+            return LineElement(x=x_mm, y=y_mm, width=100, height=1, thickness=1)
+        elif element_type == 'shape':
+            return ShapeElement(shape_type="rectangle", x=x_mm, y=y_mm, width=50, height=30)
+        else:
+            return None
