@@ -113,9 +113,15 @@ def _show_error_dialog(operation: str, exception: Exception, critical: bool = Fa
             duration=5000 if not critical else 10000
         )
     except Exception:
-        # Fallback to message box
+        # Fallback to message box only if QApplication exists
         try:
-            from PySide6.QtWidgets import QMessageBox
+            from PySide6.QtWidgets import QMessageBox, QApplication
+            
+            # Check if we have a QApplication instance (GUI environment)
+            if QApplication.instance() is None:
+                # No GUI available, just log
+                logger.error(f"Could not show error dialog (no GUI): {operation} - {exception}")
+                return
             
             msg = QMessageBox()
             msg.setIcon(QMessageBox.Critical if critical else QMessageBox.Warning)
