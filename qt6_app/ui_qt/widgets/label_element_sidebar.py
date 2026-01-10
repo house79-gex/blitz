@@ -159,7 +159,7 @@ class LabelElementSidebar(QWidget):
                            element_type: str, tooltip: str):
         """Add an element button to the sidebar."""
         btn = ElementDragButton(element_type, label, tooltip)
-        btn.drag_started.connect(lambda et: logger.debug(f"Drag started: {et}"))
+        btn.drag_started.connect(lambda element_type: logger.debug(f"Drag started: {element_type}"))
         # Keep click functionality as fallback
         btn.clicked.connect(lambda: self._on_element_clicked(element_type))
         layout.addWidget(btn)
