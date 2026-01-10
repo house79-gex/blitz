@@ -1018,6 +1018,7 @@ class SemiAutoPage(QWidget):
                 self._disable_inputs_during_movement()
                 self._show_info(f"▶️ Posizionamento {piece['len']:.0f}mm", auto_hide_ms=2000)
                 logger.info(f"Semi-auto normal movement started: {piece['len']:.0f}mm")
+                self._update_buttons()  # Update button states when movement starts
             else:
                 self._show_warn("❌ Movimento non avviato", auto_hide_ms=2500)
                 logger.error("Normal movement failed to start")
@@ -1250,12 +1251,18 @@ class SemiAutoPage(QWidget):
         
         # Check if movement completed and re-enable inputs
         if self._movement_in_progress:
+            # Check movement status: prefer machine_adapter if available, fallback to raw machine
             mov = self.mio.is_positioning_active() if self.mio else bool(getattr(self.machine, "positioning_active", False))
             if not mov:
-                # Movement completed
-                self._enable_inputs_after_movement()
-                self._show_info("✅ Posizionamento completato", auto_hide_ms=2000)
-                logger.info("Movement completed, inputs re-enabled")
+                # Movement completed - re-enable inputs with error handling
+                try:
+                    self._enable_inputs_after_movement()
+                    self._show_info("✅ Posizionamento completato", auto_hide_ms=2000)
+                    logger.info("Movement completed, inputs re-enabled")
+                except Exception as e:
+                    logger.error(f"Error re-enabling inputs after movement: {e}")
+                    # Force flag reset to prevent permanent lock
+                    self._movement_in_progress = False
 
         # NOTE: Legacy intestatura system removed - now handled by mode handlers
         # if self._intest_in_progress:
