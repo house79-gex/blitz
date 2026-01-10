@@ -1,301 +1,439 @@
-# File completo (versione aggiornata). Sostituisci l’intero se vuoi mantenere questa struttura.
+#!/usr/bin/env python3
+"""
+BLITZ CNC - Main Application Entry Point
+
+Qt6-based control software for dual-head CNC saw. 
+"""
 
 import sys
+import os
+from pathlib import Path
+
+# ========== CRITICAL FIX: Add project root to Python path ==========
+# This ensures qt6_app module is importable regardless of execution directory
+project_root = Path(__file__).parent.parent.resolve()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+print(f"[STARTUP] Project root:  {project_root}")
+# ====================================================================
+
 import logging
-import traceback
-from typing import Optional
+from typing import Optional, Dict, Any, Tuple
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QStatusBar, QSizePolicy, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QStackedWidget, QVBoxLayout,
+    QHBoxLayout, QLabel, QPushButton, QFrame, QSizePolicy, QMessageBox
+)
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QIcon
+
+# Application imports
+try:
+    from qt6_app.ui_qt.utils.logger import setup_logging
+except ImportError:
+    # Fallback if logger module not available
+    def setup_logging(log_dir=None, level=logging.INFO):
+        logging.basicConfig(
+            level=level,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
 
 try:
-    from ui_qt.theme import apply_global_stylesheet
-except Exception:
-    apply_global_stylesheet = lambda app: None
+    from qt6_app.ui_qt.utils.settings import read_settings, write_settings
+except ImportError:
+    def read_settings():
+        return {}
+    def write_settings(settings):
+        pass
 
-from ui_qt.widgets.min_stack import MinimalStacked
-from ui_qt.widgets.size_ignorer import SizeIgnorer
+from qt6_app.ui_qt.widgets.size_ignorer import SizeIgnorer
+from qt6_app.ui_qt.widgets.toast import Toast
 
-try:
-    from ui_qt.machine.machine_adapter import MachineAdapter
-    from ui_qt.machine.simulation_machine import SimulationMachine
-    from ui_qt.machine.real_machine import RealMachine
-except Exception:
-    MachineAdapter = None
-    SimulationMachine = None
-    RealMachine = None
+# Logger
+logger = logging.getLogger("blitz")
+
+# Configuration
+USE_SIMULATION = os.environ.get('SIMULATION', '1') == '1'  # Default to simulation
+APP_VERSION = "1.0.0"
 
 
-def exception_hook(exc_type, exc_value, exc_tb):
+class BlitzMainWindow(QMainWindow):
     """
-    Global exception handler for uncaught exceptions.
+    Main application window.
     
-    Logs exception and shows user-friendly dialog.
+    Manages: 
+    - Page stack
+    - Machine instance
+    - Global toast notifications
+    - Application lifecycle
     """
-    logger = logging.getLogger("global")
     
-    # Format traceback
-    tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
-    tb_text = ''.join(tb_lines)
-    
-    # Log exception with full context
-    logger.critical(
-        f"Uncaught exception: {exc_type.__name__}: {exc_value}",
-        exc_info=(exc_type, exc_value, exc_tb),
-        extra={
-            'extra_data': {
-                'exception_type': exc_type.__name__,
-                'exception_message': str(exc_value),
-                'traceback': tb_text
-            }
-        }
-    )
-    
-    # Show user-friendly dialog
-    try:
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Critical)
-        msg.setWindowTitle("Errore Critico")
-        msg.setText(
-            f"Si è verificato un errore imprevisto.\n\n"
-            f"Tipo: {exc_type.__name__}\n"
-            f"Dettagli: {exc_value}"
-        )
-        msg.setDetailedText(tb_text)
-        msg.setInformativeText(
-            "L'errore è stato salvato nei log.\n"
-            "Si prega di segnalare questo problema al supporto tecnico."
-        )
-        msg.setStandardButtons(QMessageBox.Ok)
-        msg.exec()
-    except Exception:
-        # If we can't show the dialog, just print to stderr
-        traceback.print_exception(exc_type, exc_value, exc_tb, file=sys.stderr)
-    
-    # Call default handler
-    sys.__excepthook__(exc_type, exc_value, exc_tb)
-
-class _Toast:
-    def __init__(self, win: QMainWindow):
-        self._win = win
-    def show(self, msg: str, level: str = "info", ms: int = 2000):
-        try:
-            self._win.statusBar().showMessage(msg, ms)
-        except Exception:
-            pass
-
-class MainWindow(QMainWindow):
-    def __init__(self, simulation: bool = True):
+    def __init__(self):
         super().__init__()
-        self.setWindowTitle("BLITZ 3")
-        self.setStatusBar(QStatusBar())
-        self.toast = _Toast(self)
-
-        self.machine, self.machine_adapter = self._make_machine(simulation)
-
-        self.stack = MinimalStacked(self)
-        self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.stack.setMinimumSize(0, 0)
-        self.setCentralWidget(self.stack)
-        self._pages: dict[str, tuple[object, int, object]] = {}
-
-        from ui_qt.pages.home_page import HomePage
-        self.add_page("home", HomePage(self))
-        self._try_add_page("manuale", "ui_qt.pages.manuale_page", "ManualePage")
-        self._try_add_page("automatico", "ui_qt.pages.automatico_page", "AutomaticoPage")
-        self._try_add_page("semi", "ui_qt.pages.semi_auto_page", "SemiAutoPage")
-        self._try_add_page("cutlist", "ui_qt.pages.cutlist_page", "CutlistPage")
-        self._try_add_page("tipologie", "ui_qt.pages.tipologie_page", "TipologiePage")
-        self._try_add_page("quotevani", "ui_qt.pages.quotevani_page", "QuoteVaniPage")
-        self._try_add_page("utility", "ui_qt.pages.utility_page", "UtilityPage")
-        # Note: Label editor is now integrated in UtilityPage → LabelsSubPage
-
-        self.show_page("home")
-
-        class _Nav:
-            def __init__(nav_self, mw: "MainWindow"):
-                nav_self._mw = mw
-            def go_home(nav_self):
-                nav_self._mw.show_page("home")
-        self.nav = _Nav(self)
+        
+        self.setWindowTitle(f"BLITZ CNC v{APP_VERSION}")
+        self.setMinimumSize(1280, 800)
+        
+        # Stack for pages
+        self.stack = QStackedWidget()
+        self.setCentralWidget(self. stack)
+        
+        # Page registry:  {key: (wrapper, index, page_widget)}
+        self._pages: Dict[str, Tuple[QWidget, int, QWidget]] = {}
+        
+        # Initialize machine
+        self. machine = None
+        self.machine_adapter = None
+        self._init_machine()
+        
+        # Toast notifications
+        self.toast = Toast(self)
+        
+        # Global exception handler
+        sys.excepthook = self._global_exception_handler
+        
+        # Load pages
+        self._load_pages()
+        
+        # Show home page
+        self. show_page("home")
+        
+        logger.info(f"BLITZ CNC v{APP_VERSION} started (simulation={USE_SIMULATION})")
     
-    def go_home(self):
-        """Navigate to home page."""
-        self.show_page("home")
-
-    def _make_machine(self, simulation: bool):
-        logger = logging.getLogger("blitz")
-        if simulation and SimulationMachine and MachineAdapter:
+    def _init_machine(self):
+        """Initialize machine instance."""
+        try:
+            if USE_SIMULATION:
+                self.machine, self.machine_adapter = self._create_simulation_machine()
+                logger.info("Machine initialized:  SIMULATION mode")
+            else:
+                self.machine, self.machine_adapter = self._create_real_machine()
+                logger.info("Machine initialized: REAL HARDWARE mode")
+        except Exception as e:
+            logger.exception(f"Error initializing machine: {e}")
+            # Fallback to simulation
+            self.machine, self. machine_adapter = self._create_fallback_machine()
+            self.toast.show(f"Machine init failed, using fallback: {e}", "warn", 5000)
+    
+    def _create_simulation_machine(self):
+        """Create simulation machine."""
+        try:
+            from qt6_app.ui_qt.machine.simulation_machine import SimulationMachine
+            from qt6_app.ui_qt.machine.machine_adapter import MachineAdapter
+            
             raw = SimulationMachine()
-            logger.info("Avvio SimulationMachine.")
-            return raw, MachineAdapter(raw)
-
-        if not simulation and RealMachine and MachineAdapter:
-            try:
-                raw = RealMachine()
-                logger.info("Avvio RealMachine.")
-                return raw, MachineAdapter(raw)
-            except Exception as e:
-                logger.warning(f"RealMachine non disponibile, fallback: {e}")
-
-        class _Fallback:
-            min_distance = 250.0
-            max_cut_length = 4000.0
-            machine_homed = False
-            homing_in_progress = False
-            encoder_position = 250.0
-            emergency_active = False
-            brake_active = False
-            def get_position(self): return self.encoder_position
-            def is_positioning_active(self): return False
-            def tick(self): pass
+            adapter = MachineAdapter(raw)
+            return raw, adapter
+        except ImportError as e:
+            logger.error(f"Cannot import SimulationMachine: {e}")
+            return self._create_fallback_machine()
+    
+    def _create_real_machine(self):
+        """Create real hardware machine."""
+        try:
+            from qt6_app.ui_qt.machine.real_machine import RealMachine
+            from qt6_app.ui_qt. machine.machine_adapter import MachineAdapter
+            
+            # Load hardware config
+            import json
+            config_path = Path(__file__).parent. parent / "data" / "hardware_config.json"
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            raw = RealMachine(config)
+            adapter = MachineAdapter(raw)
+            return raw, adapter
+        except Exception as e:
+            logger.error(f"Cannot create RealMachine: {e}")
+            return self._create_fallback_machine()
+    
+    def _create_fallback_machine(self):
+        """Create minimal fallback machine."""
+        logger.warning("Using fallback machine (minimal simulation)")
+        
+        # Minimal machine mock
+        class _FallbackMachine:
+            def __init__(self):
+                self.emergency_active = False
+                self.homed = False
+                self.brake_active = True
+                self.clutch_active = True
+                self._position_mm = 250. 0
+                self._positioning_active = False
+                self. left_morse_locked = False
+                self.right_morse_locked = False
+                self.left_blade_inhibit = False
+                self.right_blade_inhibit = False
+                self.testa_sx_angle = 90
+                self.testa_dx_angle = 90
+            
+            def get_position(self):
+                return self._position_mm
+            
+            def is_positioning_active(self):
+                return self._positioning_active
+            
+            def move_to(self, position_mm, callback=None):
+                self._position_mm = position_mm
+                if callback:
+                    callback()
+            
             def get_state(self):
                 return {
-                    "homed": self.machine_homed,
-                    "position_mm": self.encoder_position,
-                    "homing_in_progress": self.homing_in_progress,
-                    "brake_active": self.brake_active,
-                    "emergency_active": self.emergency_active
+                    'emergency_active': self.emergency_active,
+                    'homed':  self.homed,
+                    'brake_active': self.brake_active,
+                    'clutch_active': self.clutch_active,
+                    'position_mm': self._position_mm,
                 }
-            def close(self): pass
-            def do_homing(self, callback=None):
-                import threading, time
-                def seq():
-                    self.homing_in_progress = True
-                    time.sleep(0.6)
-                    self.encoder_position = self.min_distance
-                    self.machine_homed = True
-                    self.homing_in_progress = False
-                    if callback: callback(success=True, msg="HOMING OK")
-                threading.Thread(target=seq, daemon=True).start()
-            def reset(self):
-                self.machine_homed = False
-                self.homing_in_progress = False
-                self.encoder_position = self.min_distance
-                self.brake_active = False
-                self.emergency_active = False
-
-        raw = _Fallback()       
-        class _Adapter:
-            def __init__(self, r): self._r = r
-            def get_position(self): return self._r.get_position()
-            def is_positioning_active(self): return self._r.is_positioning_active()
-            def tick(self): self._r.tick()
-            def get_state(self): return self._r.get_state()
-            def close(self): self._r.close()
-            def command_move(self, *a, **k): return False
-            def command_lock_brake(self): self._r.brake_active = True; return True
-            def command_release_brake(self): self._r.brake_active = False; return True
-            def command_set_clutch(self, active): 
-                try:
-                    self._r.clutch_active = bool(active)
-                    return True
-                except:
-                    return False
-            def set_mode_context(self, mode, piece_length_mm=0.0, bar_length_mm=6500.0):
+            
+            def tick(self):
                 pass
-            def command_set_head_angles(self, sx, dx): return True
-            def command_set_morse(self, l, r): return True
-            def command_set_blade_inhibit(self, left=None, right=None): return True
-            def command_sim_cut_pulse(self): pass
-            def command_sim_start_pulse(self): pass
-            def command_sim_dx_blade_out(self, on): pass
-            def get_input(self, name): return False
-            def do_homing(self, callback=None): self._r.do_homing(callback)
-            def reset_machine(self): self._r.reset()
-
-        logger.info("Avvio Fallback machine.")
-        return raw, _Adapter(raw)
-
-    def add_page(self, key: str, widget):
+            
+            def close(self):
+                pass
+            
+            def do_homing(self, callback=None):
+                self. homed = True
+                self._position_mm = 250.0
+                if callback:
+                    callback()
+            
+            def reset(self):
+                self.emergency_active = False
+                self. brake_active = True
+        
+        raw = _FallbackMachine()
+        
+        # Adapter
+        class _FallbackAdapter:
+            def __init__(self, r):
+                self._r = r
+            
+            def get_position(self):
+                return self._r.get_position()
+            
+            def is_positioning_active(self):
+                return self._r.is_positioning_active()
+            
+            def tick(self):
+                self._r.tick()
+            
+            def get_state(self):
+                return self._r.get_state()
+            
+            def close(self):
+                self._r.close()
+            
+            def command_move(self, position_mm, callback=None):
+                self._r.move_to(position_mm, callback)
+                return True
+            
+            def command_lock_brake(self):
+                self._r.brake_active = True
+                return True
+            
+            def command_release_brake(self):
+                self._r.brake_active = False
+                return True
+            
+            def command_set_clutch(self, active):
+                self._r.clutch_active = bool(active)
+                return True
+            
+            def set_mode_context(self, mode, piece_length_mm=0. 0, bar_length_mm=6500.0):
+                pass
+            
+            def command_set_head_angles(self, sx, dx):
+                self._r.testa_sx_angle = sx
+                self._r.testa_dx_angle = dx
+                return True
+            
+            def command_set_morse(self, left, right):
+                self._r.left_morse_locked = left
+                self._r.right_morse_locked = right
+                return True
+            
+            def command_set_blade_inhibit(self, left=None, right=None):
+                if left is not None:
+                    self._r.left_blade_inhibit = left
+                if right is not None: 
+                    self._r.right_blade_inhibit = right
+                return True
+            
+            def command_sim_cut_pulse(self):
+                pass
+            
+            def command_sim_start_pulse(self):
+                pass
+            
+            def command_sim_dx_blade_out(self, on):
+                pass
+            
+            def get_input(self, name):
+                return False
+            
+            def do_homing(self, callback=None):
+                self._r.do_homing(callback)
+            
+            def reset_machine(self):
+                self._r.reset()
+        
+        return raw, _FallbackAdapter(raw)
+    
+    def _load_pages(self):
+        """Load all application pages."""
+        # Try to load each page, continue on error
+        self._try_add_page("home", "qt6_app. ui_qt.pages.home_page", "HomePage")
+        self._try_add_page("semi_auto", "qt6_app.ui_qt.pages.semi_auto_page", "SemiAutoPage")
+        self._try_add_page("automatico", "qt6_app. ui_qt.pages.automatico_page", "AutomaticoPage")
+        self._try_add_page("manuale", "qt6_app. ui_qt.pages.manuale_page", "ManualePage")
+        self._try_add_page("utility", "qt6_app.ui_qt.pages.utility_page", "UtilityPage")
+        self._try_add_page("statistics", "qt6_app.ui_qt.pages.statistics_page", "StatisticsPage")
+        self._try_add_page("label_editor", "qt6_app.ui_qt.pages.label_editor_page", "LabelEditorPage")
+    
+    def add_page(self, key: str, widget:  QWidget):
+        """Add page to stack."""
         wrapper = SizeIgnorer(widget)
         idx = self.stack.addWidget(wrapper)
         self._pages[key] = (wrapper, idx, widget)
-
+    
     def _try_add_page(self, key: str, mod_name: str, cls_name: str):
-        logger = logging.getLogger("blitz")
+        """Try to load and add page, log error on failure."""
         try:
             import importlib
             mod = importlib.import_module(mod_name)
             cls = getattr(mod, cls_name)
             self.add_page(key, cls(self))
-            logger.info(f"Pagina caricata: {key} ({mod_name}.{cls_name})")
+            logger.info(f"Page loaded: {key} ({mod_name}. {cls_name})")
         except Exception as e:
-            logger.exception(f"Errore caricando pagina '{key}' ({mod_name}.{cls_name}): {e}")
+            logger.exception(f"Error loading page '{key}' ({mod_name}.{cls_name}): {e}")
             try:
-                self.toast.show(f"Errore pagina '{key}' (vedi log)", "warn", 4000)
-            except Exception:
+                self. toast.show(f"Errore caricamento pagina '{key}' (vedi log)", "warn", 4000)
+            except Exception: 
                 pass
-
-    def show_page(self, key: str):
-        logger = logging.getLogger("blitz")
+    
+    def show_page(self, key:  str):
+        """Show page by key."""
         rec = self._pages.get(key)
         if not rec:
             try:
                 self.toast.show(f"Pagina '{key}' non disponibile", "warn", 2000)
-            except Exception:
+            except Exception: 
                 pass
-            logger.warning(f"Tentativo di aprire pagina non registrata: {key}")
+            logger.warning(f"Attempted to open non-existent page: {key}")
             return
+        
         wrapper, idx, page = rec
         self.stack.setCurrentIndex(idx)
+        
+        # Call on_show if available
         if hasattr(page, "on_show") and callable(getattr(page, "on_show")):
             try:
                 page.on_show()
-            except Exception:
-                logger.exception(f"Errore in on_show() pagina '{key}'")
+            except Exception: 
+                logger.exception(f"Error in on_show() for page '{key}'")
                 try:
-                    self.toast.show(f"Errore on_show '{key}'", "warn", 3000)
-                except Exception:
+                    self.toast. show(f"Errore on_show '{key}'", "warn", 3000)
+                except Exception: 
                     pass
-
-    def go_home(self): self.show_page("home")
-    def show_home(self): self.show_page("home")
-    def navigate_home(self): self.show_page("home")
-    def home(self): self.show_page("home")
-
-    def reset_all(self):
-        if hasattr(self.machine, "reset"):
-            try:
-                self.machine.reset()
-            except Exception:
-                pass
+    
+    def go_home(self):
+        """Navigate to home page."""
+        self. show_page("home")
+    
+    def show_home(self):
+        """Alias for go_home."""
         self.show_page("home")
-        if hasattr(self.toast, "show"):
-            self.toast.show("Reset eseguito (uniforme)", "ok", 2000)
+    
+    def _global_exception_handler(self, exc_type, exc_value, exc_tb):
+        """Global exception handler."""
+        import traceback
+        
+        logger. critical(
+            "Uncaught exception",
+            exc_info=(exc_type, exc_value, exc_tb)
+        )
+        
+        # Print to console
+        print(f"Uncaught exception: {exc_type.__name__}:  {exc_value}")
+        traceback.print_tb(exc_tb)
+        
+        # Show dialog
+        try:
+            QMessageBox.critical(
+                self,
+                "Errore Critico",
+                f"Si è verificato un errore imprevisto.\n\n"
+                f"Tipo: {exc_type.__name__}\n"
+                f"Dettagli: {exc_value}\n\n"
+                f"L'errore è stato salvato nei log."
+            )
+        except Exception:
+            pass
+        
+        # Call default handler
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+    
+    def closeEvent(self, event):
+        """Handle window close."""
+        logger.info("Application closing")
+        
+        # Cleanup machine
+        try:
+            if self.machine_adapter:
+                self.machine_adapter.close()
+            if self.machine:
+                self.machine.close()
+        except Exception as e:
+            logger. error(f"Error during machine cleanup: {e}")
+        
+        event.accept()
+
 
 def main():
-    # Install global exception handler
-    sys.excepthook = exception_hook
-    
-    # Setup production-grade logging
-    from qt6_app.ui_qt.utils.logger import setup_logging
-    log_dir = setup_logging()
-    logger = logging.getLogger("blitz")
-    logger.info("Application starting...")
-    logger.info(f"Log directory: {log_dir}")
-
-    simulation = True
-    for a in sys.argv[1:]:
-        if a.strip().lower() in ("--real", "--hardware", "--hw"):
-            simulation = False
-    
-    logger.info(f"Mode: {'simulation' if simulation else 'real hardware'}")
-
-    app = QApplication(sys.argv)
+    """Application entry point."""
+    # Setup logging
     try:
-        apply_global_stylesheet(app)
+        setup_logging()
     except Exception as e:
-        logger.warning(f"apply_global_stylesheet fallita: {e}")
-
-    win = MainWindow(simulation=simulation)
-    win.showMaximized()
-    rc = app.exec()
-    logger.info(f"Application closing (exit code {rc})")
+        print(f"Warning: Could not setup logging: {e}")
+        logging.basicConfig(level=logging.INFO)
+    
+    logger.info("="*60)
+    logger.info(f"BLITZ CNC v{APP_VERSION}")
+    logger.info(f"Python {sys.version}")
+    logger.info(f"Simulation mode: {USE_SIMULATION}")
+    logger.info("="*60)
+    
+    # Create application
+    app = QApplication. instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    
+    # Set application properties
+    app.setApplicationName("BLITZ CNC")
+    app.setApplicationVersion(APP_VERSION)
+    app.setOrganizationName("BLITZ")
+    
+    # Apply theme
     try:
-        win.machine_adapter.close()
-    except Exception:
-        pass
-    sys.exit(rc)
+        from qt6_app.ui_qt.theme import apply_theme
+        apply_theme(app)
+        logger.info("Theme applied")
+    except Exception as e:
+        logger.warning(f"Could not apply theme: {e}")
+    
+    # Create main window
+    window = BlitzMainWindow()
+    window.show()
+    
+    # Run event loop
+    exit_code = app.exec()
+    
+    logger.info(f"Application exited with code: {exit_code}")
+    return exit_code
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
