@@ -1,0 +1,181 @@
+# =============================================================================
+# BLITZ3 CNC - Requirements File
+# Sistema di Controllo CNC per Raspberry Pi 4
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# INTERFACCIA GRAFICA (GUI)
+# -----------------------------------------------------------------------------
+# Framework Qt per Python - Gestione interfaccia utente principale
+PySide6>=6.6.0
+
+# -----------------------------------------------------------------------------
+# CONTROLLO HARDWARE RASPBERRY PI
+# -----------------------------------------------------------------------------
+# Libreria per controllo GPIO su Raspberry Pi - Gestione pin di input/output
+RPi.GPIO>=0.7.1
+
+# Libreria daemon per controllo PWM hardware preciso - Controllo motori stepper
+pigpio>=1.78
+
+# -----------------------------------------------------------------------------
+# CONTROLLO E AUTOMAZIONE
+# -----------------------------------------------------------------------------
+# Implementazione algoritmo PID per controllo preciso - Regolazione velocità e posizione
+simple-pid>=2.0.0
+
+# Google OR-Tools per ottimizzazione percorsi - Calcolo traiettorie ottimali CNC
+ortools>=9.8.0
+
+# -----------------------------------------------------------------------------
+# COMUNICAZIONE SERIALE
+# -----------------------------------------------------------------------------
+# Comunicazione seriale Python - Interfaccia con Arduino e dispositivi esterni
+pyserial>=3.5
+
+# -----------------------------------------------------------------------------
+# STAMPA ETICHETTE E CODICI A BARRE
+# -----------------------------------------------------------------------------
+# Driver per stampanti Brother QL - Stampa etichette di identificazione pezzi
+brother-ql>=0.9.4
+
+# Generazione codici a barre - Tracciabilità componenti lavorati
+python-barcode>=0.15.1
+
+# -----------------------------------------------------------------------------
+# ELABORAZIONE IMMAGINI E PDF
+# -----------------------------------------------------------------------------
+# Python Imaging Library - Elaborazione immagini per preview e stampa
+Pillow>=10.1.0
+
+# Generazione documenti PDF - Report di produzione e documentazione tecnica
+reportlab>=4.0.7
+
+# -----------------------------------------------------------------------------
+# COMUNICAZIONE BLUETOOTH
+# -----------------------------------------------------------------------------
+# Bluetooth Low Energy async - Connessione sensori e dispositivi wireless
+bleak>=0.21.1
+
+# -----------------------------------------------------------------------------
+# CONFIGURAZIONE E GESTIONE DATI
+# -----------------------------------------------------------------------------
+# Gestione variabili ambiente - Configurazione sicura credenziali
+python-dotenv>=1.0.0
+
+# Parser e writer YAML - File di configurazione macchina
+PyYAML>=6.0.1
+
+# -----------------------------------------------------------------------------
+# LOGGING E MONITORAGGIO
+# -----------------------------------------------------------------------------
+# Logging colorato per console - Diagnostica e debug sistema
+colorlog>=6.8.0
+
+# Monitoraggio risorse sistema - CPU, memoria, temperatura Raspberry Pi
+psutil>=5.9.6
+
+# -----------------------------------------------------------------------------
+# VALIDAZIONE DATI
+# -----------------------------------------------------------------------------
+# Validazione dati e settings - Verifica parametri macchina e configurazioni
+pydantic>=2.5.0
+
+# -----------------------------------------------------------------------------
+# GESTIONE FOGLI DI CALCOLO E DATI
+# -----------------------------------------------------------------------------
+# Lettura/scrittura Excel - Import/export programmi CNC e dati produzione
+openpyxl>=3.1.2
+
+# Analisi e manipolazione dati - Elaborazione statistiche produzione
+pandas>=2.1.4
+
+# Supporto per engine Excel
+xlrd>=2.0.1
+
+# -----------------------------------------------------------------------------
+# NETWORKING E API
+# -----------------------------------------------------------------------------
+# Client HTTP async - Comunicazione con API remote e cloud
+aiohttp>=3.9.1
+
+# Library HTTP semplificata - Download aggiornamenti e file remoti
+requests>=2.31.0
+
+# -----------------------------------------------------------------------------
+# PARSING E PROCESSING G-CODE
+# -----------------------------------------------------------------------------
+# Espressioni regolari avanzate - Parsing comandi G-code
+regex>=2023.10.3
+
+# -----------------------------------------------------------------------------
+# GESTIONE TEMPO E SCHEDULING
+# -----------------------------------------------------------------------------
+# Scheduling task periodici - Manutenzione automatica e backup
+schedule>=1.2.0
+
+# Gestione timezone - Timestamp precisi per logging produzione
+pytz>=2023.3
+
+# -----------------------------------------------------------------------------
+# MATEMATICA E CALCOLI SCIENTIFICI
+# -----------------------------------------------------------------------------
+# Calcoli numerici - Trasformazioni coordinate e cinematica inversa
+numpy>=1.26.2
+
+# Calcoli scientifici - Interpolazioni e smoothing traiettorie
+scipy>=1.11.4
+
+# -----------------------------------------------------------------------------
+# SICUREZZA E CRITTOGRAFIA
+# -----------------------------------------------------------------------------
+# Crittografia e hashing - Protezione dati sensibili
+cryptography>=41.0.7
+
+# -----------------------------------------------------------------------------
+# UTILITÀ GENERICHE
+# -----------------------------------------------------------------------------
+# Barra di progresso console - Feedback operazioni lunghe
+tqdm>=4.66.1
+
+# Gestione percorsi cross-platform - Compatibilità path files
+pathlib2>=2.3.7; python_version < '3.4'
+
+# Click per CLI - Interfaccia command line per diagnostica
+click>=8.1.7
+
+# -----------------------------------------------------------------------------
+# DATABASE (OPZIONALE)
+# -----------------------------------------------------------------------------
+# SQLite per Python - Database locale storico lavorazioni
+# Già incluso in Python standard library
+
+# ORM per database - Gestione avanzata dati produzione (opzionale)
+# SQLAlchemy>=2.0.23
+
+# -----------------------------------------------------------------------------
+# TESTING E SVILUPPO
+# -----------------------------------------------------------------------------
+# Framework testing - Test automatici componenti (solo dev)
+# pytest>=7.4.3
+# pytest-asyncio>=0.21.1
+# pytest-cov>=4.1.0
+
+# -----------------------------------------------------------------------------
+# NOTE DI INSTALLAZIONE
+# -----------------------------------------------------------------------------
+# Per installare su Raspberry Pi 4:
+# 1. Aggiornare sistema: sudo apt update && sudo apt upgrade
+# 2. Installare dipendenze sistema: sudo apt install python3-dev python3-pip libatlas-base-dev
+# 3. Abilitare pigpio daemon: sudo systemctl enable pigpiod && sudo systemctl start pigpiod
+# 4. Installare requirements: pip3 install -r requirements.txt
+#
+# Per hardware specifico:
+# - GPIO richiede accesso privilegiato (sudo) o aggiungere utente a gruppo gpio
+# - pigpio richiede daemon attivo: sudo pigpiod
+# - Brother QL richiede driver USB: sudo apt install libusb-1.0-0-dev
+#
+# Versioni Python supportate: >= 3.9
+# Sistema operativo: Raspberry Pi OS (Debian-based)
+# Hardware target: Raspberry Pi 4 Model B (2GB+ RAM consigliato)
+# =============================================================================
