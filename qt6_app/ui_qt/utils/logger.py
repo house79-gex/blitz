@@ -108,8 +108,9 @@ def setup_logging(
     error_handler.setFormatter(StructuredFormatter())
     root.addHandler(error_handler)
     
-    # Log startup
-    root.info(f"Logging system initialized - log_dir={log_dir}")
+    # Log startup with a specific logger to avoid handler ordering issues
+    startup_logger = logging.getLogger("blitz.logging")
+    startup_logger.info(f"Logging system initialized - log_dir={log_dir}")
     
     return log_dir
 

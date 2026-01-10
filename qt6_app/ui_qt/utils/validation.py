@@ -134,7 +134,7 @@ class Validator:
             if path_obj.suffix.lower() not in normalized_extensions:
                 result.add_error(
                     field_name,
-                    f"Estensione non valida. Estensioni ammesse: {', '.join(extensions)}",
+                    f"Estensione non valida. Estensioni ammesse: {', '.join(normalized_extensions)}",
                     "INVALID_EXTENSION"
                 )
         

@@ -11,6 +11,7 @@ Provides:
 from contextlib import contextmanager
 from functools import wraps
 import logging
+import time
 from typing import Optional, Callable, Any
 
 logger = logging.getLogger(__name__)
@@ -150,8 +151,6 @@ class ErrorRecovery:
         Returns:
             Function result or None on failure
         """
-        import time
-        
         for attempt in range(max_retries):
             try:
                 return func()
