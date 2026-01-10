@@ -9,12 +9,11 @@ import sys
 import os
 from pathlib import Path
 
-# ========== CRITICAL:  Add project root to Python path ==========
+# Add project root to Python path
 project_root = Path(__file__).parent. parent. resolve()
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 print(f"[STARTUP] Project root: {project_root}")
-# ================================================================
 
 import logging
 from typing import Optional, Dict, Any, Tuple
@@ -58,7 +57,7 @@ class BlitzMainWindow(QMainWindow):
     """
     Main application window.
     
-    Manages: 
+    Manages:
     - Page stack
     - Machine instance
     - Global toast notifications
@@ -92,21 +91,23 @@ class BlitzMainWindow(QMainWindow):
         # Load pages
         self._load_pages()
         
-        # Show home page
-        self. show_page("home")
+        # Show first available page
+        if self._pages:
+            first_key = next(iter(self._pages))
+            self.show_page(first_key)
         
         logger.info(f"BLITZ CNC v{APP_VERSION} started (simulation={USE_SIMULATION})")
     
-    def show_toast(self, message: str, toast_type:  str = "info", duration_ms: int = 3000):
+    def show_toast(self, message: str, toast_type: str = "info", duration_ms: int = 3000):
         """
-        Show toast notification. 
+        Show toast notification.
         
         Args:
             message: Message to display
-            toast_type: 'info', 'warn', 'error', 'success'
+            toast_type:  'info', 'warn', 'error', 'success'
             duration_ms: Duration in milliseconds
         """
-        try: 
+        try:
             colors = {
                 'info': ('#3498db', '#ffffff'),
                 'warn': ('#f39c12', '#ffffff'),
@@ -136,21 +137,21 @@ class BlitzMainWindow(QMainWindow):
         """Initialize machine instance."""
         try:
             if USE_SIMULATION:
-                self. machine, self.machine_adapter = self._create_simulation_machine()
+                self.machine, self.machine_adapter = self._create_simulation_machine()
                 logger.info("Machine initialized: SIMULATION mode")
             else:
-                self.machine, self.machine_adapter = self._create_real_machine()
+                self. machine, self.machine_adapter = self._create_real_machine()
                 logger.info("Machine initialized: REAL HARDWARE mode")
         except Exception as e:
             logger.exception(f"Error initializing machine: {e}")
             self.machine, self.machine_adapter = self._create_fallback_machine()
-            self.show_toast(f"Machine init failed, using fallback: {e}", "warn", 5000)
+            logger. warning("Using fallback machine")
     
     def _create_simulation_machine(self):
         """Create simulation machine."""
         try:
-            from qt6_app.ui_qt. machine.simulation_machine import SimulationMachine
-            from qt6_app.ui_qt.machine.machine_adapter import MachineAdapter
+            from qt6_app.ui_qt.machine.simulation_machine import SimulationMachine
+            from qt6_app.ui_qt.machine. machine_adapter import MachineAdapter
             
             raw = SimulationMachine()
             adapter = MachineAdapter(raw)
@@ -162,8 +163,8 @@ class BlitzMainWindow(QMainWindow):
     def _create_real_machine(self):
         """Create real hardware machine."""
         try:
-            from qt6_app.ui_qt.machine.real_machine import RealMachine
-            from qt6_app.ui_qt. machine.machine_adapter import MachineAdapter
+            from qt6_app.ui_qt.machine. real_machine import RealMachine
+            from qt6_app. ui_qt.machine.machine_adapter import MachineAdapter
             
             import json
             config_path = Path(__file__).parent.parent / "data" / "hardware_config.json"
@@ -184,8 +185,8 @@ class BlitzMainWindow(QMainWindow):
         class _FallbackMachine:
             def __init__(self):
                 self.emergency_active = False
-                self. homed = False
-                self. brake_active = True
+                self.homed = False
+                self.brake_active = True
                 self.clutch_active = True
                 self._position_mm = 250.0
                 self._positioning_active = False
@@ -210,9 +211,9 @@ class BlitzMainWindow(QMainWindow):
             def get_state(self):
                 return {
                     'emergency_active': self.emergency_active,
-                    'homed': self.homed,
+                    'homed':  self.homed,
                     'brake_active': self.brake_active,
-                    'clutch_active':  self.clutch_active,
+                    'clutch_active': self.clutch_active,
                     'position_mm': self._position_mm,
                 }
             
@@ -230,7 +231,7 @@ class BlitzMainWindow(QMainWindow):
             
             def reset(self):
                 self.emergency_active = False
-                self.brake_active = True
+                self. brake_active = True
         
         raw = _FallbackMachine()
         
@@ -273,12 +274,12 @@ class BlitzMainWindow(QMainWindow):
                 pass
             
             def command_set_head_angles(self, sx, dx):
-                self._r. testa_sx_angle = sx
+                self._r.testa_sx_angle = sx
                 self._r.testa_dx_angle = dx
                 return True
             
             def command_set_morse(self, left, right):
-                self._r. left_morse_locked = left
+                self._r.left_morse_locked = left
                 self._r.right_morse_locked = right
                 return True
             
@@ -311,18 +312,23 @@ class BlitzMainWindow(QMainWindow):
     
     def _load_pages(self):
         """Load all application pages."""
-        self._try_add_page("home", "qt6_app. ui_qt.pages.home_page", "HomePage")
-        self._try_add_page("semi_auto", "qt6_app.ui_qt.pages.semi_auto_page", "SemiAutoPage")
-        self._try_add_page("automatico", "qt6_app. ui_qt.pages.automatico_page", "AutomaticoPage")
-        self._try_add_page("manuale", "qt6_app. ui_qt.pages.manuale_page", "ManualePage")
-        self._try_add_page("utility", "qt6_app.ui_qt.pages.utility_page", "UtilityPage")
-        self._try_add_page("statistics", "qt6_app.ui_qt.pages.statistics_page", "StatisticsPage")
-        self._try_add_page("label_editor", "qt6_app.ui_qt.pages.label_editor_page", "LabelEditorPage")
+        pages_to_load = [
+            ("home", "qt6_app.ui_qt. pages.home_page", "HomePage"),
+            ("semi_auto", "qt6_app.ui_qt.pages.semi_auto_page", "SemiAutoPage"),
+            ("automatico", "qt6_app.ui_qt.pages.automatico_page", "AutomaticoPage"),
+            ("manuale", "qt6_app. ui_qt.pages.manuale_page", "ManualePage"),
+            ("utility", "qt6_app.ui_qt.pages.utility_page", "UtilityPage"),
+            ("statistics", "qt6_app.ui_qt.pages.statistics_page", "StatisticsPage"),
+            ("label_editor", "qt6_app.ui_qt. pages.label_editor_page", "LabelEditorPage"),
+        ]
+        
+        for key, mod_name, cls_name in pages_to_load:
+            self._try_add_page(key, mod_name, cls_name)
     
-    def add_page(self, key: str, widget:  QWidget):
+    def add_page(self, key: str, widget: QWidget):
         """Add page to stack."""
         wrapper = SizeIgnorer(widget)
-        idx = self.stack.addWidget(wrapper)
+        idx = self. stack. addWidget(wrapper)
         self._pages[key] = (wrapper, idx, widget)
     
     def _try_add_page(self, key: str, mod_name: str, cls_name: str):
@@ -331,23 +337,15 @@ class BlitzMainWindow(QMainWindow):
             import importlib
             mod = importlib.import_module(mod_name)
             cls = getattr(mod, cls_name)
-            self.add_page(key, cls(self))
+            self. add_page(key, cls(self))
             logger.info(f"Page loaded: {key} ({mod_name}. {cls_name})")
         except Exception as e:
-            logger.exception(f"Error loading page '{key}' ({mod_name}.{cls_name}): {e}")
-            try:
-                self.show_toast(f"Errore caricamento pagina '{key}' (vedi log)", "warn", 4000)
-            except Exception: 
-                pass
+            logger.error(f"Error loading page '{key}': {e}")
     
     def show_page(self, key: str):
         """Show page by key."""
         rec = self._pages.get(key)
         if not rec:
-            try:
-                self.show_toast(f"Pagina '{key}' non disponibile", "warn", 2000)
-            except Exception: 
-                pass
             logger.warning(f"Attempted to open non-existent page: {key}")
             return
         
@@ -359,18 +357,18 @@ class BlitzMainWindow(QMainWindow):
                 page.on_show()
             except Exception: 
                 logger.exception(f"Error in on_show() for page '{key}'")
-                try:
-                    self.show_toast(f"Errore on_show '{key}'", "warn", 3000)
-                except Exception: 
-                    pass
     
     def go_home(self):
         """Navigate to home page."""
-        self. show_page("home")
+        if "home" in self._pages:
+            self.show_page("home")
+        elif self._pages:
+            first_key = next(iter(self._pages))
+            self.show_page(first_key)
     
     def show_home(self):
         """Alias for go_home."""
-        self.show_page("home")
+        self.go_home()
     
     def _global_exception_handler(self, exc_type, exc_value, exc_tb):
         """Global exception handler."""
@@ -393,7 +391,7 @@ class BlitzMainWindow(QMainWindow):
                 f"Dettagli: {exc_value}\n\n"
                 f"L'errore è stato salvato nei log."
             )
-        except Exception:
+        except Exception: 
             pass
         
         sys.__excepthook__(exc_type, exc_value, exc_tb)
