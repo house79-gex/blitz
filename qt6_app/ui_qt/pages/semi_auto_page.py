@@ -1266,6 +1266,7 @@ class SemiAutoPage(QWidget):
             pass
         
         # Disable input fields during movement to prevent changes mid-operation
+        # Each widget is wrapped in try-except for graceful degradation if widget doesn't exist
         inputs_enabled = not mov
         try:
             self.ext_len.setEnabled(inputs_enabled)
