@@ -269,7 +269,7 @@ class BlitzMainWindow(QMainWindow):
                 self._r.clutch_active = bool(active)
                 return True
             
-            def set_mode_context(self, mode, piece_length_mm=0. 0, bar_length_mm=6500.0):
+            def set_mode_context(self, mode, piece_length_mm=0.0, bar_length_mm=6500.0):
                 pass
             
             def command_set_head_angles(self, sx, dx):
