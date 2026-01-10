@@ -1250,14 +1250,57 @@ class SemiAutoPage(QWidget):
         homed = bool(getattr(self.machine, "machine_homed", False))
         emg = bool(getattr(self.machine, "emergency_active", False))
         mov = self.mio.is_positioning_active() if self.mio else bool(getattr(self.machine, "positioning_active", False))
+        
+        # Enable/disable Start button
         try:
             self.btn_start.setEnabled(homed and not emg and not mov)
         except Exception:
             pass
+        
+        # Enable/disable Brake button
         brk = bool(getattr(self.machine, "brake_active", False))
         try:
             self.btn_brake.setEnabled(homed and not emg and not mov)
             self.btn_brake.setText("SBLOCCA" if brk else "BLOCCA")
+        except Exception:
+            pass
+        
+        # Disable input fields during movement to prevent changes mid-operation
+        inputs_enabled = not mov
+        try:
+            self.ext_len.setEnabled(inputs_enabled)
+        except Exception:
+            pass
+        try:
+            self.thickness.setEnabled(inputs_enabled)
+        except Exception:
+            pass
+        try:
+            self.cb_profilo.setEnabled(inputs_enabled)
+        except Exception:
+            pass
+        try:
+            self.spin_sx.setEnabled(inputs_enabled)
+        except Exception:
+            pass
+        try:
+            self.spin_dx.setEnabled(inputs_enabled)
+        except Exception:
+            pass
+        try:
+            self.btn_sx_45.setEnabled(inputs_enabled)
+        except Exception:
+            pass
+        try:
+            self.btn_sx_0.setEnabled(inputs_enabled)
+        except Exception:
+            pass
+        try:
+            self.btn_dx_0.setEnabled(inputs_enabled)
+        except Exception:
+            pass
+        try:
+            self.btn_dx_45.setEnabled(inputs_enabled)
         except Exception:
             pass
 
