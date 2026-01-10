@@ -1261,13 +1261,14 @@ class SemiAutoPage(QWidget):
                     logger.info("Movement completed, inputs re-enabled")
                 except Exception as e:
                     logger.error(f"Error re-enabling inputs after movement: {e}")
-                    # Ensure UI is restored even if _enable_inputs_after_movement fails
+                    # Ensure UI is restored and flag is reset even if primary path fails
                     try:
                         self._restore_input_controls()
-                    except Exception:
-                        pass
-                    # Force flag reset to prevent permanent lock
-                    self._movement_in_progress = False
+                    except Exception as fallback_err:
+                        logger.error(f"Fallback UI restoration also failed: {fallback_err}")
+                    finally:
+                        # Always reset flag to prevent permanent lock
+                        self._movement_in_progress = False
 
         # NOTE: Legacy intestatura system removed - now handled by mode handlers
         # if self._intest_in_progress:
@@ -1328,20 +1329,32 @@ class SemiAutoPage(QWidget):
     
     def _restore_input_controls(self):
         """Restore UI input controls to enabled state. Used for cleanup."""
-        self.ext_len.setEnabled(True)
-        self.spin_sx.setEnabled(True)
-        self.spin_dx.setEnabled(True)
-        self.thickness.setEnabled(True)
-        self.cb_profilo.setEnabled(True)
+        try:
+            self.ext_len.setEnabled(True)
+        except Exception as e:
+            logger.debug(f"Could not enable ext_len: {e}")
+        try:
+            self.spin_sx.setEnabled(True)
+        except Exception as e:
+            logger.debug(f"Could not enable spin_sx: {e}")
+        try:
+            self.spin_dx.setEnabled(True)
+        except Exception as e:
+            logger.debug(f"Could not enable spin_dx: {e}")
+        try:
+            self.thickness.setEnabled(True)
+        except Exception as e:
+            logger.debug(f"Could not enable thickness: {e}")
+        try:
+            self.cb_profilo.setEnabled(True)
+        except Exception as e:
+            logger.debug(f"Could not enable cb_profilo: {e}")
     
     def _enable_inputs_after_movement(self):
         """Re-enable UI inputs after movement completes."""
-        try:
-            self._restore_input_controls()
-            self._movement_in_progress = False
-            logger.debug("UI inputs re-enabled after movement")
-        except Exception as e:
-            logger.error(f"Error enabling inputs: {e}")
+        self._restore_input_controls()
+        self._movement_in_progress = False
+        logger.debug("UI inputs re-enabled after movement")
 
     # ---------- Simulazioni tastiera ----------
     def keyPressEvent(self, event: QKeyEvent):
