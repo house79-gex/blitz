@@ -48,3 +48,9 @@ docs/blitz/outputs/*.pdf
 # Cutlist projects
 projects/
 *.blz
+
+# Test coverage
+htmlcov/
+.coverage
+.coverage.*
+.pytest_cache/

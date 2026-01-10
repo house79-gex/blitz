@@ -89,7 +89,7 @@ python-barcode>=0.15.1
 # Usato per: etichettatura pezzi con barcode
 # Output: PNG, SVG, PDF
 
-qrcode>=7.4. 2
+qrcode>=7.4.2
 # Generazione QR codes
 # Usato per:  identificazione pezzi, tracking commesse
 # Include: error correction, custom colors
