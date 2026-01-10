@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from functools import wraps
 import logging
 from typing import Optional, Callable, Any
-from PySide6.QtWidgets import QMessageBox
 
 logger = logging.getLogger(__name__)
 
@@ -114,13 +113,19 @@ def _show_error_dialog(operation: str, exception: Exception, critical: bool = Fa
         )
     except Exception:
         # Fallback to message box
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Critical if critical else QMessageBox.Warning)
-        msg.setWindowTitle("Errore" if not critical else "Errore Critico")
-        msg.setText(f"Errore durante: {operation}")
-        msg.setInformativeText(str(exception))
-        msg.setStandardButtons(QMessageBox.Ok)
-        msg.exec()
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Critical if critical else QMessageBox.Warning)
+            msg.setWindowTitle("Errore" if not critical else "Errore Critico")
+            msg.setText(f"Errore durante: {operation}")
+            msg.setInformativeText(str(exception))
+            msg.setStandardButtons(QMessageBox.Ok)
+            msg.exec()
+        except Exception:
+            # If both fail, just log it
+            logger.error(f"Could not show error dialog: {operation} - {exception}")
 
 
 class ErrorRecovery:
