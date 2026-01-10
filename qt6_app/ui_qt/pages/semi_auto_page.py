@@ -1250,14 +1250,40 @@ class SemiAutoPage(QWidget):
         homed = bool(getattr(self.machine, "machine_homed", False))
         emg = bool(getattr(self.machine, "emergency_active", False))
         mov = self.mio.is_positioning_active() if self.mio else bool(getattr(self.machine, "positioning_active", False))
+        
+        # Enable/disable buttons based on machine state
         try:
             self.btn_start.setEnabled(homed and not emg and not mov)
         except Exception:
             pass
+        
         brk = bool(getattr(self.machine, "brake_active", False))
         try:
             self.btn_brake.setEnabled(homed and not emg and not mov)
             self.btn_brake.setText("SBLOCCA" if brk else "BLOCCA")
+        except Exception:
+            pass
+        
+        # Disable/enable input widgets during movement
+        # This prevents user from changing parameters while machine is moving
+        input_enabled = not mov
+        try:
+            self.ext_len.setEnabled(input_enabled)
+        except Exception:
+            pass
+        
+        try:
+            self.spin_sx.setEnabled(input_enabled)
+        except Exception:
+            pass
+        
+        try:
+            self.spin_dx.setEnabled(input_enabled)
+        except Exception:
+            pass
+        
+        try:
+            self.thickness.setEnabled(input_enabled)
         except Exception:
             pass
 
