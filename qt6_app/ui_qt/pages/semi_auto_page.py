@@ -1319,13 +1319,25 @@ class SemiAutoPage(QWidget):
         """Disable UI inputs while movement is in progress."""
         try:
             self.ext_len.setEnabled(False)
-            self.spin_sx.setEnabled(False)
-            self.spin_dx.setEnabled(False)
-            self.thickness.setEnabled(False)
-            self.cb_profilo.setEnabled(False)
-            logger.debug("UI inputs disabled during movement")
         except Exception as e:
-            logger.error(f"Error disabling inputs: {e}")
+            logger.debug(f"Could not disable ext_len: {e}")
+        try:
+            self.spin_sx.setEnabled(False)
+        except Exception as e:
+            logger.debug(f"Could not disable spin_sx: {e}")
+        try:
+            self.spin_dx.setEnabled(False)
+        except Exception as e:
+            logger.debug(f"Could not disable spin_dx: {e}")
+        try:
+            self.thickness.setEnabled(False)
+        except Exception as e:
+            logger.debug(f"Could not disable thickness: {e}")
+        try:
+            self.cb_profilo.setEnabled(False)
+        except Exception as e:
+            logger.debug(f"Could not disable cb_profilo: {e}")
+        logger.debug("UI inputs disabled during movement")
     
     def _restore_input_controls(self):
         """Restore UI input controls to enabled state. Used for cleanup."""
