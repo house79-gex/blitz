@@ -22,7 +22,7 @@ def test_mode_detector_normal():
     )
     detector = ModeDetector(config)
     
-    mode = detector.detect(length_mm=1000.0)
+    mode = detector.detect(1000.0)
     
     assert mode.mode_name == "normal"
     assert mode.is_valid
@@ -40,7 +40,7 @@ def test_mode_detector_ultra_short():
     detector = ModeDetector(config)
     
     # 130mm is the threshold (250 - 120)
-    mode = detector.detect(length_mm=100.0)
+    mode = detector.detect(100.0)
     
     assert mode.mode_name == "ultra_short"
     assert mode.is_valid
@@ -58,7 +58,7 @@ def test_mode_detector_out_of_quota():
     detector = ModeDetector(config)
     
     # Between 130mm and 250mm is out of quota
-    mode = detector.detect(length_mm=200.0)
+    mode = detector.detect(200.0)
     
     assert mode.mode_name == "out_of_quota"
     assert mode.is_valid
@@ -75,7 +75,7 @@ def test_mode_detector_extra_long():
     )
     detector = ModeDetector(config)
     
-    mode = detector.detect(length_mm=4500.0)
+    mode = detector.detect(4500.0)
     
     assert mode.mode_name == "extra_long"
     assert mode.is_valid
@@ -92,7 +92,7 @@ def test_mode_detector_invalid_negative():
     )
     detector = ModeDetector(config)
     
-    mode = detector.detect(length_mm=-10.0)
+    mode = detector.detect(-10.0)
     
     assert mode.mode_name == "invalid"
     assert not mode.is_valid
@@ -109,7 +109,7 @@ def test_mode_detector_invalid_too_long():
     )
     detector = ModeDetector(config)
     
-    mode = detector.detect(length_mm=7000.0)
+    mode = detector.detect(7000.0)
     
     assert mode.mode_name == "invalid"
     assert not mode.is_valid
@@ -127,7 +127,7 @@ def test_mode_detector_boundary_ultra_short():
     detector = ModeDetector(config)
     
     # Exactly at threshold (130mm)
-    mode = detector.detect(length_mm=130.0)
+    mode = detector.detect(130.0)
     
     assert mode.is_valid
     # Should be ultra_short (<=)
@@ -145,11 +145,11 @@ def test_mode_detector_boundary_out_of_quota():
     detector = ModeDetector(config)
     
     # Just below zero homing
-    mode = detector.detect(length_mm=249.0)
+    mode = detector.detect(249.0)
     assert mode.mode_name == "out_of_quota"
     
     # At zero homing
-    mode = detector.detect(length_mm=250.0)
+    mode = detector.detect(250.0)
     assert mode.mode_name == "normal"
 
 
@@ -164,11 +164,11 @@ def test_mode_detector_boundary_extra_long():
     detector = ModeDetector(config)
     
     # At max travel
-    mode = detector.detect(length_mm=4000.0)
+    mode = detector.detect(4000.0)
     assert mode.mode_name == "normal"
     
     # Just over max travel
-    mode = detector.detect(length_mm=4001.0)
+    mode = detector.detect(4001.0)
     assert mode.mode_name == "extra_long"
 
 
