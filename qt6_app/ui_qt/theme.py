@@ -155,3 +155,46 @@ def _base_stylesheet() -> str:
 def apply_global_stylesheet(app: QApplication):
     app.setStyleSheet(_base_stylesheet())
 
+
+def get_responsive_font_size(base_size_pt: int, window_width: int = None, window_height: int = None) -> str:
+    """
+    Calculate responsive font size based on window dimensions.
+    
+    Args:
+        base_size_pt: Base font size in points
+        window_width: Optional window width for scaling (reserved for future use)
+        window_height: Optional window height for scaling (reserved for future use)
+    
+    Returns:
+        Font size string (e.g., "10pt")
+    
+    Note:
+        Currently returns the base size unchanged. This provides a foundation
+        for future responsive scaling implementations based on window dimensions.
+        
+        Future enhancement could implement scaling like:
+        - Scale factor = min(window_width / 1024, window_height / 768)
+        - Scaled size = base_size_pt * scale_factor
+    """
+    # Foundation for future responsive scaling
+    # Currently returns base size - can be enhanced with actual scaling logic
+    return f"{base_size_pt}pt"
+
+
+def scale_font_size(base_pt: int, scale_factor: float) -> int:
+    """
+    Scale a font size by a given factor.
+    
+    Args:
+        base_pt: Base font size in points
+        scale_factor: Scaling factor (e.g., 1.0 = 100%, 1.5 = 150%)
+    
+    Returns:
+        Scaled font size in points (rounded to nearest integer)
+    
+    Example:
+        >>> scale_font_size(12, 1.5)
+        18
+    """
+    return round(base_pt * scale_factor)
+

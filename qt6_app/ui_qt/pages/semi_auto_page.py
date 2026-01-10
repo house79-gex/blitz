@@ -45,7 +45,7 @@ except Exception:
 SX_COLOR = "#2980b9"
 DX_COLOR = "#9b59b6"
 
-STATUS_W = 260
+STATUS_W = 280
 FQ_W = 260
 FQ_H = 240
 COUNTER_SIZE = 260
@@ -356,7 +356,7 @@ class SemiAutoPage(QWidget):
 
         # === NEW: Metro Digitale Section (Collapsible) ===
         if self.metro_manager.is_available():
-            metro_collapsible = CollapsibleSection("📡 Metro Digitale", start_collapsed=False)
+            metro_collapsible = CollapsibleSection("📡 Metro Digitale", start_collapsed=True)
             metro_content = self._build_metro_section_content()
             metro_collapsible.add_content(metro_content)
             left_col.addWidget(metro_collapsible, 0)
