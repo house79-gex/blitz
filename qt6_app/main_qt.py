@@ -268,7 +268,7 @@ def main():
     sys.excepthook = exception_hook
     
     # Setup production-grade logging
-    from ui_qt.utils.logger import setup_logging
+    from qt6_app.ui_qt.utils.logger import setup_logging
     log_dir = setup_logging()
     logger = logging.getLogger("blitz")
     logger.info("Application starting...")

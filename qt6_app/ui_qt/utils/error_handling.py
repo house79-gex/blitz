@@ -103,7 +103,7 @@ def safe_operation(
 def _show_error_dialog(operation: str, exception: Exception, critical: bool = False):
     """Show error dialog to user"""
     try:
-        from ui_qt.widgets.toast import Toast
+        from qt6_app.ui_qt.widgets.toast import Toast
         
         # Try toast first (non-blocking)
         Toast.show(

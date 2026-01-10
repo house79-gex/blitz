@@ -163,7 +163,8 @@ def test_validator_validate_angle_invalid():
     assert not result.is_valid
     assert len(result.errors) == 1
     assert result.errors[0].code == "INVALID_ANGLE"
-    assert "60" not in result.errors[0].message or "non valido" in result.errors[0].message
+    # Check that the error message mentions valid angles
+    assert "Angolo non valido" in result.errors[0].message or "non valido" in result.errors[0].message
 
 
 def test_validator_validate_angle_default_angles():
@@ -234,12 +235,28 @@ def test_validator_validate_file_path_invalid_extension():
 
 def test_validator_validate_file_path_case_insensitive_extension():
     """Test Validator.validate_file_path is case insensitive for extensions."""
+    # Test with lowercase path and lowercase extensions
     result = Validator.validate_file_path(
         path="/some/path/FILE.CSV",
         extensions=['.csv', '.xlsx'],
         field_name="test_file"
     )
+    assert result.is_valid
     
+    # Test with uppercase extensions list (should also work)
+    result = Validator.validate_file_path(
+        path="/some/path/file.csv",
+        extensions=['.CSV', '.XLSX'],
+        field_name="test_file"
+    )
+    assert result.is_valid
+    
+    # Test mixed case extensions list
+    result = Validator.validate_file_path(
+        path="/some/path/File.CsV",
+        extensions=['.CsV', '.XlSx'],
+        field_name="test_file"
+    )
     assert result.is_valid
 
 

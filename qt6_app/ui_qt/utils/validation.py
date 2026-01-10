@@ -128,11 +128,14 @@ class Validator:
                 "FILE_NOT_FOUND"
             )
         
-        if extensions and path_obj.suffix.lower() not in extensions:
-            result.add_error(
-                field_name,
-                f"Estensione non valida. Estensioni ammesse: {', '.join(extensions)}",
-                "INVALID_EXTENSION"
-            )
+        if extensions:
+            # Normalize extensions to lowercase for comparison
+            normalized_extensions = [ext.lower() for ext in extensions]
+            if path_obj.suffix.lower() not in normalized_extensions:
+                result.add_error(
+                    field_name,
+                    f"Estensione non valida. Estensioni ammesse: {', '.join(extensions)}",
+                    "INVALID_EXTENSION"
+                )
         
         return result
