@@ -1,0 +1,91 @@
+# ============================================================================
+# REQUIREMENTS-DEV.TXT - Dipendenze extra per sviluppo
+# ============================================================================
+# Include requirements base + tools aggiuntivi per sviluppatori
+# ============================================================================
+
+-r requirements.txt
+# Oppure su Windows: -r requirements-windows.txt
+
+# ──────────────────────────────────────────────────────────────────────────
+# DEBUGGING E PROFILING
+# ──────────────────────────────────────────────────────────────────────────
+ipython>=8.19.0
+# Shell interattiva Python avanzata
+# Features: autocompletion, magic commands, history
+
+ipdb>=0.13.13
+# Debugger interattivo (IPython + pdb)
+# Usato per: breakpoint avanzati, inspect variabili
+
+py-spy>=0.3.14
+# Profiler sampling (no overhead)
+# Usato per: analisi performance, flamegraphs
+
+memory-profiler>=0.61.0
+# Profiler memoria line-by-line
+# Usato per: trovare memory leaks
+
+# ──────────────────────────────────────────────────────────────────────────
+# LINTING AVANZATO
+# ──────────────────────────────────────────────────────────────────────────
+pylint>=3.0.3
+# Linter completo con analisi statica
+# Features: code smell detection, refactoring suggestions
+
+bandit>=1.7.6
+# Security linter per Python
+# Usato per:  trovare vulnerabilità sicurezza
+
+vulture>=2.10
+# Trova codice morto (unused code)
+# Usato per: cleanup codebase
+
+# ──────────────────────────────────────────────────────────────────────────
+# PRE-COMMIT HOOKS
+# ──────────────────────────────────────────────────────────────────────────
+pre-commit>=3.6.0
+# Framework per git pre-commit hooks
+# Configurazione: .pre-commit-config.yaml
+
+# ──────────────────────────────────────────────────────────────────────────
+# TESTING AVANZATO
+# ──────────────────────────────────────────────────────────────────────────
+pytest-xdist>=3.5.0
+# Esecuzione test parallela
+# Comando: pytest -n auto
+
+pytest-timeout>=2.2.0
+# Timeout automatico per test lenti
+
+hypothesis>=6.96.0
+# Property-based testing
+# Genera casi test automaticamente
+
+# ──────────────────────────────────────────────────────────────────────────
+# DOCUMENTAZIONE AVANZATA
+# ──────────────────────────────────────────────────────────────────────────
+sphinx-autobuild>=2021.3.14
+# Auto-rebuild documentazione Sphinx
+# Comando: sphinx-autobuild docs docs/_build/html
+
+myst-parser>=2.0.0
+# Parser Markdown per Sphinx
+# Permette documentazione in . md invece di .rst
+
+# ──────────────────────────────────────────────────────────────────────────
+# TOOLS VARI
+# ──────────────────────────────────────────────────────────────────────────
+invoke>=2.2.0
+# Task runner Python (alternativa a Makefile)
+# File: tasks.py
+
+python-dotenv[cli]>=1.0.0
+# Include CLI per gestione . env
+# Comando: dotenv list, dotenv get
+
+pip-tools>=7.3.0
+# Gestione dipendenze (compile, sync)
+# Genera requirements.txt da requirements.in
+
+# ============================================================================
