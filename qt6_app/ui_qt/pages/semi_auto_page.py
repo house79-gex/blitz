@@ -1211,7 +1211,7 @@ class SemiAutoPage(QWidget):
             return
         
         try:
-            # Note: do_homing DOES support callback parameter (see MachineIO interface line 31)
+            # Note: do_homing() supports callback parameter (see MachineIO.do_homing signature)
             self.mio.do_homing(callback=self._on_homing_complete)
             self._show_info("⏳ Azzeramento in corso...", auto_hide_ms=3000)
             logger.info("Homing started from semi-auto page")
@@ -1263,11 +1263,7 @@ class SemiAutoPage(QWidget):
                     logger.error(f"Error re-enabling inputs after movement: {e}")
                     # Ensure UI is restored even if _enable_inputs_after_movement fails
                     try:
-                        self.ext_len.setEnabled(True)
-                        self.spin_sx.setEnabled(True)
-                        self.spin_dx.setEnabled(True)
-                        self.thickness.setEnabled(True)
-                        self.cb_profilo.setEnabled(True)
+                        self._restore_input_controls()
                     except Exception:
                         pass
                     # Force flag reset to prevent permanent lock
@@ -1330,14 +1326,18 @@ class SemiAutoPage(QWidget):
         except Exception as e:
             logger.error(f"Error disabling inputs: {e}")
     
+    def _restore_input_controls(self):
+        """Restore UI input controls to enabled state. Used for cleanup."""
+        self.ext_len.setEnabled(True)
+        self.spin_sx.setEnabled(True)
+        self.spin_dx.setEnabled(True)
+        self.thickness.setEnabled(True)
+        self.cb_profilo.setEnabled(True)
+    
     def _enable_inputs_after_movement(self):
         """Re-enable UI inputs after movement completes."""
         try:
-            self.ext_len.setEnabled(True)
-            self.spin_sx.setEnabled(True)
-            self.spin_dx.setEnabled(True)
-            self.thickness.setEnabled(True)
-            self.cb_profilo.setEnabled(True)
+            self._restore_input_controls()
             self._movement_in_progress = False
             logger.debug("UI inputs re-enabled after movement")
         except Exception as e:
