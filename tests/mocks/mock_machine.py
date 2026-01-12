@@ -130,8 +130,12 @@ class MockMachineAdapter:
     def get_state(self):
         return self._machine.get_state()
     
-    def command_move(self, position_mm: float, callback=None):
-        self._machine.move_to(position_mm, callback)
+    def command_move(self, length_mm: float, ang_sx: float = 0.0, ang_dx: float = 0.0,
+                     profile: str = "", element: str = "") -> bool:
+        """Simulate move command with angles."""
+        self._machine.encoder_position = length_mm
+        self._machine.left_head_angle = ang_sx
+        self._machine.right_head_angle = ang_dx
         return True
     
     def command_lock_brake(self):
@@ -161,3 +165,29 @@ class MockMachineAdapter:
     
     def reset_machine(self):
         self._machine.reset()
+    
+    def set_mode_context(self, mode: str, piece_length_mm: float = 0.0, bar_length_mm: float = 6500.0):
+        """Set mode context (no-op in mock)."""
+        pass
+    
+    def command_set_blade_inhibit(self, left: bool = None, right: bool = None) -> bool:
+        """Set blade inhibit flags."""
+        if left is not None:
+            self._machine.left_blade_inhibit = left
+        if right is not None:
+            self._machine.right_blade_inhibit = right
+        return True
+    
+    def get_input(self, name: str) -> bool:
+        """Get input state."""
+        if name == "dx_blade_out":
+            return getattr(self._machine, "dx_blade_out", False)
+        return False
+    
+    def command_sim_dx_blade_out(self, on: bool):
+        """Simulate DX blade out."""
+        self._machine.dx_blade_out = on
+    
+    def tick(self):
+        """Tick simulation."""
+        self._machine.tick()
