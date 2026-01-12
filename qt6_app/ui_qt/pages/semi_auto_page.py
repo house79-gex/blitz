@@ -1308,6 +1308,7 @@ class SemiAutoPage(QWidget):
             self.btn_start.setEnabled(homed and not emg and not mov)
         except Exception:
             pass
+        
         brk = bool(getattr(self.machine, "brake_active", False))
         try:
             self.btn_brake.setEnabled(homed and not emg and not mov)

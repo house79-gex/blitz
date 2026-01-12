@@ -331,6 +331,12 @@ class BlitzMainWindow(QMainWindow):
             except Exception:
                 logger.exception(f"Error in on_show() for page '{resolved}'")
 
+    def show_home(self):
+        """Show the home page if available."""
+        if "home" in self._pages:
+            _, idx, _ = self._pages["home"]
+            self.stack.setCurrentIndex(idx)
+
     def go_home(self):
         self.show_page("home")
 
