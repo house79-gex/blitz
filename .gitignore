@@ -54,3 +54,5 @@ htmlcov/
 .coverage
 .coverage.*
 .pytest_cache/
+# Auto-generated template files
+qt6_app/data/wysiwyg_templates/*.json
