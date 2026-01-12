@@ -1251,13 +1251,12 @@ class SemiAutoPage(QWidget):
         emg = bool(getattr(self.machine, "emergency_active", False))
         mov = self.mio.is_positioning_active() if self.mio else bool(getattr(self.machine, "positioning_active", False))
         
-        # Enable/disable Start button
+        # Enable/disable buttons based on machine state
         try:
             self.btn_start.setEnabled(homed and not emg and not mov)
         except Exception:
             pass
         
-        # Enable/disable Brake button
         brk = bool(getattr(self.machine, "brake_active", False))
         try:
             self.btn_brake.setEnabled(homed and not emg and not mov)
@@ -1265,43 +1264,26 @@ class SemiAutoPage(QWidget):
         except Exception:
             pass
         
-        # Disable input fields during movement to prevent changes mid-operation
-        # Each widget is wrapped in try-except for graceful degradation if widget doesn't exist
-        inputs_enabled = not mov
+        # Disable/enable input widgets during movement
+        # This prevents user from changing parameters while machine is moving
+        input_enabled = not mov
         try:
-            self.ext_len.setEnabled(inputs_enabled)
+            self.ext_len.setEnabled(input_enabled)
         except Exception:
             pass
+        
         try:
-            self.thickness.setEnabled(inputs_enabled)
+            self.spin_sx.setEnabled(input_enabled)
         except Exception:
             pass
+        
         try:
-            self.cb_profilo.setEnabled(inputs_enabled)
+            self.spin_dx.setEnabled(input_enabled)
         except Exception:
             pass
+        
         try:
-            self.spin_sx.setEnabled(inputs_enabled)
-        except Exception:
-            pass
-        try:
-            self.spin_dx.setEnabled(inputs_enabled)
-        except Exception:
-            pass
-        try:
-            self.btn_sx_45.setEnabled(inputs_enabled)
-        except Exception:
-            pass
-        try:
-            self.btn_sx_0.setEnabled(inputs_enabled)
-        except Exception:
-            pass
-        try:
-            self.btn_dx_0.setEnabled(inputs_enabled)
-        except Exception:
-            pass
-        try:
-            self.btn_dx_45.setEnabled(inputs_enabled)
+            self.thickness.setEnabled(input_enabled)
         except Exception:
             pass
 
