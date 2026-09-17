@@ -62,7 +62,55 @@ Non collegare A/B a VCC. Non portare i 12 V sui GPIO. Alimentare gli encoder da 
 
 - `head_encoders.interface` = `gpio` (default in `data/hardware_config.json`)
 - `HeadAngleGpioService` decodifica A/B su GPIO 5/6 (SX) e 19/26 (DX)
-- `HeadsView` in Semi-automatico ruota le teste sull’angolo **misurato** se l’encoder è online
-- Pulsanti **Azzera enc.** in Semi-automatico, con la testa meccanicamente a 0°
+- `HeadsView` in Semi-automatico ruota le teste sull’angolo **comandato**; la misura encoder è in etichetta
+- Finecorsa 0° su IN4/IN5: in **homing** si va a 0°, si attende l’assestamento, si azzerano gli encoder (carro + teste in un colpo)
 
 Quadratura x4: 600 P/R → 2400 conteggi/giro → 0,15° se il rapporto meccanico è 1:1. Se il verso è invertito, `invert_sx` / `invert_dx`. Se c’è un offset meccanico, `zero_offset_*_deg`.
+
+## Zero 0°: pistone 0°/45° e dove mettere il sensore
+
+Le teste non sono un asse analogico: un pistone pneumatico le porta da un fermo all’altro (0° e 45°). I due blocchi meccanici **sono gli stop**. L’encoder incrementale serve a misurare; lo zero software sta solo sul lato 0°.
+
+**Che sensore usare**
+
+| Tipo | In questa macchina |
+|------|---------------------|
+| Induttivo M12 NPN NO 24 V (sn 4 mm, come FC_MIN) | **Sì — questa è la scelta** |
+| Microswitch a leva | No: truciolo, olio, urto sul fermo lo distruggono |
+| Capacitivo | No: alluminio, olio e polvere lo fanno scattare a vuoto |
+| Magnetico/reed | Accettabile solo se non trovi spazio per l’induttivo |
+
+Un solo sensore per testa, **solo a 0°**. A 45° il fermo meccanico basta: dopo lo zero a 0° l’encoder (o il comando 45°) dice già dov’è. Un secondo FC a 45° serve solo se un giorno vuoi l’interblocco «non tagliare se non è seduta».
+
+**Dove posizionarlo**
+
+Fisso sul telaio, **di fianco al fermo 0°**, non sul pistone e non come paraurti sul blocco.
+
+```
+  [testa ruota 45° → 0°]
+       bandiera in acciaio ──►  (induttivo M12 sul telaio)
+                                      gap 1–2 mm
+       blocco meccanico 0°  ◄── la testa ci arriva e si ferma
+```
+
+- Bandiera (lamierino 2–3 mm) sul corpo testa, o la fusione se è ferrosa.
+- Traferro 1–2 mm con M12 sn 4 mm; a testa **seduta sul fermo 0°** la faccia del sensore deve essere ben coperta (segnale pieno ON, non sul filo).
+- Allinea così: a 45° il sensore è sicuramente OFF; durante gli ultimi gradi verso 0° può già andare ON. **Va bene.** Non inseguire il millimetro del fermo.
+- Non mettere il sensore sul fermo come cosa da urtare. Il pistone deve battere sul blocco meccanico, il sensore guarda la bandiera da lato.
+
+**Perché un ritardo (e non lo zero al contatto)**
+
+Se il FC scatta 5–15° prima, il pistone sta ancora spingendo. Azzzerare lì darebbe 0° troppo presto, poi l’encoder salirebbe di quei gradi contro il blocco.
+
+Questo ritardo sta **nell’homing** (un colpo: teste a 0° + carro), non a ogni movimento in Semi-automatico:
+
+1. comando 0° (impulso EV);
+2. FC ON e encoder fermo per `settle_ms` (400 ms);
+3. azzera gli encoder;
+4. homing carro.
+
+I pulsanti **Azzera enc.** restano solo per taratura a banco. Futuro angolo continuo: `docs/HEAD_TILT_ACTUATORS.md`.
+
+Cablaggio: +24 V F1, 0 V, uscita NPN su **IN4 SX / IN5 DX**. Sensori: LR12-04N1 (M12 NPN NO 4 mm) + bandiera acciaio.
+
+Configurazione: `head_home_fc` (`settle_ms`, `homing_timeout_s`). `auto_zero` resta false.

@@ -33,6 +33,8 @@ Sensori,T91,FC_MAX,24V,Sensore → IN2 Mod#1,Microswitch NA
 Sensori,T92,EMERG Stato,24V,Contatto aux → IN3 Mod#1,1=OK 0=EMERG
 Sensori,T93,CNT SX,24V,Micro NC → IN1 Mod#2,Conteggio su apertura (debounce)
 Sensori,T94,CNT DX,24V,Micro NC → IN2 Mod#2,Conteggio su apertura (debounce)
+Sensori,T95,FC_HEAD_SX_0,24V,Induttivo NPN NO → IN4 Mod#1,Testa SX sul blocco 0°
+Sensori,T96,FC_HEAD_DX_0,24V,Induttivo NPN NO → IN5 Mod#1,Testa DX sul blocco 0°
 Bus,T100,RS485 A,RS485,RPi→Mod#1→Mod#2→Ard SX→Ard DX,Terminare ultimo nodo
 Bus,T101,RS485 B,RS485,RPi→Mod#1→Mod#2→Ard SX→Ard DX,
 Driver,T110,PWM/DIR/EN,GPIO,RPi ↔ MD25HV,GPIO 12/13/16

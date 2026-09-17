@@ -45,6 +45,7 @@ Canalette 40x40: laterali SX/DX e orizzontali per ogni zona. Guide DIN allineate
 - Conteggio pezzi SX/DX (microswitch NC) → IN digitali (conteggio su fronte di apertura con debounce software).
 - Stato emergenza (contatto ausiliario NO consigliato) → IN digitale (solo supervisione).
 - Angolo teste: encoder incrementali AB NPN 600 P/R → cavo schermato → AL-ZARD 12→3,3 V → GPIO 5/6 e 19/26.
+- Finecorsa 0° teste (induttivo NPN NO sul blocco meccanico) → IN4 SX / IN5 DX modulo I/O #1.
 
 3) Logiche operative
 
@@ -72,7 +73,9 @@ Modulo I/O + Relè #1 (ID 1) — Inclinazioni / Lame / Sicurezze
   - IN1: FC_MIN (NPN NO)
   - IN2: FC_MAX (Microswitch NA)
   - IN3: Stato EMERG (NO → 1=OK, 0=EMERG)
-  - IN4–IN8: riserva
+  - IN4: FC_HEAD_SX_0 (induttivo NPN NO, blocco 0°)
+  - IN5: FC_HEAD_DX_0 (induttivo NPN NO, blocco 0°)
+  - IN6–IN8: riserva
 - OUT (relè):
   - OUT1: Testa SX 45° (bobina A)
   - OUT2: Testa SX 0°  (bobina B)
@@ -163,6 +166,7 @@ Comando software:
 - Incrementale AB NPN 600 P/R, 12 V (5–24 V), albero 6 mm
 - Cavo schermato FR2OHH2R 6×0,50 → secondo AL-ZARD 12→3,3 V → GPIO 5/6 (SX) e 19/26 (DX)
 - Quadratura x4: 2400 conteggi/giro (0,15° se 1:1)
+- Zero: due induttivi NPN NO lato fermo 0° → IN4/IN5; azzeramento a testa ferma (ritardo), non al primo contatto
 
 ---
 
@@ -177,7 +181,9 @@ Comando software:
   - Indirizzo 0: IN1 (FC_MIN)
   - Indirizzo 1: IN2 (FC_MAX)
   - Indirizzo 2: IN3 (EMERG Stato)
-  - Indirizzi 3–7: IN4–IN8 (riserva)
+  - Indirizzo 3: IN4 (FC_HEAD_SX_0)
+  - Indirizzo 4: IN5 (FC_HEAD_DX_0)
+  - Indirizzi 5–7: IN6–IN8 (riserva)
 - Coils (Uscite relè):
   - Indirizzo 0: OUT1 (Testa SX 45°)
   - Indirizzo 1: OUT2 (Testa SX 0°)

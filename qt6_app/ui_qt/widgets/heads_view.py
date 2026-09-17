@@ -213,6 +213,9 @@ class HeadsView(QFrame):
                     meas = None
             if meas is not None:
                 suffix = f"  mis.{meas:.1f}°"
+            fc_key = "head_fc_zero_sx" if outward_left else "head_fc_zero_dx"
+            if st.get(fc_key):
+                suffix += " FC0°"
             p.drawText(int(text_x), int(text_y), f"{angle_deg:.1f}°{suffix}")
 
             p.restore()
@@ -221,5 +224,8 @@ class HeadsView(QFrame):
         draw_head(x_dx, ang_dx, outward_left=False, color="#9b59b6", measured=dx_meas)
 
         hint = "Encoder inclinazione online" if (sx_meas or dx_meas) else "Angolo comandato (encoder non in lettura)"
+        st_all = self._state_dict()
+        if st_all.get("head_fc_zero_sx") or st_all.get("head_fc_zero_dx"):
+            hint += " — FC 0° attivo"
         p.setPen(QPen(QColor("#7f8c8d")))
         p.drawText(int(left_margin), int(min(h - 8, base_y + 22)), hint)

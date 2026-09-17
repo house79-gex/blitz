@@ -49,8 +49,16 @@ class SimulationMachine(MachineIO):
         self._inputs:  Dict[str, bool] = {
             "blade_pulse": False,
             "start_pressed":  False,
-            "dx_blade_out": False
+            "dx_blade_out": False,
+            "head_sx_zero": False,
+            "head_dx_zero": False,
         }
+        from ..hardware.head_home_fc import HeadHomeLimitHelper
+        self._head_home = HeadHomeLimitHelper(
+            zero_fn=None,
+            auto_zero=False,
+            settle_ms=0,
+        )
 
         self._last_tick = time.time()
 
@@ -173,6 +181,8 @@ class SimulationMachine(MachineIO):
                 return
             self.homing_in_progress = True
             self._moving = False
+            self.command_set_head_angles(0.0, 0.0)
+            self.command_zero_head_encoder("both")
             time.sleep(0.6)
             self. encoder_position = self.min_distance
             self._target = self. min_distance
@@ -202,8 +212,15 @@ class SimulationMachine(MachineIO):
                 else:
                     self.encoder_position += max(-step, dist)
 
-        for key in list(self._inputs.keys()):
+        for key in ("blade_pulse", "start_pressed", "dx_blade_out"):
             self._inputs[key] = False
+
+        # Blocco meccanico 0°: il FC è attivo con la testa appoggiata
+        sx_fc = abs(float(self.left_head_angle)) < 0.5
+        dx_fc = abs(float(self.right_head_angle)) < 0.5
+        self._inputs["head_sx_zero"] = sx_fc
+        self._inputs["head_dx_zero"] = dx_fc
+        self._head_home.update(sx_fc, dx_fc)
 
         # In simulazione la misura encoder segue il comando (nessun ritardo)
         self.measured_left_head_angle = self.left_head_angle
@@ -230,6 +247,8 @@ class SimulationMachine(MachineIO):
             "head_encoder_online": True,
             "head_encoder_online_sx": True,
             "head_encoder_online_dx": True,
+            "head_fc_zero_sx": bool(self._head_home.active_sx),
+            "head_fc_zero_dx": bool(self._head_home.active_dx),
         }
 
     def close(self) -> None:

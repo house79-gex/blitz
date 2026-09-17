@@ -286,7 +286,9 @@ class SemiAutoPage(QWidget):
         sx_row.addWidget(self.btn_sx_45)
         sx_row.addWidget(self.btn_sx_0)
         self.btn_sx_zero_enc = QPushButton("Azzera enc.")
-        self.btn_sx_zero_enc.setToolTip("Azzera encoder inclinazione SX (testa meccanicamente a 0°)")
+        self.btn_sx_zero_enc.setToolTip(
+            "Azzera encoder SX a mano. In macchina lo zero teste è nell'homing (Azzera)."
+        )
         self.btn_sx_zero_enc.clicked.connect(lambda: self._zero_head_encoder("sx"))
         sx_row.addWidget(self.btn_sx_zero_enc)
         sx_row.addWidget(self.spin_sx)
@@ -317,7 +319,9 @@ class SemiAutoPage(QWidget):
         dx_row.addWidget(self.btn_dx_0)
         dx_row.addWidget(self.btn_dx_45)
         self.btn_dx_zero_enc = QPushButton("Azzera enc.")
-        self.btn_dx_zero_enc.setToolTip("Azzera encoder inclinazione DX (testa meccanicamente a 0°)")
+        self.btn_dx_zero_enc.setToolTip(
+            "Azzera encoder DX a mano. In macchina lo zero teste è nell'homing (Azzera)."
+        )
         self.btn_dx_zero_enc.clicked.connect(lambda: self._zero_head_encoder("dx"))
         dx_row.addWidget(self.btn_dx_zero_enc)
         dx_lay.addLayout(dx_row)
@@ -779,7 +783,7 @@ class SemiAutoPage(QWidget):
             self._apply_angles()
             self._show_info(f"Encoder testa {side.upper()} azzerato.", auto_hide_ms=2000)
         else:
-            self._show_warn("Azzeramento encoder non disponibile (nodo RS485?).", auto_hide_ms=2500)
+            self._show_warn("Azzeramento encoder non disponibile.", auto_hide_ms=2500)
         try:
             self.heads.refresh()
         except Exception:
@@ -1246,10 +1250,19 @@ class SemiAutoPage(QWidget):
             logger.error(f"Error starting homing: {e}")
             self._show_warn(f"Errore azzeramento: {e}", auto_hide_ms=2500)
     
-    def _on_homing_complete(self):
-        """Callback when homing completes."""
-        self._show_info("✅ Azzeramento completato", auto_hide_ms=2000)
-        logger.info("Homing completed")
+    def _on_homing_complete(self, success: bool = True, msg: str = ""):
+        """Callback a fine homing (carro + teste a 0°)."""
+        if success:
+            self.spin_sx.blockSignals(True)
+            self.spin_dx.blockSignals(True)
+            self.spin_sx.setValue(0.0)
+            self.spin_dx.setValue(0.0)
+            self.spin_sx.blockSignals(False)
+            self.spin_dx.blockSignals(False)
+            self._show_info("✅ Azzeramento completato (carro e teste)", auto_hide_ms=2000)
+        else:
+            self._show_warn(f"Homing non riuscito: {msg or 'errore'}", auto_hide_ms=2500)
+        logger.info("Homing completed: success=%s msg=%s", success, msg)
 
     # ---------- Poll ----------
     def _start_poll(self):

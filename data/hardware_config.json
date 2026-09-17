@@ -51,7 +51,9 @@
       "inputs": {
         "IN1": "FC_MIN (finecorsa minimo, NPN NO, homing)",
         "IN2": "FC_MAX (finecorsa massimo, microswitch NA)",
-        "IN3": "EMERGENZA (1=OK, 0=EMERGENZA attiva)"
+        "IN3": "EMERGENZA (1=OK, 0=EMERGENZA attiva)",
+        "IN4": "FC_HEAD_SX_0 (induttivo NPN NO, testa SX sul blocco 0°)",
+        "IN5": "FC_HEAD_DX_0 (induttivo NPN NO, testa DX sul blocco 0°)"
       },
       "outputs": {
         "OUT1": "Inclinazione SX 45° (impulso EV)",
@@ -122,7 +124,55 @@
       "AL-ZARD: anodo comune, 12 V su tutti i +, A/B encoder sui −, VCC uscita = 3,3 V",
       "Azzera gli encoder con la testa meccanicamente a 0° (Semi-automatico)",
       "Verde=A, Bianco=B, Rosso=Vcc, Nero=GND",
+      "Zero: induttivo NPN NO lato fermo 0° (IN4 SX, IN5 DX); azzera a testa ferma, non al primo contatto",
       "Documentazione: docs/HEAD_ENCODERS.md"
+    ]
+  },
+
+  "head_home_fc": {
+    "description": "Finecorsa 0° teste sul blocco meccanico (homing encoder incrementale)",
+    "enabled": true,
+    "auto_zero": false,
+    "module": 1,
+    "sx_input_index": 3,
+    "dx_input_index": 4,
+    "active_high": true,
+    "settle_ms": 400,
+    "stable_deg": 0.2,
+    "homing_timeout_s": 8.0,
+    "heads_required": false,
+    "notes": [
+      "Induttivo M12 NPN NO 24 V (es. LR12-04N1), bandiera acciaio lato fermo 0°",
+      "Lo zero encoder è nella procedura di homing, non a ogni passaggio sul FC",
+      "Può accendersi prima del blocco: homing attende settle_ms con angolo fermo",
+      "Modulo I/O #1 IN4 = SX, IN5 = DX (F1 24 V)"
+    ]
+  },
+
+  "head_tilt": {
+    "description": "Azionamento inclinazione teste",
+    "mode": "pneumatic_2pos",
+    "threshold_deg": 22.5,
+    "pulse_ms": 250,
+    "notes": [
+      "pneumatic_2pos: cilindri 0°/45° (OUT1–OUT4 modulo 1)",
+      "linear_actuator: futuro, vedi head_tilt_actuators e docs/HEAD_TILT_ACTUATORS.md"
+    ]
+  },
+
+  "head_tilt_actuators": {
+    "enabled": false,
+    "status": "scaffold",
+    "description": "Sostituzione futura dei cilindri con attuatori lineari (angolo continuo 0–45°)",
+    "stroke_mm": null,
+    "force_N": null,
+    "supply_v": 24,
+    "control": "tbd",
+    "feedback": "head_encoders",
+    "notes": [
+      "Stessi attacchi e stessa corsa dei cilindri attuali",
+      "La corsa non è lineare con i gradi: mappa mm→° o PID sull'encoder testa",
+      "Homing invariato: vai a 0°, FC + zero encoder, poi qualsiasi angolo"
     ]
   },
   
