@@ -105,3 +105,7 @@ class MachineAdapter:
             self._raw.close()
         except Exception:
             pass
+
+    def __getattr__(self, name: str):
+        """Espone gli attributi della macchina raw (angoli, freno, homing)."""
+        return getattr(self._raw, name)

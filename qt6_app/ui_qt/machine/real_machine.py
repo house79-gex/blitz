@@ -7,6 +7,20 @@ from typing import Dict, Any, Optional, List, Callable
 from ui_qt.machine.interfaces import MachineIO
 from ui_qt.machine.rs485_modbus import ModbusRTUClient
 
+# Mappa coils modulo 2 (ID=2) allineata allo schema elettrico
+COIL_B_MORSA_SX_CHIUDI = 0
+COIL_B_MORSA_SX_APRI = 1
+COIL_B_MORSA_DX_CHIUDI = 2
+COIL_B_MORSA_DX_APRI = 3
+COIL_B_FRENO_BLOCCO = 4   # OUT5 impulso
+COIL_B_FRENO_SBLOCCO = 5  # OUT6 impulso
+COIL_B_FRIZIONE = 6       # OUT7 hold
+
+# Inibizioni lama sul modulo 1 (ID=1)
+COIL_A_INIB_LAMA_SX = 4
+COIL_A_INIB_LAMA_DX = 5
+BRAKE_PULSE_S = 0.25
+
 # Import new hardware stack
 try:
     from ui_qt.hardware.md25hv_driver import MD25HVDriver
@@ -57,6 +71,8 @@ class RealMachine(MachineIO):
         self.machine_homed = False
         self.homing_in_progress = False
         self.emergency_active = False
+        self.brake_active = False
+        self.clutch_active = True
 
         # Angoli teste (comandati + misurati da encoder GPIO/AL-ZARD o RS485)
         self.left_head_angle = 0.0
@@ -249,21 +265,25 @@ class RealMachine(MachineIO):
                 if success:
                     self._target_mm = target_mm
                     self._moving = True
-                    self._write_coil_a(0, False)  # Release brake
+                    self.command_release_brake()
                 return success
             else:
                 # Legacy motion control
                 self._target_mm = target_mm
                 self._moving = True
-                self._write_coil_a(0, False)
+                self.command_release_brake()
                 return True
 
     def command_lock_brake(self) -> bool:
-        self._write_coil_a(0, True)
+        """Impulso BLOCCO sul freno bistabile (fine posizionamento)."""
+        self.brake_active = True
+        self._pulse_coil_b(COIL_B_FRENO_BLOCCO)
         return True
 
     def command_release_brake(self) -> bool:
-        self._write_coil_a(0, False)
+        """Impulso SBLOCCO prima di muovere il carro."""
+        self.brake_active = False
+        self._pulse_coil_b(COIL_B_FRENO_SBLOCCO)
         return True
 
     def command_set_clutch(self, active: bool) -> bool:
@@ -277,7 +297,8 @@ class RealMachine(MachineIO):
         Returns: 
             True se comando inviato
         """
-        self._write_coil_a(1, bool(active))
+        self._write_coil_b(COIL_B_FRIZIONE, bool(active))
+        self.clutch_active = bool(active)
         return True
 
     def command_set_head_angles(self, sx: float, dx: float) -> bool:
@@ -333,8 +354,10 @@ class RealMachine(MachineIO):
             print(f"🔧 Controllo morse: {mode_str}")
             
             if not self._software_morse_control_enabled:
-                self._write_coil_a(2, False)
-                self._write_coil_a(3, False)
+                self._write_coil_b(COIL_B_MORSA_SX_CHIUDI, False)
+                self._write_coil_b(COIL_B_MORSA_SX_APRI, False)
+                self._write_coil_b(COIL_B_MORSA_DX_CHIUDI, False)
+                self._write_coil_b(COIL_B_MORSA_DX_APRI, False)
 
     def command_set_morse(self, left_locked: bool, right_locked:  bool) -> bool:
         """
@@ -345,15 +368,17 @@ class RealMachine(MachineIO):
         if not self._software_morse_control_enabled: 
             return False
         
-        self._write_coil_a(2, bool(left_locked))
-        self._write_coil_a(3, bool(right_locked))
+        self._write_coil_b(COIL_B_MORSA_SX_CHIUDI, bool(left_locked))
+        self._write_coil_b(COIL_B_MORSA_SX_APRI, not bool(left_locked))
+        self._write_coil_b(COIL_B_MORSA_DX_CHIUDI, bool(right_locked))
+        self._write_coil_b(COIL_B_MORSA_DX_APRI, not bool(right_locked))
         return True
 
     def command_set_blade_inhibit(self, left: Optional[bool]=None, right: Optional[bool]=None) -> bool:
         if left is not None:
-            self._write_coil_b(0, bool(left))
+            self._write_coil_a(COIL_A_INIB_LAMA_SX, bool(left))
         if right is not None:
-            self._write_coil_b(1, bool(right))
+            self._write_coil_a(COIL_A_INIB_LAMA_DX, bool(right))
         return True
 
     def command_sim_cut_pulse(self) -> None:
@@ -381,7 +406,7 @@ class RealMachine(MachineIO):
                         self._position_mm = self.min_distance
                         self._target_mm = self.min_distance
                         self._moving = False
-                        self._write_coil_a(0, False)
+                        self.command_lock_brake()
                 if callback:
                     callback(success=success, msg=message)
             
@@ -403,7 +428,7 @@ class RealMachine(MachineIO):
                     self._moving = False
                     self.machine_homed = True
                     self.homing_in_progress = False
-                    self._write_coil_a(0, False)
+                    self.command_lock_brake()
                 if callback: callback(success=True, msg="HOMING OK")
             threading.Thread(target=seq, daemon=True).start()
 
@@ -426,7 +451,8 @@ class RealMachine(MachineIO):
         except Exception:
             pass
         
-        # Update position for legacy motion only (new stack manages position automatically)
+        # Aggiorna posizione e blocca il freno a fine corsa
+        was_moving = self._moving
         if not self.use_new_motion_stack:
             with self._lock:
                 if self._moving and self._target_mm is not None:
@@ -441,12 +467,14 @@ class RealMachine(MachineIO):
                         else:
                             self._position_mm -= step
         else:
-            # Update internal position from motion controller
             if self._motion_controller:
                 pos = self._motion_controller.get_position()
                 if pos is not None:
                     self._position_mm = pos
                 self._moving = self._motion_controller.is_moving()
+
+        if was_moving and not self._moving:
+            self.command_lock_brake()
 
         # Encoder inclinazione teste (GPIO/AL-ZARD o RS485)
         if self._head_encoders is not None:
@@ -465,12 +493,12 @@ class RealMachine(MachineIO):
             "target_mm": self._target_mm,
             "moving": self._moving,
             "homing_in_progress": self.homing_in_progress,
-            "brake_active": self._coils_a[0],
-            "clutch_active": self._coils_a[1],
-            "left_morse_locked": self._coils_a[2],
-            "right_morse_locked": self._coils_a[3],
-            "left_blade_inhibit": self._coils_b[0],
-            "right_blade_inhibit": self._coils_b[1],
+            "brake_active": self.brake_active,
+            "clutch_active": self.clutch_active,
+            "left_morse_locked": self._coils_b[COIL_B_MORSA_SX_CHIUDI],
+            "right_morse_locked": self._coils_b[COIL_B_MORSA_DX_CHIUDI],
+            "left_blade_inhibit": self._coils_a[COIL_A_INIB_LAMA_SX],
+            "right_blade_inhibit": self._coils_a[COIL_A_INIB_LAMA_DX],
             "emergency_active": self.emergency_active,
             "left_head_angle": self.left_head_angle,
             "right_head_angle": self.right_head_angle,
@@ -536,3 +564,13 @@ class RealMachine(MachineIO):
             self._client.write_coil(self.addr_b, address, bool(value))
         except Exception:
             pass
+
+    def _pulse_coil_b(self, address: int, duration_s: float = BRAKE_PULSE_S) -> None:
+        """Impulso relè (freno bistabile): ON e poi OFF dopo duration_s."""
+        self._write_coil_b(address, True)
+        def _off():
+            try:
+                self._write_coil_b(address, False)
+            except Exception:
+                pass
+        threading.Timer(max(0.05, float(duration_s)), _off).start()

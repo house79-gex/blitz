@@ -72,7 +72,9 @@ class HeadsView(QFrame):
     def _get_angle(self, left=True):
         """
         Restituisce (angolo_tilt_deg, da_encoder).
-        Priorità: misura encoder → head_angles.sx/dx → left/right_head_angle → attributo.
+        Il disegno segue sempre l'angolo comandato (0–45°), così i pulsanti
+        0°/45° orientano le teste anche se l'encoder non è in lettura.
+        La misura encoder, se online, resta visibile in etichetta.
         """
         st = self._state_dict()
         side = "sx" if left else "dx"
@@ -81,21 +83,21 @@ class HeadsView(QFrame):
         online_key = "head_encoder_online_sx" if left else "head_encoder_online_dx"
         online = bool(st.get(online_key) or st.get("head_encoder_online"))
 
-        if online and st.get(measured_key) is not None:
-            return normalize_head_tilt_deg(st.get(measured_key)), True
-
+        cmd = None
         ha = st.get("head_angles") if isinstance(st.get("head_angles"), dict) else {}
         if ha and ha.get(side) is not None:
-            return normalize_head_tilt_deg(ha.get(side)), False
+            cmd = ha.get(side)
+        elif cmd_key in st and st.get(cmd_key) is not None:
+            cmd = st.get(cmd_key)
+        else:
+            attr = "left_head_angle" if left else "right_head_angle"
+            try:
+                cmd = getattr(self.machine, attr, 0.0)
+            except Exception:
+                cmd = 0.0
 
-        if cmd_key in st and st.get(cmd_key) is not None:
-            return normalize_head_tilt_deg(st.get(cmd_key)), False
-
-        attr = "left_head_angle" if left else "right_head_angle"
-        try:
-            return normalize_head_tilt_deg(getattr(self.machine, attr, 0.0) or 0.0), False
-        except Exception:
-            return 0.0, False
+        measured = st.get(measured_key) if online else None
+        return normalize_head_tilt_deg(cmd), bool(online and measured is not None)
 
     def paintEvent(self, ev):
         p = QPainter(self)
@@ -200,7 +202,17 @@ class HeadsView(QFrame):
             p.setPen(QPen(QColor("#ecf0f1")))
             text_x = -body_w / 2 + 6 if outward_left else 6
             text_y = -body_h / 2 + 6
-            suffix = " enc" if measured else ""
+            suffix = ""
+            meas = None
+            st = self._state_dict()
+            mk = "measured_left_head_angle" if outward_left else "measured_right_head_angle"
+            if measured and st.get(mk) is not None:
+                try:
+                    meas = normalize_head_tilt_deg(st.get(mk))
+                except Exception:
+                    meas = None
+            if meas is not None:
+                suffix = f"  mis.{meas:.1f}°"
             p.drawText(int(text_x), int(text_y), f"{angle_deg:.1f}°{suffix}")
 
             p.restore()

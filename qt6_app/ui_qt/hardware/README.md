@@ -4,7 +4,7 @@ This directory contains the hardware abstraction layer for the BLITZ CNC motion 
 
 ## Overview
 
-The new motion control stack replaces the Leadshine DCS810 driver with a modular, software-controlled solution:
+The motion control stack uses Cytron MD25HV, AL-ZARD optocouplers and a software PID:
 
 - **MD25HV Motor Driver**: Cytron MD25HV for PWM-based DC motor control
 - **8AL-ZARD Encoder Reader**: ELTRA EH63D encoder with galvanic isolation
@@ -284,14 +284,12 @@ Interactive tool to calibrate the `pulses_per_mm` parameter by measuring actual 
 - **Maximum Speed**: 2500 mm/s (hardware limit)
 - **Update Latency**: <20ms (interrupt-driven)
 
-## Advantages over DCS810
+## Stack di movimento
 
-1. **Software Control**: Flexible PID tuning and motion profiles
-2. **Direct Integration**: No RS232 communication overhead
-3. **Better Diagnostics**: Real-time state monitoring and logging
-4. **Lower Cost**: Commodity hardware vs. proprietary driver
-5. **Easier Maintenance**: Standard components, open-source code
-6. **Enhanced Safety**: Software-based safety checks
+1. **Controllo PWM diretto** sul MD25HV
+2. **Encoder via GPIO** con isolamento AL-ZARD
+3. **PID software** tarabile
+4. **Diagnostica** in `get_state()`
 
 ## Future Enhancements
 

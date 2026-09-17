@@ -65,4 +65,4 @@ Non collegare A/B a VCC. Non portare i 12 V sui GPIO. Alimentare gli encoder da 
 - `HeadsView` in Semi-automatico ruota le teste sull’angolo **misurato** se l’encoder è online
 - Pulsanti **Azzera enc.** in Semi-automatico, con la testa meccanicamente a 0°
 
-Quadratura x4: 360 P/R → 1440 conteggi/giro → 0,25° se il rapporto meccanico è 1:1. Se il verso è invertito, `invert_sx` / `invert_dx`. Se c’è un offset meccanico, `zero_offset_*_deg`.
+Quadratura x4: 600 P/R → 2400 conteggi/giro → 0,15° se il rapporto meccanico è 1:1. Se il verso è invertito, `invert_sx` / `invert_dx`. Se c’è un offset meccanico, `zero_offset_*_deg`.

@@ -28,22 +28,20 @@ class FakePulseReader:
 
 
 def test_pulses_to_degrees_quarter_turn():
-    # 360 P/R × 4 = 1440 conteggi/giro → 360 conteggi = 90°
-    assert abs(pulses_to_degrees(360) - 90.0) < 1e-9
-    assert abs(pulses_to_degrees(180) - 45.0) < 1e-9
-    assert abs(pulses_to_degrees(1440) - 360.0) < 1e-9
+    # 600 P/R × 4 = 2400 conteggi/giro → 600 conteggi = 90°
+    assert abs(pulses_to_degrees(600) - 90.0) < 1e-9
+    assert abs(pulses_to_degrees(300) - 45.0) < 1e-9
+    assert abs(pulses_to_degrees(2400) - 360.0) < 1e-9
 
 
 def test_quadrature_forward_and_reverse():
     dec = QuadratureDecoder()
     dec.set_levels(0, 0)
-    # Sequenza in avanti: 00 → 10 → 11 → 01 → 00
     seq_fwd = [(True, 1, 0), (False, 1, 1), (True, 0, 1), (False, 0, 0)]
     for a_changed, a, b in seq_fwd:
         dec.feed(a_changed, a, b)
     assert dec.get_count() == 4
 
-    # Stessa sequenza al contrario: 00 → 01 → 11 → 10 → 00
     seq_rev = [(False, 0, 1), (True, 1, 1), (False, 1, 0), (True, 0, 0)]
     for a_changed, a, b in seq_rev:
         dec.feed(a_changed, a, b)
@@ -51,9 +49,9 @@ def test_quadrature_forward_and_reverse():
 
 
 def test_gpio_service_poll_and_zero():
-    sx = FakePulseReader(180)
-    dx = FakePulseReader(360)
-    svc = HeadAngleGpioService({"enabled": True}, sx_reader=sx, dx_reader=dx)
+    sx = FakePulseReader(300)
+    dx = FakePulseReader(600)
+    svc = HeadAngleGpioService({"enabled": True, "ppr": 600}, sx_reader=sx, dx_reader=dx)
     st = svc.poll()
     assert st["head_encoder_mode"] == "gpio"
     assert st["head_encoder_online"] is True
@@ -66,15 +64,14 @@ def test_gpio_service_poll_and_zero():
 
 
 def test_gpio_invert_and_offset():
-    sx = FakePulseReader(180)  # 45°
+    sx = FakePulseReader(300)
     dx = FakePulseReader(0)
     svc = HeadAngleGpioService(
-        {"enabled": True, "invert_sx": True, "zero_offset_sx_deg": 1.0},
+        {"enabled": True, "ppr": 600, "invert_sx": True, "zero_offset_sx_deg": 1.0},
         sx_reader=sx,
         dx_reader=dx,
     )
     st = svc.poll()
-    # 45°, invert → -45, offset +1 → -44
     assert abs(st["measured_left_head_angle"] - (-44.0)) < 0.01
 
 

@@ -2,8 +2,8 @@ Gruppo,Morsetto,Segnale/Linea,Tensione,Da → A,Note
 AC IN,T1,L (fase),230VAC,Ingresso → Sezionatore/MT,In alto SX
 AC IN,T2,N (neutro),230VAC,Ingresso → Sezionatore/MT,
 AC IN,T3,PE (terra),PE,Ingresso → Barra PE,
-DC 48V,T10,+48V,48V,TDR-960 → DCS810,Potenza
-DC 48V,T11,0V,48V,TDR-960 → DCS810,Ritorno
+DC 48V,T10,+48V,48V,TDR-960 → MD25HV,Potenza
+DC 48V,T11,0V,48V,TDR-960 → MD25HV,Ritorno
 DC 24V,T20,+24V F1 (I/O),24V,F1 → Moduli I/O,Alimentazione logica campo
 DC 24V,T21,+24V F2 (EV SX),24V,F2 → EV Testa SX,Comune bobine SX
 DC 24V,T22,+24V F3 (EV DX),24V,F3 → EV Testa DX,Comune bobine DX
@@ -35,6 +35,6 @@ Sensori,T93,CNT SX,24V,Micro NC → IN1 Mod#2,Conteggio su apertura (debounce)
 Sensori,T94,CNT DX,24V,Micro NC → IN2 Mod#2,Conteggio su apertura (debounce)
 Bus,T100,RS485 A,RS485,RPi→Mod#1→Mod#2→Ard SX→Ard DX,Terminare ultimo nodo
 Bus,T101,RS485 B,RS485,RPi→Mod#1→Mod#2→Ard SX→Ard DX,
-Driver,T110,RS232 TX/RX/GND,RS232,RPi ↔ DCS810,Cavo schermato
-Encoder motore,T120,A+/A−/B+/B−/V/G,TTL/5V,ELTRA ↔ DCS810,Schermato; calza a PE lato driver
+Driver,T110,PWM/DIR/EN,GPIO,RPi ↔ MD25HV,GPIO 12/13/16
+Encoder motore,T120,A/B/Z/12V/GND,NPN 12V,ELTRA → AL-ZARD → Pi,Schermato; calza a PE quadro
 PE,T200,PE Schermi,PE,Schermi cavi → Barra PE,Un solo lato (quadro)

@@ -2028,6 +2028,8 @@ class AutomaticoPage(QWidget):
         self._update_counters_ui(); self._update_quota_label(); self._update_cycle_state_label()
 
     def _tick(self):
+        if self.mio:
+            self.mio.tick()
         # Aggiorna stato freno e movimento
         self._refresh_brake_flag()
         moving = self.mio.is_positioning_active() if self.mio else bool(getattr(self.machine,"positioning_active",False))
@@ -2064,8 +2066,6 @@ class AutomaticoPage(QWidget):
         self._update_counters_ui()
         self._update_cycle_state_label()
 
-        if self.mio:
-            self.mio.tick()
         if self.status:
             with contextlib.suppress(Exception): self.status.refresh()
 

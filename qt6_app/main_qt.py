@@ -319,7 +319,8 @@ class BlitzMainWindow(QMainWindow):
             self.add_page(key, cls(self))
             logger.info(f"Page loaded: {key} ({mod_name}.{cls_name})")
         except Exception as e:
-            logger.error(f"Error loading page '{key}': {e}")
+            logger.exception(f"Error loading page '{key}': {e}")
+            print(f"[STARTUP] Pagina '{key}' non caricata: {e}")
 
     def resolve_page_key(self, key: str) -> str:
         if key in self._pages:
@@ -333,10 +334,8 @@ class BlitzMainWindow(QMainWindow):
     def show_page(self, key: str):
         resolved = self.resolve_page_key(key)
         if not resolved:
-            logger.warning(f"Attempted to open non-existent page: {key}")
-            # Fallback to home if available
-            if "home" in self._pages:
-                self.stack.setCurrentIndex(self._pages["home"][1])
+            logger.warning(f"Pagina non disponibile: {key}")
+            self.show_toast(f"Pagina '{key}' non disponibile", "error")
             return
 
         wrapper, idx, page = self._pages[resolved]

@@ -22,19 +22,19 @@ def test_heads_view_reads_left_right_from_state(qapp, mock_machine):
     assert dx_meas is False
 
 
-def test_heads_view_prefers_measured_when_online(qapp):
+def test_heads_view_prefers_commanded_when_encoder_online(qapp):
     class _M:
         min_distance = 250.0
         max_cut_length = 4000.0
-        left_head_angle = 0.0
-        right_head_angle = 0.0
+        left_head_angle = 45.0
+        right_head_angle = 22.5
 
         def get_state(self):
             return {
-                "left_head_angle": 0.0,
-                "right_head_angle": 0.0,
-                "measured_left_head_angle": 44.75,
-                "measured_right_head_angle": 10.0,
+                "left_head_angle": 45.0,
+                "right_head_angle": 22.5,
+                "measured_left_head_angle": 0.0,
+                "measured_right_head_angle": 0.0,
                 "head_encoder_online": True,
                 "head_encoder_online_sx": True,
                 "head_encoder_online_dx": True,
@@ -46,7 +46,7 @@ def test_heads_view_prefers_measured_when_online(qapp):
     view = HeadsView(_M())
     sx, sx_meas = view._get_angle(left=True)
     dx, dx_meas = view._get_angle(left=False)
-    assert sx == 44.75
-    assert dx == 10.0
+    assert sx == 45.0
+    assert dx == 22.5
     assert sx_meas is True
     assert dx_meas is True

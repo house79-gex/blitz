@@ -6,7 +6,7 @@ Questo firmware serve solo se `head_encoders.interface` è `modbus`.
 
 ## Encoder
 
-Incrementale AB NPN, 360 P/R (x4 = 1440 conteggi/giro → 0,25° se 1:1).
+Incrementale AB NPN, 600 P/R (x4 = 2400 conteggi/giro → 0,15° se 1:1).
 
 | Filo | Segnale |
 |------|---------|

@@ -180,6 +180,7 @@ class SimulationMachine(MachineIO):
             self. clutch_active = True
             self.machine_homed = True
             self.homing_in_progress = False
+            self.command_lock_brake()
             if callback: callback(success=True, msg="HOMING OK")
         threading.Thread(target=seq, daemon=True).start()
 
@@ -193,6 +194,7 @@ class SimulationMachine(MachineIO):
             if abs(dist) < 1.0:
                 self.encoder_position = self._target
                 self._moving = False
+                self.command_lock_brake()
             else:
                 step = self.speed_mm_s * dt
                 if dist > 0:

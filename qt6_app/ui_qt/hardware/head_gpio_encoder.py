@@ -21,7 +21,7 @@ except ImportError:
     PIGPIO_AVAILABLE = False
 
 
-def pulses_to_degrees(pulses: int, ppr: int = 360, quadrature: int = 4) -> float:
+def pulses_to_degrees(pulses: int, ppr: int = 600, quadrature: int = 4) -> float:
     """Converte conteggi quadratura in gradi (1:1 con l'asse testa)."""
     denom = max(1, int(ppr) * int(quadrature))
     return (float(pulses) / float(denom)) * 360.0
@@ -181,7 +181,7 @@ class HeadAngleGpioService:
         cfg = dict(config or {})
         gpio_cfg = dict(cfg.get("gpio") or {})
         self.enabled = bool(cfg.get("enabled", True))
-        self.ppr = int(cfg.get("ppr", 360))
+        self.ppr = int(cfg.get("ppr", 600))
         self.quadrature = int(cfg.get("quadrature", 4))
         self.zero_offset_sx = float(cfg.get("zero_offset_sx_deg", 0.0))
         self.zero_offset_dx = float(cfg.get("zero_offset_dx_deg", 0.0))

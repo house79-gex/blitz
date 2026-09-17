@@ -13,10 +13,10 @@ OUTPUTS_DIR = SCRIPT_DIR.parent / "outputs"
 
 CSV_MORSETTI = TABLES_DIR / "tabella_morsetti_blitz.csv"
 CSV_MODBUS = TABLES_DIR / "mappa_io_modbus_blitz.csv"
-CSV_DRIVER = TABLES_DIR / "morsetti_driver_dcs810.csv"
+CSV_DRIVER = TABLES_DIR / "morsetti_driver_md25hv.csv"
 PDF_MORSETTI = OUTPUTS_DIR / "pdf_morsetti_blitz.pdf"
 PDF_MODBUS = OUTPUTS_DIR / "pdf_mappa_io_modbus_blitz.pdf"
-PDF_DRIVER = OUTPUTS_DIR / "pdf_morsetti_driver_dcs810.pdf"
+PDF_DRIVER = OUTPUTS_DIR / "pdf_morsetti_driver_md25hv.pdf"
 PDF_LISTA = OUTPUTS_DIR / "pdf_lista_componenti_fusibili.pdf"
 
 styles = getSampleStyleSheet()
@@ -69,7 +69,7 @@ def build_pdf_lista_componenti(pdf_path):
         ["Alimentatore 24V", "Mean Well SDR-240-24", "24V DC EV/I/O", "Ramo con fusibili F1..F4"],
         ["Alimentatore 12V", "Mean Well SDR-120-12", "12V ausiliari", "Servizi vari"],
         ["Alimentatore 5V", "Mean Well MDR-10-5", "Arduino/ESP32", "RPi su PSU originale 230V"],
-        ["Driver motore", "Leadshine DCS810", "Servo/DC 48V", "Comando RS232; encoder ELTRA"],
+        ["Driver motore", "Cytron MD25HV", "DC 48V PWM", "GPIO 12/13/16; encoder ELTRA via AL-ZARD"],
         ["Moduli I/O+Relè", "Waveshare 8IN/8OUT (x2)", "I/O campo e relè", "Modbus RTU RS485 (ID 1 e 2)"],
         ["Raspberry Pi 5", "RPi 5 + Waveshare USB 4CH", "Supervisione e logica", "HDMI e USB lato DX"],
         ["Arduino Nano", "Nano + MAX485 + MT6701 (x2)", "Angolo teste SX/DX", "SPI locale, RS485 quadro"],
@@ -118,7 +118,7 @@ def main():
                     col_widths=[20*mm, 20*mm, 45*mm, 20*mm, 55*mm, 20*mm])
     build_pdf_table("Mappa I/O Modbus — Blitz retrofit", CSV_MODBUS, PDF_MODBUS,
                     col_widths=[35*mm, 20*mm, 15*mm, 25*mm, 20*mm, 55*mm, 25*mm, 35*mm])
-    build_pdf_table("Morsetti Driver DCS810", CSV_DRIVER, PDF_DRIVER,
+    build_pdf_table("Morsetti Driver MD25HV", CSV_DRIVER, PDF_DRIVER,
                     col_widths=[35*mm, 30*mm, 30*mm, 60*mm, 30*mm])
     build_pdf_lista_componenti(PDF_LISTA)
     print(f"Creati:\n - {PDF_MORSETTI}\n - {PDF_MODBUS}\n - {PDF_DRIVER}\n - {PDF_LISTA}")

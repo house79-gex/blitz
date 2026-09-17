@@ -6,6 +6,7 @@ import time
 import contextlib
 
 DEFAULT_DB_CANDIDATES = [
+    Path(__file__).resolve().parents[3] / "data" / "typologies.db",
     Path(__file__).resolve().parents[2] / "data" / "typologies.db",
     Path.cwd() / "data" / "typologies.db",
     Path.home() / "blitz" / "typologies.db",

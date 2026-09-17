@@ -73,8 +73,9 @@
         "OUT2": "Morsa SX APRI (inibibile via NC hardware)",
         "OUT3": "Morsa DX CHIUDI (solo modalità SW autorizzata)",
         "OUT4": "Morsa DX APRI (inibibile via NC hardware)",
-        "OUT5": "Frizione (EV 24V)",
-        "OUT6": "Freno (EV 24V)"
+        "OUT5": "Freno BLOCCO (impulso EV bistabile)",
+        "OUT6": "Freno SBLOCCO (impulso EV bistabile)",
+        "OUT7": "Frizione (EV 24V hold)"
       }
     },
     "notes": [
@@ -93,7 +94,7 @@
     "combined_addr": 20,
     "sx_addr": 20,
     "dx_addr": 21,
-    "ppr": 360,
+    "ppr": 600,
     "quadrature": 4,
     "angle_scale": 100,
     "zero_offset_sx_deg": 0.0,
@@ -113,8 +114,8 @@
       ]
     },
     "notes": [
-      "Encoder: incrementale AB NPN 360 P/R, albero 6 mm, alimentazione 5-24 V",
-      "Quadratura x4: 1440 conteggi/giro → 0,25°/impulso se 1:1 con l'asse testa",
+      "Encoder: incrementale AB NPN 600 P/R, albero 6 mm, alimentazione 12 V (5-24 V)",
+      "Quadratura x4: 2400 conteggi/giro → 0,15°/impulso se 1:1 con l'asse testa",
       "interface=gpio: cavo schermato FR2OHH2R nel quadro, AL-ZARD, GPIO Pi — niente ESP32/RS485",
       "interface=modbus: alternativa ESP32+MAX485 (mode combined/split, slave 20/21)",
       "NPN open collector: NON collegare A/B a VCC né ai GPIO 3,3 V del Pi",
@@ -126,16 +127,10 @@
   },
   
   "rs232": {
-    "description": "Comunicazione seriale con driver motore Leadshine DCS810",
-    "enabled": true,
-    "port": "/dev/ttyUSB1",
-    "baudrate": 115200,
-    "driver_model": "DCS810",
-    "timeout_s": 1.0,
+    "description": "RS232 non usato: il carro è su Cytron MD25HV (PWM GPIO), non su seriale driver",
+    "enabled": false,
     "notes": [
-      "Cavo RS232 schermato, lunghezza max 15m",
-      "Comandi: movimento assoluto/relativo, lettura encoder, allarmi",
-      "Protocollo specifico: vedere manuale DCS810"
+      "Il movimento asse è PWM GPIO 12/13/16 + encoder ELTRA via AL-ZARD"
     ]
   },
   
@@ -169,7 +164,7 @@
   "hardware_info": {
     "description": "Informazioni componenti hardware installati",
     "raspberry_pi": "Raspberry Pi 5 (4GB RAM)",
-    "driver_motor": "Leadshine DCS810 (48V, 8A)",
+    "driver_motor": "Cytron MD25HV (48V, PWM GPIO)",
     "motor": "Servo/DC brushless (specifiche da verificare)",
     "encoder": "ELTRA EH63D.1B000S12N8X3PA (1000 PPR, NPN, 12V)",
     "io_modules": "Waveshare RS485 8IN/8OUT (x2)",
@@ -267,8 +262,8 @@
     },
     
     "replacement_info": {
-      "replaces": "Leadshine DCS810",
-      "reason": "Maggiore controllo software, costi ridotti, integrazione diretta",
+      "stack": "Cytron MD25HV + AL-ZARD + PID software",
+      "reason": "Controllo software sul Raspberry Pi, isolamento galvanico encoder",
       "advantages": [
         "Controllo PID software flessibile e tarabile",
         "Encoder lettura diretta via GPIO (no RS232)",

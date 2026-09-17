@@ -45,7 +45,7 @@ class HeadAngleEncoderService:
         self.zero_offset_dx = float(cfg.get("zero_offset_dx_deg", 0.0))
         self.invert_sx = bool(cfg.get("invert_sx", False))
         self.invert_dx = bool(cfg.get("invert_dx", False))
-        self.ppr = int(cfg.get("ppr", 360))
+        self.ppr = int(cfg.get("ppr", 600))
         self.quadrature = int(cfg.get("quadrature", 4))
 
         self.sx_deg: Optional[float] = None

@@ -21,7 +21,7 @@ def main():
         ["Alimentatore 24V", "Mean Well SDR-240-24", "24V DC EV/I/O", "Ramo con fusibili F1..F4"],
         ["Alimentatore 12V", "Mean Well SDR-120-12", "12V ausiliari", "Servizi vari"],
         ["Alimentatore 5V", "Mean Well MDR-10-5", "Arduino/ESP32", "RPi su PSU originale 230V"],
-        ["Driver motore", "Leadshine DCS810", "Servo/DC 48V", "Comando RS232; encoder ELTRA"],
+        ["Driver motore", "Cytron MD25HV", "DC 48V PWM", "GPIO 12/13/16; encoder ELTRA via AL-ZARD"],
         ["Moduli I/O+Relè", "Waveshare 8IN/8OUT (x2)", "I/O campo e relè", "Modbus RTU RS485 (ID 1 e 2)"],
         ["Raspberry Pi 5", "RPi 5 + Waveshare USB 4CH", "Supervisione e logica", "HDMI e USB lato DX"],
         ["Arduino Nano", "Nano + MAX485 + MT6701 (x2)", "Angolo teste SX/DX", "SPI locale, RS485 quadro"],
