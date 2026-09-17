@@ -3,7 +3,7 @@
 File di stato per chi riprende il lavoro. Aggiornare questa pagina a ogni intervento sostanziale.
 
 Ultimo aggiornamento: 2026-09-17  
-Branch: `cursor/integrate-cutlist-heads-encoders-5073`  
+Aggiunto `avvia_blitz.bat` per PC Windows (menu avvio / test / setup).  
 PR: https://github.com/house79-gex/blitz/pull/37
 
 ## Decisione hardware corrente
@@ -52,8 +52,21 @@ NPN e PNP **non** sono indifferenti: stesso modulo AL-ZARD, cablaggio diverso. L
 
 ## Come lanciare
 
+Su **Windows** (doppio click o da prompt, nella root del repo):
+
 ```
-SIMULATION=1 QT_QPA_PLATFORM=offscreen python3 qt6_app/main_qt.py
+avvia_blitz.bat
+avvia_blitz.bat avvia
+avvia_blitz.bat test
+avvia_blitz.bat setup
+```
+
+Lo script usa `.venv`, `requirements-windows.txt` e `SIMULATION=1`.
+
+Su Linux:
+
+```
+SIMULATION=1 python3 qt6_app/main_qt.py
 QT_QPA_PLATFORM=offscreen python3 -m pytest tests --ignore=tests/hardware/test_encoder_live.py --ignore=tests/hardware/test_motor_driver.py
 ```
 
