@@ -58,9 +58,12 @@ class RealMachine(MachineIO):
         self.homing_in_progress = False
         self.emergency_active = False
 
-        # Angoli teste
+        # Angoli teste (comandati + misurati da encoder RS485)
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
+        self.measured_left_head_angle = None
+        self.measured_right_head_angle = None
+        self._head_encoders = None
 
         # Tracking modalità per controllo morse
         self._software_morse_control_enabled = False
@@ -92,6 +95,20 @@ class RealMachine(MachineIO):
         self._last_poll = 0.0
         self._lock = threading.Lock()
         self._closed = False
+        self._init_head_encoders(config)
+
+    def _init_head_encoders(self, config: dict) -> None:
+        """Inizializza lettura encoder inclinazione teste via RS485."""
+        try:
+            from ui_qt.hardware.head_angle_encoder import HeadAngleEncoderService
+            enc_cfg = (config or {}).get("head_encoders") or {}
+            if not enc_cfg.get("enabled", False):
+                self._head_encoders = None
+                return
+            self._head_encoders = HeadAngleEncoderService(self._client, enc_cfg)
+        except Exception as e:
+            print(f"Warning: encoder inclinazione teste non disponibili: {e}")
+            self._head_encoders = None
 
     def _load_hardware_config(self) -> dict:
         """Load hardware configuration from JSON file."""
@@ -266,6 +283,12 @@ class RealMachine(MachineIO):
         self.right_head_angle = float(dx)
         return True
 
+    def command_zero_head_encoder(self, side: str = "both") -> bool:
+        """Azzera encoder inclinazione (testa meccanicamente a 0°)."""
+        if self._head_encoders is None:
+            return False
+        return bool(self._head_encoders.zero(side))
+
     def set_mode_context(self, mode: str, piece_length_mm: float = 0.0, 
                          bar_length_mm: float = 6500.0):
         """
@@ -423,6 +446,15 @@ class RealMachine(MachineIO):
                     self._position_mm = pos
                 self._moving = self._motion_controller.is_moving()
 
+        # Encoder inclinazione teste (stesso bus RS485)
+        if self._head_encoders is not None:
+            try:
+                enc_state = self._head_encoders.poll()
+                self.measured_left_head_angle = enc_state.get("measured_left_head_angle")
+                self.measured_right_head_angle = enc_state.get("measured_right_head_angle")
+            except Exception:
+                pass
+
     def get_state(self) -> Dict[str, Any]:
         """Get current machine state."""
         state = {
@@ -440,8 +472,12 @@ class RealMachine(MachineIO):
             "emergency_active": self.emergency_active,
             "left_head_angle": self.left_head_angle,
             "right_head_angle": self.right_head_angle,
+            "measured_left_head_angle": self.measured_left_head_angle,
+            "measured_right_head_angle": self.measured_right_head_angle,
             "motion_stack": "new" if self.use_new_motion_stack else "legacy"
         }
+        if self._head_encoders is not None:
+            state.update(self._head_encoders.as_state())
         
         # Add motion controller state if using new stack
         if self.use_new_motion_stack and self._motion_controller:

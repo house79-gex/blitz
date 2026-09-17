@@ -100,6 +100,10 @@ class MockMachine:
             'right_morse_locked': self.right_morse_locked,
             'left_blade_inhibit': self.left_blade_inhibit,
             'right_blade_inhibit': self.right_blade_inhibit,
+            'left_head_angle': self.left_head_angle,
+            'right_head_angle': self.right_head_angle,
+            'measured_left_head_angle': self.left_head_angle,
+            'measured_right_head_angle': self.right_head_angle,
         }
     
     def tick(self):
@@ -153,6 +157,13 @@ class MockMachineAdapter:
     def command_set_head_angles(self, sx: int, dx: int):
         self._machine.left_head_angle = sx
         self._machine.right_head_angle = dx
+        return True
+
+    def command_zero_head_encoder(self, side: str = "both"):
+        if side in ("sx", "both"):
+            self._machine.left_head_angle = 0
+        if side in ("dx", "both"):
+            self._machine.right_head_angle = 0
         return True
     
     def command_set_morse(self, left: bool, right: bool):

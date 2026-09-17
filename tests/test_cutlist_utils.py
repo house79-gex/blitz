@@ -134,6 +134,7 @@ class TestCutlistExporter:
     
     def test_excel_export(self, temp_dir, sample_pieces):
         """Test Excel export functionality."""
+        pytest.importorskip("openpyxl")
         xlsx_file = os.path.join(temp_dir, 'export.xlsx')
         
         results = {
@@ -151,6 +152,7 @@ class TestCutlistExporter:
     
     def test_pdf_export(self, temp_dir):
         """Test PDF export functionality."""
+        pytest.importorskip("reportlab")
         pdf_file = os.path.join(temp_dir, 'export.pdf')
         
         results = {
@@ -234,3 +236,28 @@ class TestProjectManager:
         assert 'created_at' in loaded
         assert 'modified_at' in loaded
         assert loaded['project_name'] == sample_project['project_name']
+
+
+class TestAutomaticoCutsConversion:
+    def test_from_simple_pieces(self, sample_pieces):
+        cuts = CutlistImporter.to_automatico_cuts(sample_pieces)
+        assert len(cuts) == 3
+        assert cuts[0]["length_mm"] == 1250
+        assert cuts[0]["qty"] == 5
+        assert cuts[0]["element"] == "Fermavetro A"
+        assert cuts[0]["profile"] == "IMPORT"
+        assert cuts[0]["ang_sx"] == 0.0
+
+    def test_from_cutlist_json_payload(self):
+        payload = {
+            "type": "cutlist",
+            "cuts": [
+                {"profile": "P1", "element": "Montante", "length_mm": 1400,
+                 "ang_sx": 45, "ang_dx": 0, "qty": 2, "note": ""}
+            ]
+        }
+        cuts = CutlistImporter.to_automatico_cuts(payload)
+        assert len(cuts) == 1
+        assert cuts[0]["profile"] == "P1"
+        assert cuts[0]["ang_sx"] == 45.0
+        assert cuts[0]["qty"] == 2

@@ -26,6 +26,8 @@ class SimulationMachine(MachineIO):
 
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
+        self.measured_left_head_angle = 0.0
+        self.measured_right_head_angle = 0.0
 
         self. brake_active = False
         self. clutch_active = True
@@ -75,6 +77,8 @@ class SimulationMachine(MachineIO):
         self._moving = True
         self. left_head_angle = float(ang_sx)
         self.right_head_angle = float(ang_dx)
+        self.measured_left_head_angle = float(ang_sx)
+        self.measured_right_head_angle = float(ang_dx)
         self.brake_active = False
         return True
 
@@ -94,6 +98,19 @@ class SimulationMachine(MachineIO):
     def command_set_head_angles(self, sx:  float, dx: float) -> bool:
         self.left_head_angle = float(sx)
         self.right_head_angle = float(dx)
+        self.measured_left_head_angle = float(sx)
+        self.measured_right_head_angle = float(dx)
+        return True
+
+    def command_zero_head_encoder(self, side: str = "both") -> bool:
+        """In simulazione l'azzeramento allinea la misura al comando 0°."""
+        side = (side or "both").lower()
+        if side in ("sx", "both"):
+            self.measured_left_head_angle = 0.0
+            self.left_head_angle = 0.0
+        if side in ("dx", "both"):
+            self.measured_right_head_angle = 0.0
+            self.right_head_angle = 0.0
         return True
 
     def set_mode_context(self, mode: str, piece_length_mm: float = 0.0, 
@@ -186,6 +203,10 @@ class SimulationMachine(MachineIO):
         for key in list(self._inputs.keys()):
             self._inputs[key] = False
 
+        # In simulazione la misura encoder segue il comando (nessun ritardo)
+        self.measured_left_head_angle = self.left_head_angle
+        self.measured_right_head_angle = self.right_head_angle
+
     def get_state(self) -> Dict[str, Any]:
         return {
             "homed":  self.machine_homed,
@@ -201,7 +222,12 @@ class SimulationMachine(MachineIO):
             "right_blade_inhibit": self.right_blade_inhibit,
             "emergency_active": self.emergency_active,
             "left_head_angle": self.left_head_angle,
-            "right_head_angle": self.right_head_angle
+            "right_head_angle": self.right_head_angle,
+            "measured_left_head_angle": self.measured_left_head_angle,
+            "measured_right_head_angle": self.measured_right_head_angle,
+            "head_encoder_online": True,
+            "head_encoder_online_sx": True,
+            "head_encoder_online_dx": True,
         }
 
     def close(self) -> None:

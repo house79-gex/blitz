@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QMessageBox, QAbstractItemView, QSizePolicy,
     QDialog, QFormLayout, QLineEdit, QComboBox, QDialogButtonBox, QCheckBox,
-    QToolTip, QListWidget
+    QToolTip, QListWidget, QFileDialog
 )
 from PySide6.QtGui import (
     QKeySequence, QShortcut, QBrush, QColor, QFont, QKeyEvent, QCursor
@@ -32,6 +32,8 @@ from ui_qt.logic.refiner import (
 )
 
 from ui_qt.services.profiles_store import ProfilesStore
+from ui_qt.utils.cutlist_importer import CutlistImporter
+from ui_qt.utils.cutlist_exporter import CutlistExporter
 
 # Metro Digitale integration
 from ui_qt.services.metro_digitale_manager import get_metro_manager
@@ -395,7 +397,9 @@ class AutomaticoPage(QWidget):
         root.addWidget(self.banner)
 
         top=QHBoxLayout()
-        btn_import=QPushButton("Importa…"); btn_import.clicked.connect(self._import_cutlist); top.addWidget(btn_import)
+        btn_import=QPushButton("Importa ordine…"); btn_import.clicked.connect(self._import_cutlist); top.addWidget(btn_import)
+        btn_import_file=QPushButton("Importa file…"); btn_import_file.clicked.connect(self._import_cutlist_file); top.addWidget(btn_import_file)
+        btn_export=QPushButton("Esporta lista…"); btn_export.clicked.connect(self._export_cutlist_file); top.addWidget(btn_export)
         btn_manual=QPushButton("Manuale"); btn_manual.clicked.connect(self._enter_manual_mode); top.addWidget(btn_manual)
         btn_opt=QPushButton("Ottimizza"); btn_opt.clicked.connect(self._on_optimize_clicked); top.addWidget(btn_opt)
         btn_cfg=QPushButton("Config. ottimizzazione…"); btn_cfg.clicked.connect(self._open_opt_config); top.addWidget(btn_cfg)
@@ -950,6 +954,94 @@ class AutomaticoPage(QWidget):
                 QMessageBox.information(self,"Importa","Lista vuota."); return
             self._load_cutlist(cuts)
 
+    def load_cutlist_from_cuts(self, cuts: List[Dict[str, Any]]) -> None:
+        """Carica una lista di taglio esterna (Quote Vani, import file, ecc.)."""
+        self._load_cutlist(list(cuts or []))
+        self._toast(f"Lista caricata: {len(cuts or [])} righe.", "ok")
+
+    def _collect_cuts_from_table(self) -> List[Dict[str, Any]]:
+        cuts: List[Dict[str, Any]] = []
+        if not self.tbl_cut:
+            return cuts
+        for r in range(self.tbl_cut.rowCount()):
+            if self._row_is_header(r):
+                continue
+            try:
+                prof = (self.tbl_cut.item(r, 1).text() if self.tbl_cut.item(r, 1) else "") or "IMPORT"
+                element = (self.tbl_cut.item(r, 2).text() if self.tbl_cut.item(r, 2) else "") or ""
+                L = float(self.tbl_cut.item(r, 3).text())
+                ax = float(self.tbl_cut.item(r, 4).text())
+                ad = float(self.tbl_cut.item(r, 5).text())
+                q = int(self.tbl_cut.item(r, 6).text())
+                note = (self.tbl_cut.item(r, 7).text() if self.tbl_cut.item(r, 7) else "") or ""
+            except Exception:
+                continue
+            if q > 0 and L > 0:
+                cuts.append({
+                    "profile": prof, "element": element, "length_mm": L,
+                    "ang_sx": ax, "ang_dx": ad, "qty": q, "note": note,
+                })
+        return cuts
+
+    def _import_cutlist_file(self):
+        """Importa cutlist da CSV/Excel/TXT/JSON e la carica nella tabella ciclo."""
+        path, selected = QFileDialog.getOpenFileName(
+            self,
+            "Importa lista di taglio",
+            "",
+            "Liste (*.csv *.xlsx *.xls *.txt *.json);;CSV (*.csv);;Excel (*.xlsx *.xls);;TXT (*.txt);;JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            lower = path.lower()
+            if lower.endswith(".json"):
+                import json
+                from pathlib import Path as _P
+                data = json.loads(_P(path).read_text(encoding="utf-8"))
+                cuts = CutlistImporter.to_automatico_cuts(data)
+            elif lower.endswith(".csv"):
+                cuts = CutlistImporter.to_automatico_cuts(CutlistImporter.from_csv(path))
+            elif lower.endswith(".txt"):
+                cuts = CutlistImporter.to_automatico_cuts(CutlistImporter.from_txt(path))
+            elif lower.endswith(".xlsx") or lower.endswith(".xls"):
+                cuts = CutlistImporter.to_automatico_cuts(CutlistImporter.from_excel(path))
+            else:
+                QMessageBox.warning(self, "Importa file", "Estensione non supportata."); return
+            if not cuts:
+                QMessageBox.information(self, "Importa file", "Nessun pezzo valido nel file."); return
+            self.load_cutlist_from_cuts(cuts)
+        except Exception as e:
+            QMessageBox.critical(self, "Importa file", str(e))
+
+    def _export_cutlist_file(self):
+        cuts = self._collect_cuts_from_table()
+        if not cuts:
+            QMessageBox.information(self, "Esporta", "La lista è vuota."); return
+        path, _ = QFileDialog.getSaveFileName(self, "Esporta lista", "", "CSV (*.csv);;JSON (*.json)")
+        if not path:
+            return
+        try:
+            pieces = [{
+                "length": c["length_mm"],
+                "quantity": c["qty"],
+                "label": c.get("element") or "",
+                "ang_sx": c.get("ang_sx", 0.0),
+                "ang_dx": c.get("ang_dx", 0.0),
+                "profile": c.get("profile", ""),
+            } for c in cuts]
+            if path.lower().endswith(".json"):
+                import json
+                from pathlib import Path as _P
+                _P(path).write_text(json.dumps({"type": "cutlist", "cuts": cuts}, indent=2, ensure_ascii=False), encoding="utf-8")
+            else:
+                if not path.lower().endswith(".csv"):
+                    path = path + ".csv"
+                CutlistExporter.to_csv(pieces, path)
+            self._toast("Lista esportata.", "ok")
+        except Exception as e:
+            QMessageBox.critical(self, "Esporta", str(e))
+
     def _header_items(self,profile:str)->List[QTableWidgetItem]:
         font=QFont(); font.setBold(True); bg=QBrush(QColor("#ecf0f1"))
         items=[]
@@ -1197,12 +1289,18 @@ class AutomaticoPage(QWidget):
         
         # === 2. Warn for special modes ===
         if mode_info.mode_range and mode_info.mode_range.requires_confirmation:
-            # TODO PR #21: Show confirmation dialog
-            # For now: log warning and show toast
-            mode_name_display = mode_info.mode_name.replace("_", " ").title()
-            self._toast(f"⚠️  Modalità {mode_name_display}", "warn")
-            if mode_info.warning_message:
-                logger.warning(mode_info.warning_message)
+            mode_display = self._mode_detector.get_mode_display_name(mode_info.mode_name)
+            reply = QMessageBox.question(
+                self,
+                f"Conferma modalità {mode_display}",
+                f"{mode_info.warning_message or 'Modalità speciale richiesta.'}\n\nContinuare?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                self._toast("Posizionamento annullato.", "warn")
+                logger.info("Special mode in Automatico cancelled by user")
+                return False
         
         # === 3. Notify machine context ===
         if self.mio and hasattr(self.mio, "set_mode_context"):

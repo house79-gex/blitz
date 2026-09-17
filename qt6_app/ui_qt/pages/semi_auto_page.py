@@ -285,6 +285,10 @@ class SemiAutoPage(QWidget):
         self.spin_sx.lineEdit().textEdited.connect(lambda s: self._force_decimal_point(self.spin_sx, s))
         sx_row.addWidget(self.btn_sx_45)
         sx_row.addWidget(self.btn_sx_0)
+        self.btn_sx_zero_enc = QPushButton("Azzera enc.")
+        self.btn_sx_zero_enc.setToolTip("Azzera encoder inclinazione SX (testa meccanicamente a 0°)")
+        self.btn_sx_zero_enc.clicked.connect(lambda: self._zero_head_encoder("sx"))
+        sx_row.addWidget(self.btn_sx_zero_enc)
         sx_row.addWidget(self.spin_sx)
         sx_lay.addLayout(sx_row)
 
@@ -312,6 +316,10 @@ class SemiAutoPage(QWidget):
         dx_row.addWidget(self.spin_dx)
         dx_row.addWidget(self.btn_dx_0)
         dx_row.addWidget(self.btn_dx_45)
+        self.btn_dx_zero_enc = QPushButton("Azzera enc.")
+        self.btn_dx_zero_enc.setToolTip("Azzera encoder inclinazione DX (testa meccanicamente a 0°)")
+        self.btn_dx_zero_enc.clicked.connect(lambda: self._zero_head_encoder("dx"))
+        dx_row.addWidget(self.btn_dx_zero_enc)
         dx_lay.addLayout(dx_row)
 
         ang.addWidget(sx_block, 0, 0)
@@ -753,6 +761,27 @@ class SemiAutoPage(QWidget):
                 setattr(self.machine, "right_head_angle", dx)
         if not ok:
             self._show_warn("Angoli non applicati (EMG?)", auto_hide_ms=2500)
+        try:
+            self.heads.refresh()
+        except Exception:
+            pass
+
+    def _zero_head_encoder(self, side: str):
+        """Azzera l'encoder di inclinazione della testa (posizione meccanica 0°)."""
+        ok = False
+        if self.mio and hasattr(self.mio, "command_zero_head_encoder"):
+            ok = bool(self.mio.command_zero_head_encoder(side))
+        elif hasattr(self.machine, "command_zero_head_encoder"):
+            ok = bool(self.machine.command_zero_head_encoder(side))
+        if ok:
+            if side == "sx":
+                self.spin_sx.setValue(0.0)
+            elif side == "dx":
+                self.spin_dx.setValue(0.0)
+            self._apply_angles()
+            self._show_info(f"Encoder testa {side.upper()} azzerato.", auto_hide_ms=2000)
+        else:
+            self._show_warn("Azzeramento encoder non disponibile (nodo RS485?).", auto_hide_ms=2500)
         try:
             self.heads.refresh()
         except Exception:

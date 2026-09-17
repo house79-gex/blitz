@@ -56,6 +56,21 @@ class ModbusRTUClient:
         except Exception:
             return False
 
+    def read_holding_registers(self, address: int, start: int, count: int):
+        """
+        Legge holding register Modbus (funzione 0x03).
+        Ritorna lista di int 0–65535 oppure None se il nodo non risponde.
+        """
+        if self._client is None:
+            return None
+        try:
+            result = self._client.read_holding_registers(start, count, slave=address)
+            if result.isError():
+                return None
+            return list(result.registers[:count])
+        except Exception:
+            return None
+
     def close(self):
         if self._client:
             try:

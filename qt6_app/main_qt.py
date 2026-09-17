@@ -12,10 +12,12 @@ from typing import Dict, Tuple
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QStackedWidget, QMessageBox
 from PySide6.QtCore import QTimer
 
-# Add project root to Python path
+# Add project root e qt6_app al path (pagine usano sia qt6_app.ui_qt sia ui_qt)
 project_root = Path(__file__).parent.parent.resolve()
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+qt6_dir = Path(__file__).parent.resolve()
+for p in (project_root, qt6_dir):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 print(f"[STARTUP] Project root: {project_root}")
 
 # Application imports with fallbacks
@@ -44,11 +46,12 @@ APP_VERSION = "1.0.0"
 # Synonyms and legacy keys for navigation
 PAGE_ALIASES = {
     "semi": "semi_auto",
-    "quotevani": "automatico",
-    "quote_vani": "automatico",
+    "quote_vani": "quotevani",
+    "quote-vani": "quotevani",
     "home": "home",
     "automatic": "automatico",
     "manual": "manuale",
+    "tipologia": "tipologie",
 }
 
 class BlitzMainWindow(QMainWindow):
@@ -136,7 +139,8 @@ class BlitzMainWindow(QMainWindow):
             config_path = project_root / "data" / "hardware_config.json"
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
-            raw = RealMachine(config)
+            # RealMachine carica da sola data/hardware_config.json
+            raw = RealMachine(serial_port=str(config.get("modbus", {}).get("port", "/dev/ttyUSB0")))
             adapter = MachineAdapter(raw)
             return raw, adapter
         except Exception as e:
@@ -158,8 +162,10 @@ class BlitzMainWindow(QMainWindow):
                 self.right_morse_locked = False
                 self.left_blade_inhibit = False
                 self.right_blade_inhibit = False
-                self.testa_sx_angle = 90
-                self.testa_dx_angle = 90
+                self.left_head_angle = 0.0
+                self.right_head_angle = 0.0
+                self.testa_sx_angle = 0.0
+                self.testa_dx_angle = 0.0
 
             def get_position(self):
                 return self._position_mm
@@ -179,6 +185,10 @@ class BlitzMainWindow(QMainWindow):
                     "brake_active": self.brake_active,
                     "clutch_active": self.clutch_active,
                     "position_mm": self._position_mm,
+                    "left_head_angle": self.left_head_angle,
+                    "right_head_angle": self.right_head_angle,
+                    "measured_left_head_angle": self.left_head_angle,
+                    "measured_right_head_angle": self.right_head_angle,
                 }
 
             def tick(self):
@@ -239,8 +249,13 @@ class BlitzMainWindow(QMainWindow):
                 return True
 
             def command_set_head_angles(self, sx, dx):
+                self._r.left_head_angle = sx
+                self._r.right_head_angle = dx
                 self._r.testa_sx_angle = sx
                 self._r.testa_dx_angle = dx
+                return True
+
+            def command_zero_head_encoder(self, side="both"):
                 return True
 
             def command_set_morse(self, left, right):
@@ -285,6 +300,8 @@ class BlitzMainWindow(QMainWindow):
             ("manuale", "qt6_app.ui_qt.pages.manuale_page", "ManualePage"),
             ("utility", "qt6_app.ui_qt.pages.utility_page", "UtilityPage"),
             ("label_editor", "qt6_app.ui_qt.pages.label_editor_page", "LabelEditorPage"),
+            ("tipologie", "qt6_app.ui_qt.pages.tipologie_page", "TipologiePage"),
+            ("quotevani", "qt6_app.ui_qt.pages.quotevani_page", "QuoteVaniPage"),
         ]
         for key, mod_name, cls_name in pages_to_load:
             self._try_add_page(key, mod_name, cls_name)

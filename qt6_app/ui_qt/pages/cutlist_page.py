@@ -1,6 +1,8 @@
 """
-Cutlist Page - Standalone cutlist management with import/export and optimization
-File: qt6_app/ui_qt/pages/cutlist_page.py
+Cutlist Page - editor standalone (non caricato in Home).
+
+La cutlist di produzione vive in Automatico (import file, ordine, Quote Vani).
+Questa pagina resta come UI di supporto/test per import-export.
 """
 
 from typing import Dict, Any, List, Optional

@@ -80,7 +80,34 @@
     "notes": [
       "Terminazione 120Ω sull'ultimo nodo (Arduino DX)",
       "Cavo schermato per RS485, lunghezza max 100m",
-      "Moduli Waveshare 8IN/8OUT con relè integrati"
+      "Moduli Waveshare 8IN/8OUT con relè integrati",
+      "Encoder inclinazione teste: ESP32 + MAX485, slave 20 (o 20/21 in split)"
+    ]
+  },
+
+  "head_encoders": {
+    "description": "Encoder incrementali inclinazione teste SX/DX via ESP32 + MAX485 sul bus RS485 Modbus",
+    "enabled": true,
+    "mode": "combined",
+    "combined_addr": 20,
+    "sx_addr": 20,
+    "dx_addr": 21,
+    "ppr": 360,
+    "quadrature": 4,
+    "angle_scale": 100,
+    "zero_offset_sx_deg": 0.0,
+    "zero_offset_dx_deg": 0.0,
+    "invert_sx": false,
+    "invert_dx": false,
+    "notes": [
+      "Encoder: incrementale AB NPN 360 P/R, albero 6 mm, alimentazione 5-24 V",
+      "Quadratura x4: 1440 conteggi/giro → 0,25°/impulso se 1:1 con l'asse testa",
+      "mode=combined: un ESP32 legge entrambi gli encoder (un MAX485, slave 20)",
+      "mode=split: un ESP32+MAX485 per testa (slave 20 SX, 21 DX)",
+      "NPN open collector: NON collegare A/B a VCC; pull-up sul GPIO ESP32",
+      "Azzera gli encoder con la testa meccanicamente a 0° (coil Modbus)",
+      "Firmware: firmware/esp32_head_encoder/",
+      "Verde=A, Bianco=B, Rosso=Vcc, Nero=GND"
     ]
   },
   
