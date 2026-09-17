@@ -1,7 +1,7 @@
 {
   "version": "1.0",
   "description": "Configurazione hardware troncatrice CNC BLITZ - Parametri trasmissione, limiti, comunicazioni",
-  "last_updated": "2025-01-15",
+  "last_updated": "2026-09-17",
   
   "transmission": {
     "description": "Parametri trasmissione meccanica motore-carro",
@@ -164,13 +164,15 @@
     "enabled": false,
     "status": "scaffold",
     "description": "Sostituzione futura dei cilindri con attuatori lineari (angolo continuo 0–45°)",
-    "stroke_mm": null,
+    "stroke_mm": 85,
     "force_N": null,
     "supply_v": 24,
     "control": "tbd",
     "feedback": "head_encoders",
     "notes": [
-      "Stessi attacchi e stessa corsa dei cilindri attuali",
+      "Corsa misurata sui cilindri attuali (perni, 0°→45°): 85 mm",
+      "Stessi attacchi dei cilindri; se il catalogo non ha 85 mm prendere 100 mm e limitare in software (non 80 mm: non si arriva a 45°)",
+      "Forza statica ancora da misurare a 0° e a 45°",
       "La corsa non è lineare con i gradi: mappa mm→° o PID sull'encoder testa",
       "Homing invariato: vai a 0°, FC + zero encoder, poi qualsiasi angolo"
     ]

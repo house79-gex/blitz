@@ -2,11 +2,11 @@
 
 File di stato per chi riprende il lavoro. Aggiornare questa pagina a ogni intervento sostanziale.
 
-**Ultimo aggiornamento: 2026-09-17 (locale, PC faleg)**  
+**Ultimo aggiornamento: 2026-09-17 (corsa cilindri 85 mm)**  
 Branch: `cursor/integrate-cutlist-heads-encoders-5073`  
 PR: https://github.com/house79-gex/blitz/pull/37
 
-Sessione odierna: FC 0° teste (LR12-04N1), zero **nell’homing unico** (non in ciclo), stub attuatori lineari per angolo continuo.
+Sessione: FC 0° teste (LR12-04N1), zero **nell’homing unico** (non in ciclo), stub attuatori lineari. Corsa cilindri **misurata: 85 mm**.
 
 ## Decisione hardware corrente
 
@@ -20,7 +20,7 @@ Sessione odierna: FC 0° teste (LR12-04N1), zero **nell’homing unico** (non in
 | I/O FC | Mod#1 **IN4 SX / IN5 DX**, morsetti T95/T96, 24 V F1. Cavo 2 m PVC + prolunga schermata in quadro |
 | Zero teste | **Homing unico**: comando 0° → attesa FC assestato (`settle_ms` 400 + encoder fermo) → zero encoder → homing carro. `auto_zero: false` in ciclo |
 | Inclinazione oggi | Cilindri 2 pos 0°/45°, impulso EV Mod#1 OUT1–OUT4 (`head_tilt.mode = pneumatic_2pos`) |
-| Inclinazione futuro | Attuatori lineari stessa corsa/attacchi, angolo continuo 0–45°. Stub only |
+| Inclinazione futuro | Attuatori lineari corsa **85 mm** / stessi attacchi, angolo continuo 0–45°. Stub only |
 | Opto | AL-ZARD DST-1R4P-N, **NPN** anodo comune, VCC uscita **3,3 V** |
 | Cavo teste encoder | FR2OHH2R 6×0,50 schermato, calza a PE solo in quadro |
 | ESP32 / RS485 teste | Non servono (resta `interface=modbus` come alternativa) |
@@ -48,6 +48,7 @@ Non azzerare l’encoder a ogni passaggio sul FC in lavorazione.
 - FC teste + helper `HeadHomeLimitHelper` (assestamento, non fronte immediato)
 - Homing carro+teste; `PneumaticTwoPosDrive` impulsi 0/45
 - Stub `LinearActuatorTiltDrive` + `docs/HEAD_TILT_ACTUATORS.md`
+- Corsa cilindri **85 mm** in `head_tilt_actuators.stroke_mm` (feedforward 0°→0 / 45°→85 mm)
 - `avvia_blitz.bat` su Windows (`SIMULATION=1`)
 
 ## Aperto / da fare sul campo
@@ -56,7 +57,7 @@ Non azzerare l’encoder a ogni passaggio sul FC in lavorazione.
 - Secondo AL-ZARD + due encoder 600 P/R NPN
 - Due **LR12-04N1** + bandiera acciaio sul fermo 0° (IN4/IN5)
 - Verifica impulsi freno 250 ms e EV inclinazione 0°/45°
-- Misurare corsa e forza dei cilindri **prima** di comprare gli attuatori lineari
+- Corsa cilindri **85 mm** (misurata). Resta da misurare la **forza** a 0° e a 45° prima di comprare gli attuatori; se il catalogo non ha 85 mm, 100 mm + limite software (non 80 mm)
 - `planner.plan_ilp` è stub; il taglio usa `refiner.py`
 - Copertura test bassa su Automatico/Semi
 - Documenti storici Arduino MT6701: **non** è il percorso angolo teste
