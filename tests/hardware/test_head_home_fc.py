@@ -2,10 +2,19 @@
 import time
 
 from qt6_app.ui_qt.hardware.head_home_fc import HeadHomeLimitHelper
+import json
+from pathlib import Path
+
+import pytest
+
 from qt6_app.ui_qt.hardware.head_tilt_drive import (
+    DEFAULT_STROKE_MM,
     LinearActuatorTiltDrive,
     PneumaticTwoPosDrive,
+    clamp_stroke_mm,
     create_head_tilt_drive,
+    feedforward_mm_for_deg,
+    parse_stroke_mm,
     snap_two_pos_deg,
 )
 from qt6_app.ui_qt.machine.simulation_machine import SimulationMachine
@@ -155,3 +164,47 @@ def test_linear_actuator_scaffold_does_not_move():
     assert sx == 12.0 and dx == 33.0
     factory = create_head_tilt_drive({"head_tilt": {"mode": "linear_actuator"}})
     assert factory.mode == "linear_actuator"
+    assert factory.stroke_mm == DEFAULT_STROKE_MM
+
+
+def test_cylinder_stroke_is_85_mm():
+    """Corsa misurata sui cilindri: 85 mm (perni, 0°→45°)."""
+    assert DEFAULT_STROKE_MM == 85.0
+    assert parse_stroke_mm({}) == 85.0
+    assert parse_stroke_mm({"stroke_mm": None}) == 85.0
+    assert parse_stroke_mm({"stroke_mm": 0}) == 85.0
+    assert parse_stroke_mm({"stroke_mm": "x"}) == 85.0
+    assert parse_stroke_mm({"stroke_mm": 85}) == 85.0
+    assert clamp_stroke_mm(-1) == 0.0
+    assert clamp_stroke_mm(90) == 85.0
+    assert feedforward_mm_for_deg(0) == 0.0
+    assert feedforward_mm_for_deg(45) == 85.0
+    assert feedforward_mm_for_deg(22.5) == 42.5
+    assert feedforward_mm_for_deg(90) == 85.0
+
+    drv = LinearActuatorTiltDrive({"enabled": False, "stroke_mm": 85})
+    assert drv.stroke_mm == 85.0
+    assert drv.mm_for_deg(45.0) == 85.0
+    assert drv.mm_for_deg(0.0) == 0.0
+
+    cfg_path = Path(__file__).resolve().parents[2] / "data" / "hardware_config.json"
+    with cfg_path.open(encoding="utf-8") as fh:
+        hw = json.load(fh)
+    assert hw["head_tilt_actuators"]["stroke_mm"] == 85
+    factory = create_head_tilt_drive(hw, pulse_fn=lambda *_args: None)
+    assert factory.mode == "pneumatic_2pos"
+
+    lin = create_head_tilt_drive(
+        {
+            "head_tilt": {"mode": "linear_actuator"},
+            "head_tilt_actuators": hw["head_tilt_actuators"],
+        }
+    )
+    assert lin.stroke_mm == 85.0
+
+
+def test_linear_actuator_enabled_is_not_implemented():
+    drv = LinearActuatorTiltDrive({"enabled": True, "stroke_mm": 85})
+    with pytest.raises(NotImplementedError) as exc:
+        drv.move_to_deg(10.0, 20.0)
+    assert "85" in str(exc.value)
