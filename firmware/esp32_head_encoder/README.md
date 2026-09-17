@@ -1,6 +1,8 @@
 # Encoder inclinazione teste — ESP32 + MAX485
 
-Feedback angolo teste SX/DX su bus RS485 Modbus già presente in macchina.
+Percorso **opzionale**. Di default le teste si leggono con cavo schermato + AL-ZARD + GPIO (`docs/HEAD_ENCODERS.md`).
+
+Questo firmware serve solo se `head_encoders.interface` è `modbus`.
 
 ## Encoder
 

@@ -58,7 +58,7 @@ class RealMachine(MachineIO):
         self.homing_in_progress = False
         self.emergency_active = False
 
-        # Angoli teste (comandati + misurati da encoder RS485)
+        # Angoli teste (comandati + misurati da encoder GPIO/AL-ZARD o RS485)
         self.left_head_angle = 0.0
         self.right_head_angle = 0.0
         self.measured_left_head_angle = None
@@ -98,14 +98,16 @@ class RealMachine(MachineIO):
         self._init_head_encoders(config)
 
     def _init_head_encoders(self, config: dict) -> None:
-        """Inizializza lettura encoder inclinazione teste via RS485."""
+        """Inizializza lettura encoder inclinazione teste (GPIO/AL-ZARD o Modbus)."""
         try:
-            from ui_qt.hardware.head_angle_encoder import HeadAngleEncoderService
+            from ui_qt.hardware.head_angle_encoder import create_head_angle_service
             enc_cfg = (config or {}).get("head_encoders") or {}
             if not enc_cfg.get("enabled", False):
                 self._head_encoders = None
                 return
-            self._head_encoders = HeadAngleEncoderService(self._client, enc_cfg)
+            self._head_encoders = create_head_angle_service(
+                enc_cfg, modbus_client=self._client
+            )
         except Exception as e:
             print(f"Warning: encoder inclinazione teste non disponibili: {e}")
             self._head_encoders = None
@@ -446,7 +448,7 @@ class RealMachine(MachineIO):
                     self._position_mm = pos
                 self._moving = self._motion_controller.is_moving()
 
-        # Encoder inclinazione teste (stesso bus RS485)
+        # Encoder inclinazione teste (GPIO/AL-ZARD o RS485)
         if self._head_encoders is not None:
             try:
                 enc_state = self._head_encoders.poll()
@@ -499,6 +501,12 @@ class RealMachine(MachineIO):
                 self._motor_driver.close()
             if self._encoder_reader:
                 self._encoder_reader.close()
+
+        if self._head_encoders is not None:
+            try:
+                self._head_encoders.close()
+            except Exception:
+                pass
         
         # Close legacy GPIO
         if hasattr(self, 'pi') and self.pi:

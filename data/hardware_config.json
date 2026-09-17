@@ -81,13 +81,14 @@
       "Terminazione 120Ω sull'ultimo nodo (Arduino DX)",
       "Cavo schermato per RS485, lunghezza max 100m",
       "Moduli Waveshare 8IN/8OUT con relè integrati",
-      "Encoder inclinazione teste: ESP32 + MAX485, slave 20 (o 20/21 in split)"
+      "Encoder inclinazione teste: AL-ZARD + GPIO (default). RS485/ESP32 resta opzionale (interface=modbus)"
     ]
   },
 
   "head_encoders": {
-    "description": "Encoder incrementali inclinazione teste SX/DX via ESP32 + MAX485 sul bus RS485 Modbus",
+    "description": "Encoder incrementali inclinazione teste SX/DX via cavo schermato + AL-ZARD + GPIO Raspberry Pi",
     "enabled": true,
+    "interface": "gpio",
     "mode": "combined",
     "combined_addr": 20,
     "sx_addr": 20,
@@ -99,15 +100,28 @@
     "zero_offset_dx_deg": 0.0,
     "invert_sx": false,
     "invert_dx": false,
+    "gpio": {
+      "sx_a": 5,
+      "sx_b": 6,
+      "dx_a": 19,
+      "dx_b": 26,
+      "notes": [
+        "Secondo modulo AL-ZARD DST-1R4P-N dedicato alle teste (4 canali: SX A/B, DX A/B)",
+        "Il primo modulo 4 canali resta sull'encoder carro ELTRA (GPIO 17/27/22)",
+        "Uscite O1-O4 lato 3,3 V verso GPIO 5/6/19/26",
+        "Non usare GPIO 12/13/16 (MD25HV) né 17/27/22 (encoder carro)"
+      ]
+    },
     "notes": [
       "Encoder: incrementale AB NPN 360 P/R, albero 6 mm, alimentazione 5-24 V",
       "Quadratura x4: 1440 conteggi/giro → 0,25°/impulso se 1:1 con l'asse testa",
-      "mode=combined: un ESP32 legge entrambi gli encoder (un MAX485, slave 20)",
-      "mode=split: un ESP32+MAX485 per testa (slave 20 SX, 21 DX)",
-      "NPN open collector: NON collegare A/B a VCC; pull-up sul GPIO ESP32",
-      "Azzera gli encoder con la testa meccanicamente a 0° (coil Modbus)",
-      "Firmware: firmware/esp32_head_encoder/",
-      "Verde=A, Bianco=B, Rosso=Vcc, Nero=GND"
+      "interface=gpio: cavo schermato FR2OHH2R nel quadro, AL-ZARD, GPIO Pi — niente ESP32/RS485",
+      "interface=modbus: alternativa ESP32+MAX485 (mode combined/split, slave 20/21)",
+      "NPN open collector: NON collegare A/B a VCC né ai GPIO 3,3 V del Pi",
+      "AL-ZARD: anodo comune, 12 V su tutti i +, A/B encoder sui −, VCC uscita = 3,3 V",
+      "Azzera gli encoder con la testa meccanicamente a 0° (Semi-automatico)",
+      "Verde=A, Bianco=B, Rosso=Vcc, Nero=GND",
+      "Documentazione: docs/HEAD_ENCODERS.md"
     ]
   },
   

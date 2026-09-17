@@ -246,6 +246,11 @@ Interactive tool to calibrate the `pulses_per_mm` parameter by measuring actual 
 - RS485 connection via `/dev/ttyUSB0`
 - Brake, clutch, vise controls via Modbus
 
+**Head tilt encoders (AL-ZARD #2 + GPIO):**
+- Shielded cable into the cabinet, NPN 12 V → AL-ZARD → GPIO 5/6 (SX) and 19/26 (DX)
+- Do not wire 12 V encoder outputs to the Pi
+- ESP32/RS485 not required (`interface: gpio`)
+
 ## Troubleshooting
 
 ### "pigpio not available"

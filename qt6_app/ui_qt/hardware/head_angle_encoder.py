@@ -1,11 +1,11 @@
 """
-Lettura angoli teste da encoder incrementali via Modbus RTU (ESP32 + MAX485).
+Lettura angoli teste da encoder incrementali.
 
-Due topologie supportate:
-- combined: un ESP32 legge entrambi gli encoder (slave unico)
-- split: un ESP32 + MAX485 per testa (due slave sul bus)
+Interfacce:
+- gpio (consigliata): cavo schermato → AL-ZARD → GPIO Raspberry Pi
+- modbus (opzionale): ESP32 + MAX485 sul bus RS485 già presente
 
-Mappa registri (valori firmati, angolo in centesimi di grado):
+Mappa registri Modbus (valori firmati, angolo in centesimi di grado):
   combined: HR0 = SX*100, HR1 = DX*100
   split:    HR0 = angolo*100 sullo slave della testa
 """
@@ -144,5 +144,29 @@ class HeadAngleEncoderService:
             "head_encoder_mode": self.mode,
         }
 
+    def close(self) -> None:
+        """Nessuna risorsa locale da chiudere sul percorso Modbus."""
+        return
 
-__all__ = ["HeadAngleEncoderService"]
+
+def create_head_angle_service(
+    config: Optional[Dict[str, Any]] = None,
+    modbus_client=None,
+    sx_reader=None,
+    dx_reader=None,
+):
+    """
+    Fabbrica il backend encoder teste da hardware_config.
+
+    interface=gpio → AL-ZARD + GPIO (default)
+    interface=modbus → ESP32 + MAX485
+    """
+    cfg = dict(config or {})
+    interface = str(cfg.get("interface", "gpio")).strip().lower()
+    if interface in ("modbus", "rs485", "esp32"):
+        return HeadAngleEncoderService(modbus_client, cfg)
+    from .head_gpio_encoder import HeadAngleGpioService
+    return HeadAngleGpioService(cfg, sx_reader=sx_reader, dx_reader=dx_reader)
+
+
+__all__ = ["HeadAngleEncoderService", "create_head_angle_service"]
