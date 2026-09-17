@@ -12,4 +12,8 @@ def test_tipologie_page_constructs(qtbot, tmp_path):
     qtbot.addWidget(page)
     assert page.tree is not None
     assert page.btn_new is not None
-    assert page.lbl_empty.isVisible()
+    page.show()
+    qtbot.waitExposed(page)
+    assert page.tree.topLevelItemCount() == 0
+    assert not page.lbl_empty.isHidden()
+    assert page.tree.isHidden()
