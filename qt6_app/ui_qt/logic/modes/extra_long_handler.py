@@ -177,7 +177,7 @@ class ExtraLongHandler:
         try:
             # 1. Apply angles FIRST
             self.mio.command_set_head_angles(
-                sx=90.0,  # Fixed head not used yet
+                sx=0.0,  # Testa fissa a quadro
                 dx=self.sequence.angle_head_cut_dx
             )
             
@@ -190,7 +190,7 @@ class ExtraLongHandler:
             # 3. Start movement
             success = self.mio.command_move(
                 self.sequence.pos_head_cut_dx,
-                ang_sx=90.0,
+                ang_sx=0.0,
                 ang_dx=self.sequence.angle_head_cut_dx
             )
             
@@ -237,7 +237,7 @@ class ExtraLongHandler:
             # 3. Move to position after retract
             success = self.mio.command_move(
                 self.sequence.pos_after_retract_dx,
-                ang_sx=90.0,
+                ang_sx=0.0,
                 ang_dx=self.sequence.angle_head_cut_dx
             )
             
@@ -276,7 +276,7 @@ class ExtraLongHandler:
             # 1. Apply angles for final cut
             self.mio.command_set_head_angles(
                 sx=self.sequence.angle_final_cut_sx,
-                dx=90.0  # Mobile head not used
+                dx=0.0  # Testa mobile a quadro
             )
             
             # 2. Release brake to allow movement
@@ -292,7 +292,7 @@ class ExtraLongHandler:
             success = self.mio.command_move(
                 self.sequence.pos_final_cut_dx,
                 ang_sx=self.sequence.angle_final_cut_sx,
-                ang_dx=90.0
+                ang_dx=0.0
             )
             
             if success:

@@ -1,7 +1,7 @@
 # FASE 5: Complete Hardware Motion Control Stack - Implementation Summary
 
 ## 🎯 Objective
-Replace Leadshine DCS810 with Cytron MD25HV motor driver + 8AL-ZARD encoder reader + software PID controller for precise motion control.
+Stack movimento: Cytron MD25HV + AL-ZARD + PID software sul Raspberry Pi.
 
 ## ✅ Implementation Status: COMPLETE
 
@@ -47,7 +47,7 @@ All acceptance criteria have been met and tested.
 
 #### `qt6_app/ui_qt/machine/real_machine.py`
 **RealMachine Integration with New Stack**
-- ✅ Replaced DCS810 with MD25HVDriver
+- ✅ MD25HVDriver come unico driver carro
 - ✅ Using EncoderReader8ALZARD for position
 - ✅ Using MotionController for movements
 - ✅ Kept existing Modbus I/O untouched
@@ -213,17 +213,9 @@ Encoder 12V → 8AL-ZARD input (galvanic isolation)
 
 ---
 
-## ✨ Advantages Over DCS810
+## Stack movimento (MD25HV)
 
-| Feature | DCS810 | New Stack |
-|---------|--------|-----------|
-| Control Method | Proprietary RS232 | Open software PID |
-| Hardware Cost | High | Lower (commodity parts) |
-| Tuning | Fixed parameters | Flexible PID tuning |
-| Diagnostics | Limited | Full real-time logging |
-| Integration | RS232 overhead | Direct GPIO |
-| Maintenance | Proprietary | Standard components |
-| Safety | Hardware only | Hardware + software |
+Controllo PWM GPIO, encoder via AL-ZARD, PID software, diagnostica in `get_state()`.
 
 ---
 
@@ -314,7 +306,7 @@ data/
 ## 💡 Summary
 
 ### What Was Built
-A complete, production-ready hardware motion control stack to replace the DCS810 driver system.
+A complete, production-ready hardware motion control stack (MD25HV + AL-ZARD + PID).
 
 ### Code Statistics
 - **Total new files**: 9

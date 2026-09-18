@@ -232,7 +232,7 @@ class UltraShortHandler:
             # 1. Apply angles FIRST
             self.mio.command_set_head_angles(
                 sx=self.sequence.heading_angle_sx,
-                dx=90.0  # Mobile head at 90° for now
+                dx=0.0  # Testa mobile a quadro
             )
             
             # 2. Configure morse for heading
@@ -247,7 +247,7 @@ class UltraShortHandler:
             success = self.mio.command_move(
                 self.sequence.heading_position,
                 ang_sx=self.sequence.heading_angle_sx,
-                ang_dx=90.0
+                ang_dx=0.0
             )
             
             if success:
@@ -298,7 +298,7 @@ class UltraShortHandler:
             success = self.mio.command_move(
                 after_retract_position,
                 ang_sx=self.sequence.angle_sx,
-                ang_dx=90.0
+                ang_dx=0.0
             )
             
             if success:
@@ -335,7 +335,7 @@ class UltraShortHandler:
         try:
             # 1. Apply angles for final cut
             self.mio.command_set_head_angles(
-                sx=90.0,  # Fixed head not used
+                sx=0.0,  # Testa fissa a quadro
                 dx=self.sequence.final_angle_dx
             )
             
@@ -353,7 +353,7 @@ class UltraShortHandler:
             # 4. Start movement
             success = self.mio.command_move(
                 self.sequence.final_position,
-                ang_sx=90.0,
+                ang_sx=0.0,
                 ang_dx=self.sequence.final_angle_dx
             )
             

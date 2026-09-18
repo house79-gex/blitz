@@ -1,0 +1,16 @@
+Sezione,Morsetto,Segnale,Descrizione,Note
+Alimentazione,B+,+48V,Ingresso alimentazione DC dal TDR-960,Cavi corti; andata/ritorno vicini
+Alimentazione,B-,0V,Return alimentazione DC,Punto stella 0V quadro
+Motore,M+,M+,Uscita motore +,Motore DC PENTA 48V
+Motore,M-,M-,Uscita motore −,Coppia con M+
+Logica,PWM,GPIO 12,Velocità PWM 20 kHz,Dal Raspberry Pi
+Logica,DIR,GPIO 13,Direzione,Dal Raspberry Pi
+Logica,EN,GPIO 16,Enable / brake driver,Dal Raspberry Pi
+Encoder,12V,Vcc encoder,Alimentazione ELTRA 12 V NPN,Non dal 3,3 V del Pi
+Encoder,GND,GND encoder,Massa encoder,Comune quadro 12 V
+Encoder,A,Canale A,ELTRA A → AL-ZARD IN1,Isolamento 12→3,3 V
+Encoder,B,Canale B,ELTRA B → AL-ZARD IN2,Isolamento 12→3,3 V
+Encoder,Z,Indice Z,ELTRA Z → AL-ZARD IN3,Homing
+Uscita opto,O1,GPIO 17,A 3,3 V verso Pi,VCC AL-ZARD = 3,3 V
+Uscita opto,O2,GPIO 27,B 3,3 V verso Pi,
+Uscita opto,O3,GPIO 22,Z 3,3 V verso Pi,

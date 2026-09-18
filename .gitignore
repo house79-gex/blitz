@@ -22,6 +22,7 @@ wheels/
 
 # Virtual environments
 venv/
+.venv/
 ENV/
 env/
 
@@ -39,6 +40,8 @@ Thumbs.db
 # Project specific
 data/*.db
 data/*.db-journal
+qt6_app/data/*.db
+qt6_app/data/*.db-journal
 *.log
 
 # Generated documentation artifacts

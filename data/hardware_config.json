@@ -51,7 +51,9 @@
       "inputs": {
         "IN1": "FC_MIN (finecorsa minimo, NPN NO, homing)",
         "IN2": "FC_MAX (finecorsa massimo, microswitch NA)",
-        "IN3": "EMERGENZA (1=OK, 0=EMERGENZA attiva)"
+        "IN3": "EMERGENZA (1=OK, 0=EMERGENZA attiva)",
+        "IN4": "FC_HEAD_SX_0 (induttivo NPN NO, testa SX sul blocco 0°)",
+        "IN5": "FC_HEAD_DX_0 (induttivo NPN NO, testa DX sul blocco 0°)"
       },
       "outputs": {
         "OUT1": "Inclinazione SX 45° (impulso EV)",
@@ -73,28 +75,112 @@
         "OUT2": "Morsa SX APRI (inibibile via NC hardware)",
         "OUT3": "Morsa DX CHIUDI (solo modalità SW autorizzata)",
         "OUT4": "Morsa DX APRI (inibibile via NC hardware)",
-        "OUT5": "Frizione (EV 24V)",
-        "OUT6": "Freno (EV 24V)"
+        "OUT5": "Freno BLOCCO (impulso EV bistabile)",
+        "OUT6": "Freno SBLOCCO (impulso EV bistabile)",
+        "OUT7": "Frizione (EV 24V hold)"
       }
     },
     "notes": [
       "Terminazione 120Ω sull'ultimo nodo (Arduino DX)",
       "Cavo schermato per RS485, lunghezza max 100m",
-      "Moduli Waveshare 8IN/8OUT con relè integrati"
+      "Moduli Waveshare 8IN/8OUT con relè integrati",
+      "Encoder inclinazione teste: AL-ZARD + GPIO (default). RS485/ESP32 resta opzionale (interface=modbus)"
+    ]
+  },
+
+  "head_encoders": {
+    "description": "Encoder incrementali inclinazione teste SX/DX via cavo schermato + AL-ZARD + GPIO Raspberry Pi",
+    "enabled": true,
+    "interface": "gpio",
+    "mode": "combined",
+    "combined_addr": 20,
+    "sx_addr": 20,
+    "dx_addr": 21,
+    "ppr": 600,
+    "quadrature": 4,
+    "angle_scale": 100,
+    "zero_offset_sx_deg": 0.0,
+    "zero_offset_dx_deg": 0.0,
+    "invert_sx": false,
+    "invert_dx": false,
+    "gpio": {
+      "sx_a": 5,
+      "sx_b": 6,
+      "dx_a": 19,
+      "dx_b": 26,
+      "notes": [
+        "Secondo modulo AL-ZARD DST-1R4P-N dedicato alle teste (4 canali: SX A/B, DX A/B)",
+        "Il primo modulo 4 canali resta sull'encoder carro ELTRA (GPIO 17/27/22)",
+        "Uscite O1-O4 lato 3,3 V verso GPIO 5/6/19/26",
+        "Non usare GPIO 12/13/16 (MD25HV) né 17/27/22 (encoder carro)"
+      ]
+    },
+    "notes": [
+      "Encoder: incrementale AB NPN 600 P/R, albero 6 mm, alimentazione 12 V (5-24 V)",
+      "Quadratura x4: 2400 conteggi/giro → 0,15°/impulso se 1:1 con l'asse testa",
+      "interface=gpio: cavo schermato FR2OHH2R nel quadro, AL-ZARD, GPIO Pi — niente ESP32/RS485",
+      "interface=modbus: alternativa ESP32+MAX485 (mode combined/split, slave 20/21)",
+      "NPN open collector: NON collegare A/B a VCC né ai GPIO 3,3 V del Pi",
+      "AL-ZARD: anodo comune, 12 V su tutti i +, A/B encoder sui −, VCC uscita = 3,3 V",
+      "Azzera gli encoder con la testa meccanicamente a 0° (Semi-automatico)",
+      "Verde=A, Bianco=B, Rosso=Vcc, Nero=GND",
+      "Zero: induttivo NPN NO lato fermo 0° (IN4 SX, IN5 DX); azzera a testa ferma, non al primo contatto",
+      "Documentazione: docs/HEAD_ENCODERS.md"
+    ]
+  },
+
+  "head_home_fc": {
+    "description": "Finecorsa 0° teste sul blocco meccanico (homing encoder incrementale)",
+    "enabled": true,
+    "auto_zero": false,
+    "module": 1,
+    "sx_input_index": 3,
+    "dx_input_index": 4,
+    "active_high": true,
+    "settle_ms": 400,
+    "stable_deg": 0.2,
+    "homing_timeout_s": 8.0,
+    "heads_required": false,
+    "notes": [
+      "Induttivo M12 NPN NO 24 V (es. LR12-04N1), bandiera acciaio lato fermo 0°",
+      "Lo zero encoder è nella procedura di homing, non a ogni passaggio sul FC",
+      "Può accendersi prima del blocco: homing attende settle_ms con angolo fermo",
+      "Modulo I/O #1 IN4 = SX, IN5 = DX (F1 24 V)"
+    ]
+  },
+
+  "head_tilt": {
+    "description": "Azionamento inclinazione teste",
+    "mode": "pneumatic_2pos",
+    "threshold_deg": 22.5,
+    "pulse_ms": 250,
+    "notes": [
+      "pneumatic_2pos: cilindri 0°/45° (OUT1–OUT4 modulo 1)",
+      "linear_actuator: futuro, vedi head_tilt_actuators e docs/HEAD_TILT_ACTUATORS.md"
+    ]
+  },
+
+  "head_tilt_actuators": {
+    "enabled": false,
+    "status": "scaffold",
+    "description": "Sostituzione futura dei cilindri con attuatori lineari (angolo continuo 0–45°)",
+    "stroke_mm": null,
+    "force_N": null,
+    "supply_v": 24,
+    "control": "tbd",
+    "feedback": "head_encoders",
+    "notes": [
+      "Stessi attacchi e stessa corsa dei cilindri attuali",
+      "La corsa non è lineare con i gradi: mappa mm→° o PID sull'encoder testa",
+      "Homing invariato: vai a 0°, FC + zero encoder, poi qualsiasi angolo"
     ]
   },
   
   "rs232": {
-    "description": "Comunicazione seriale con driver motore Leadshine DCS810",
-    "enabled": true,
-    "port": "/dev/ttyUSB1",
-    "baudrate": 115200,
-    "driver_model": "DCS810",
-    "timeout_s": 1.0,
+    "description": "RS232 non usato: il carro è su Cytron MD25HV (PWM GPIO), non su seriale driver",
+    "enabled": false,
     "notes": [
-      "Cavo RS232 schermato, lunghezza max 15m",
-      "Comandi: movimento assoluto/relativo, lettura encoder, allarmi",
-      "Protocollo specifico: vedere manuale DCS810"
+      "Il movimento asse è PWM GPIO 12/13/16 + encoder ELTRA via AL-ZARD"
     ]
   },
   
@@ -128,7 +214,7 @@
   "hardware_info": {
     "description": "Informazioni componenti hardware installati",
     "raspberry_pi": "Raspberry Pi 5 (4GB RAM)",
-    "driver_motor": "Leadshine DCS810 (48V, 8A)",
+    "driver_motor": "Cytron MD25HV (48V, PWM GPIO)",
     "motor": "Servo/DC brushless (specifiche da verificare)",
     "encoder": "ELTRA EH63D.1B000S12N8X3PA (1000 PPR, NPN, 12V)",
     "io_modules": "Waveshare RS485 8IN/8OUT (x2)",
@@ -226,8 +312,8 @@
     },
     
     "replacement_info": {
-      "replaces": "Leadshine DCS810",
-      "reason": "Maggiore controllo software, costi ridotti, integrazione diretta",
+      "stack": "Cytron MD25HV + AL-ZARD + PID software",
+      "reason": "Controllo software sul Raspberry Pi, isolamento galvanico encoder",
       "advantages": [
         "Controllo PID software flessibile e tarabile",
         "Encoder lettura diretta via GPIO (no RS232)",

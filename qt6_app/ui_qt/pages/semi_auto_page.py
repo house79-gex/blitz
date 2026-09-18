@@ -204,7 +204,7 @@ class SemiAutoPage(QWidget):
         graph_layout.setContentsMargins(0, 0, 0, 0)
         graph_layout.setSpacing(0)
 
-        self.heads = HeadsView(self.machine, self.graph_frame)
+        self.heads = HeadsView(self.mio or self.machine, self.graph_frame)
         self.heads.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         graph_layout.addWidget(self.heads)
         top_left.addWidget(self.graph_frame, 1)
@@ -285,6 +285,12 @@ class SemiAutoPage(QWidget):
         self.spin_sx.lineEdit().textEdited.connect(lambda s: self._force_decimal_point(self.spin_sx, s))
         sx_row.addWidget(self.btn_sx_45)
         sx_row.addWidget(self.btn_sx_0)
+        self.btn_sx_zero_enc = QPushButton("Azzera enc.")
+        self.btn_sx_zero_enc.setToolTip(
+            "Azzera encoder SX a mano. In macchina lo zero teste è nell'homing (Azzera)."
+        )
+        self.btn_sx_zero_enc.clicked.connect(lambda: self._zero_head_encoder("sx"))
+        sx_row.addWidget(self.btn_sx_zero_enc)
         sx_row.addWidget(self.spin_sx)
         sx_lay.addLayout(sx_row)
 
@@ -312,6 +318,12 @@ class SemiAutoPage(QWidget):
         dx_row.addWidget(self.spin_dx)
         dx_row.addWidget(self.btn_dx_0)
         dx_row.addWidget(self.btn_dx_45)
+        self.btn_dx_zero_enc = QPushButton("Azzera enc.")
+        self.btn_dx_zero_enc.setToolTip(
+            "Azzera encoder DX a mano. In macchina lo zero teste è nell'homing (Azzera)."
+        )
+        self.btn_dx_zero_enc.clicked.connect(lambda: self._zero_head_encoder("dx"))
+        dx_row.addWidget(self.btn_dx_zero_enc)
         dx_lay.addLayout(dx_row)
 
         ang.addWidget(sx_block, 0, 0)
@@ -738,10 +750,8 @@ class SemiAutoPage(QWidget):
         self._apply_angles()
 
     def _apply_angles(self):
-        sx = self._parse_float(self.spin_sx.text(), 0.0)
-        dx = self._parse_float(self.spin_dx.text(), 0.0)
-        sx = max(0.0, min(45.0, sx))
-        dx = max(0.0, min(45.0, dx))
+        sx = max(0.0, min(45.0, float(self.spin_sx.value())))
+        dx = max(0.0, min(45.0, float(self.spin_dx.value())))
         ok = True
         if self.mio:
             ok = self.mio.command_set_head_angles(sx, dx)
@@ -753,6 +763,27 @@ class SemiAutoPage(QWidget):
                 setattr(self.machine, "right_head_angle", dx)
         if not ok:
             self._show_warn("Angoli non applicati (EMG?)", auto_hide_ms=2500)
+        try:
+            self.heads.refresh()
+        except Exception:
+            pass
+
+    def _zero_head_encoder(self, side: str):
+        """Azzera l'encoder di inclinazione della testa (posizione meccanica 0°)."""
+        ok = False
+        if self.mio and hasattr(self.mio, "command_zero_head_encoder"):
+            ok = bool(self.mio.command_zero_head_encoder(side))
+        elif hasattr(self.machine, "command_zero_head_encoder"):
+            ok = bool(self.machine.command_zero_head_encoder(side))
+        if ok:
+            if side == "sx":
+                self.spin_sx.setValue(0.0)
+            elif side == "dx":
+                self.spin_dx.setValue(0.0)
+            self._apply_angles()
+            self._show_info(f"Encoder testa {side.upper()} azzerato.", auto_hide_ms=2000)
+        else:
+            self._show_warn("Azzeramento encoder non disponibile.", auto_hide_ms=2500)
         try:
             self.heads.refresh()
         except Exception:
@@ -1219,10 +1250,19 @@ class SemiAutoPage(QWidget):
             logger.error(f"Error starting homing: {e}")
             self._show_warn(f"Errore azzeramento: {e}", auto_hide_ms=2500)
     
-    def _on_homing_complete(self):
-        """Callback when homing completes."""
-        self._show_info("✅ Azzeramento completato", auto_hide_ms=2000)
-        logger.info("Homing completed")
+    def _on_homing_complete(self, success: bool = True, msg: str = ""):
+        """Callback a fine homing (carro + teste a 0°)."""
+        if success:
+            self.spin_sx.blockSignals(True)
+            self.spin_dx.blockSignals(True)
+            self.spin_sx.setValue(0.0)
+            self.spin_dx.setValue(0.0)
+            self.spin_sx.blockSignals(False)
+            self.spin_dx.blockSignals(False)
+            self._show_info("✅ Azzeramento completato (carro e teste)", auto_hide_ms=2000)
+        else:
+            self._show_warn(f"Homing non riuscito: {msg or 'errore'}", auto_hide_ms=2500)
+        logger.info("Homing completed: success=%s msg=%s", success, msg)
 
     # ---------- Poll ----------
     def _start_poll(self):
@@ -1230,9 +1270,12 @@ class SemiAutoPage(QWidget):
         self._poll.setInterval(100)
         self._poll.timeout.connect(self._tick)
         self._poll.start()
+        self._apply_angles()
         self._update_buttons()
 
     def _tick(self):
+        if self.mio:
+            self.mio.tick()
         try: self.status_panel.refresh()
         except Exception: pass
         try: self.heads.refresh()
@@ -1287,9 +1330,6 @@ class SemiAutoPage(QWidget):
         self.lbl_counted.setText(f"Contati: {done}")
 
         self._update_buttons()
-
-        if self.mio:
-            self.mio.tick()
 
     def _is_movement_active(self) -> bool:
         """
@@ -1364,9 +1404,18 @@ class SemiAutoPage(QWidget):
             logger.debug(f"Could not enable cb_profilo: {e}")
     
     def _enable_inputs_after_movement(self):
-        """Re-enable UI inputs after movement completes."""
+        """Riabilita i comandi e blocca il freno a fine posizionamento."""
         self._restore_input_controls()
         self._movement_in_progress = False
+        try:
+            if self.mio:
+                self.mio.command_lock_brake()
+            elif hasattr(self.machine, "command_lock_brake"):
+                self.machine.command_lock_brake()
+            else:
+                setattr(self.machine, "brake_active", True)
+        except Exception as e:
+            logger.error(f"Errore blocco freno a fine posa: {e}")
         logger.debug("UI inputs re-enabled after movement")
 
     # ---------- Simulazioni tastiera ----------

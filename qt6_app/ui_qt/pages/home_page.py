@@ -123,8 +123,7 @@ class HomePage(QWidget):
             btn.clicked.connect(lambda: self.appwin.show_page(key))
             return btn
 
-        # Colonna sinistra: Tipologie, Quote Vani Luce, Utility, Cutlist
-        # Colonna destra: Automatico, Semi-Automatico, Manuale
+        # Cutlist è integrata in Automatico (import file + ciclo), non è una pagina a sé
         tiles = [
             ("Tipologie", "tipologie"),
             ("Automatico", "automatico"),
@@ -132,7 +131,6 @@ class HomePage(QWidget):
             ("Semi-Automatico", "semi"),
             ("Utility", "utility"),
             ("Manuale", "manuale"),
-            # Editor Etichette is now integrated in Utility page
         ]
 
         r, c = 0, 0

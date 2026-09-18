@@ -22,6 +22,8 @@ import math
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
+from ui_qt.logic.angles import normalize_cut_tilt_deg
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -44,8 +46,8 @@ def _effective_piece_length(piece: Dict[str, Any],
     L = float(piece.get("len", 0.0))
     if thickness_mm <= 0.0:
         return max(0.0, L)
-    ax = abs(float(piece.get("ax", 0.0)))
-    ad = abs(float(piece.get("ad", 0.0)))
+    ax = normalize_cut_tilt_deg(piece.get("ax", 0.0))
+    ad = normalize_cut_tilt_deg(piece.get("ad", 0.0))
     try:
         c_sx = thickness_mm * math.tan(math.radians(ax))
     except Exception:
@@ -57,7 +59,10 @@ def _effective_piece_length(piece: Dict[str, Any],
     return max(0.0, L - max(0.0, c_sx) - max(0.0, c_dx))
 
 def _angles_signature(piece: Dict[str, Any]) -> Tuple[float, float]:
-    return (float(piece.get("ax", 0.0)), float(piece.get("ad", 0.0)))
+    return (
+        normalize_cut_tilt_deg(piece.get("ax", 0.0)),
+        normalize_cut_tilt_deg(piece.get("ad", 0.0)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +239,10 @@ def pack_bars_knapsack_ilp(pieces: List[Dict[str, Any]],
     start_time_global = time.time()
 
     while remaining_indices:
+        if time.time() - start_time_global > 60:
+            logger.warning("Packing: timeout globale, resto in greedy.")
+            use_ilp = False
+
         if use_ilp:
             try:
                 # Tempo limite grezzo
@@ -301,11 +310,6 @@ def pack_bars_knapsack_ilp(pieces: List[Dict[str, Any]],
             to_drop = [first]
         bars.append(current_bar)
         remaining_indices = [i for i in remaining_indices if i not in to_drop]
-
-        # Safety break
-        if time.time() - start_time_global > 60:
-            logger.warning("Packing interrotto per timeout globale (60s).")
-            break
 
     res = residuals(bars, stock, kerf_base, ripasso_mm, reversible, thickness_mm, angle_tol, max_angle, max_factor)
     return bars, res

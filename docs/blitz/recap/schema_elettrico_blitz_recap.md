@@ -15,7 +15,7 @@ Canalette 40x40: laterali SX/DX e orizzontali per ogni zona. Guide DIN allineate
 
 2.1 Alimentazioni e protezioni (portafusibili DIN)
 - 230VAC → Sezionatore/MT → Alimentatori DC:
-  - 48V: Mean Well TDR-960-48 → Driver Leadshine DCS810
+  - 48V: Mean Well TDR-960-48 → Driver Cytron MD25HV
   - 24V: Mean Well SDR-240-24 → Rami con portafusibili DIN:
     - F1: 24V I/O (moduli Waveshare, sensori 24V)
     - F2: 24V Elettrovalvole Testa SX (inclinazioni, morsa SX)
@@ -28,12 +28,12 @@ Canalette 40x40: laterali SX/DX e orizzontali per ogni zona. Guide DIN allineate
 
 2.2 Comunicazioni
 - RPi 5 + Waveshare USB 4-CH:
-  - RS232 → DCS810 (comandi posizione/parametri).
-  - RS485 (Modbus RTU) → Modulo I/O #1 (ID 1) → Modulo I/O #2 (ID 2) → Arduino SX (ID 10) → Arduino DX (ID 11); ultimo nodo con terminazione 120 Ω.
+  - RS485 (Modbus RTU) → Modulo I/O #1 (ID 1) → Modulo I/O #2 (ID 2); ultimo nodo con terminazione 120 Ω.
+  - GPIO PWM/DIR/EN → MD25HV; encoder ELTRA e teste via AL-ZARD 12 V → 3,3 V.
 - Cavi RS485: twistati, schermati; calza a PE lato quadro.
 
 2.3 Motion e attuatori
-- Leadshine DCS810 (48V) + Motore DC PENTA 48V; encoder ELTRA su driver per chiusura anello.
+- Cytron MD25HV (48V PWM) + Motore DC PENTA 48V; encoder ELTRA NPN 12 V via AL-ZARD (GPIO 17/27/22).
 - Frizione 24V: ON = trazione attiva; OFF = carro libero (movimento manuale). Comandata via relè Modbus.
 - Freno 24V: bistabile doppia bobina (blocco/sblocco) → 2 uscite relè.
 - Inclinazioni teste: doppia bobina (0°/45°) → 2 uscite relè per testa.
@@ -44,7 +44,8 @@ Canalette 40x40: laterali SX/DX e orizzontali per ogni zona. Guide DIN allineate
 - FC_MAX (microswitch NA) → IN digitale (max).
 - Conteggio pezzi SX/DX (microswitch NC) → IN digitali (conteggio su fronte di apertura con debounce software).
 - Stato emergenza (contatto ausiliario NO consigliato) → IN digitale (solo supervisione).
-- Angolo teste: MT6701 → Arduino Nano (SPI) → RS485 (MAX485) → Modbus registri.
+- Angolo teste: encoder incrementali AB NPN 600 P/R → cavo schermato → AL-ZARD 12→3,3 V → GPIO 5/6 e 19/26.
+- Finecorsa 0° teste (induttivo NPN NO sul blocco meccanico) → IN4 SX / IN5 DX modulo I/O #1.
 
 3) Logiche operative
 
@@ -72,7 +73,9 @@ Modulo I/O + Relè #1 (ID 1) — Inclinazioni / Lame / Sicurezze
   - IN1: FC_MIN (NPN NO)
   - IN2: FC_MAX (Microswitch NA)
   - IN3: Stato EMERG (NO → 1=OK, 0=EMERG)
-  - IN4–IN8: riserva
+  - IN4: FC_HEAD_SX_0 (induttivo NPN NO, blocco 0°)
+  - IN5: FC_HEAD_DX_0 (induttivo NPN NO, blocco 0°)
+  - IN6–IN8: riserva
 - OUT (relè):
   - OUT1: Testa SX 45° (bobina A)
   - OUT2: Testa SX 0°  (bobina B)
@@ -103,7 +106,7 @@ Implementazione pratica inibizione HW morse:
 
 5) Linee e cablaggi principali
 - 230VAC: ingresso → sezionatore/MT → alimentatori DC + presa 230V RPi PSU.
-- 48V DC: TDR-960 → DCS810 (cavi corti, separati).
+- 48V DC: TDR-960 → MD25HV (cavi corti, separati).
 - 24V DC:
   - SDR-240 → Portafusibili (F1..F4) → rami:
     - F1 → Moduli I/O/sensori
@@ -113,9 +116,10 @@ Implementazione pratica inibizione HW morse:
   - 0V comune su barra (punto stella).
 - 12V DC: SDR-120 → morsettiera AUX.
 - 5V DC: MDR-10 → Arduino/ESP32; RPi su PSU originale.
-- RS232: RPi ↔ DCS810 (cavo schermato).
-- RS485: RPi → Mod#1 → Mod#2 → Arduino SX → Arduino DX; terminazione 120 Ω ultimo nodo.
-- Encoder motore ELTRA: su DCS810 (schermato; calza a PE lato driver).
+- PWM/DIR/EN: RPi GPIO 12/13/16 → MD25HV.
+- RS485: RPi → Mod#1 → Mod#2; terminazione 120 Ω ultimo nodo.
+- Encoder motore ELTRA: 12 V NPN → AL-ZARD #1 → GPIO 17/27/22 (schermato; calza a PE quadro).
+- Encoder teste: 12 V NPN 600 P/R → AL-ZARD #2 → GPIO 5/6/19/26.
 - Inibizione lama: contatto NC in serie al positivo bobina EV (SX e DX).
 - Inibizione morse per lato: contatto NC in serie al positivo del ramo “APRI” (SX o DX) secondo modalità.
 
@@ -152,18 +156,17 @@ Comando software:
 
 ---
 
-## Encoder ELTRA — caratteristiche e cablaggio
-- Tipologia: Incrementale (serie tipiche E6/E8)
-- Alimentazione: 5V DC (±5%)
-- Uscite: Canali A, B (quadratura); Indice Z opzionale
-- Segnali: TTL single-ended oppure Line Driver (differenziale). Preferibile Line Driver su tratte >1–2 m
-- Risoluzione: da 500 a 1024 PPR (impostare secondo cinematica e requisiti del driver)
-- Cablaggio su DCS810:
-  - 5V → pin alimentazione encoder
-  - GND → ritorno encoder
-  - EA (A), EB (B), EZ (Z) → ingressi encoder del driver
-  - Schermo/calza → PE lato driver (un solo lato)
-- Raccomandazioni EMC: cavo schermato, coppie twistate per A/B; separare da linee 48V e bobine EV
+## Encoder ELTRA carro — caratteristiche e cablaggio
+- Modello: EH63D.1B000S12N8X3PA (1000 P/R, NPN, 12 V, albero 8 mm, Z presente)
+- Percorso: A/B/Z 12 V → AL-ZARD DST-1R4P-N (anodo comune) → GPIO 17/27/22 a 3,3 V
+- Schermo/calza → PE quadro (un solo lato)
+- Non collegare A/B a VCC né ai GPIO del Pi
+
+## Encoder inclinazione teste
+- Incrementale AB NPN 600 P/R, 12 V (5–24 V), albero 6 mm
+- Cavo schermato FR2OHH2R 6×0,50 → secondo AL-ZARD 12→3,3 V → GPIO 5/6 (SX) e 19/26 (DX)
+- Quadratura x4: 2400 conteggi/giro (0,15° se 1:1)
+- Zero: due induttivi NPN NO lato fermo 0° → IN4/IN5; azzeramento a testa ferma (ritardo), non al primo contatto
 
 ---
 
@@ -178,7 +181,9 @@ Comando software:
   - Indirizzo 0: IN1 (FC_MIN)
   - Indirizzo 1: IN2 (FC_MAX)
   - Indirizzo 2: IN3 (EMERG Stato)
-  - Indirizzi 3–7: IN4–IN8 (riserva)
+  - Indirizzo 3: IN4 (FC_HEAD_SX_0)
+  - Indirizzo 4: IN5 (FC_HEAD_DX_0)
+  - Indirizzi 5–7: IN6–IN8 (riserva)
 - Coils (Uscite relè):
   - Indirizzo 0: OUT1 (Testa SX 45°)
   - Indirizzo 1: OUT2 (Testa SX 0°)
@@ -237,8 +242,8 @@ Dimensionamento e schermatura per ridurre EMI e garantire affidabilità:
 | **24V EV/I/O** | 0.5–1 mm² | NO | Rosso (+24V), Blu (0V). Rami F1–F4 su portafusibili DIN. |
 | **24V Sensori (NPN/PNP)** | 0.25–0.5 mm² | SÌ (se >2 m) | Marrone (+24V), Blu (0V), Nero (OUT). Calza a PE quadro. |
 | **RS485 Modbus** | 0.25–0.5 mm² | SÌ | Twistato (A, B), schermo. Calza a PE lato quadro (un solo lato). Terminazione 120Ω ultimo nodo. |
-| **RS232 Driver DCS810** | N/A | SÌ | Cavo schermato 3 fili (TXD, RXD, GND). Lunghezza <5 m. |
-| **Encoder ELTRA** | 0.15–0.25 mm² | SÌ | 5V (Rosso), GND (Nero), A/B/Z (coppie twistate). Calza a PE lato driver. |
+| **PWM MD25HV** | 0.25 mm² | SÌ se >2 m | GPIO 12/13/16. Separare dai 48 V. |
+| **Encoder ELTRA / teste NPN** | 0.50 mm² | SÌ | 12V, GND, A/B(/Z). Calza a PE quadro. AL-ZARD 12→3,3 V. |
 | **PE (Terra protezione)** | 1.5–2.5 mm² | NO | Giallo/Verde. Barra PE quadro; un punto stella. |
 
 **Note EMC**:
@@ -250,12 +255,11 @@ Dimensionamento e schermatura per ridurre EMI e garantire affidabilità:
 
 ---
 
-## Morsetti Driver Leadshine DCS810 — piedinatura
-- Alimentazione: +VDC (+48V), GND (0V)
-- Motore: M+ (U+), M− (U−)
-- Encoder: 5V, GND, EA (A), EB (B), EZ (Z)
-- I/O: ENA+/ENA− (enable), ALM+/ALM− (allarme)
-- RS232: TXD/RXD/GND (comunicazione con RPi/Waveshare)
+## Morsetti Driver Cytron MD25HV — piedinatura
+- Alimentazione: B+ (+48V), B− (0V)
+- Motore: M+, M−
+- Logica: PWM (GPIO 12), DIR (GPIO 13), EN (GPIO 16)
+- Encoder: non entra nel driver; passa dall'AL-ZARD al Raspberry Pi
 
 ---
 
@@ -263,7 +267,7 @@ Dimensionamento e schermatura per ridurre EMI e garantire affidabilità:
 - ../layouts/layout_quadro_blitz_rev5.svg: posizioni guide DIN, canalette 40x40 e linee schematiche.
 - ../tables/tabella_morsetti_blitz.csv: mappatura morsetti.
 - ../tables/mappa_io_modbus_blitz.csv: mappatura I/O Modbus.
-- ../tables/morsetti_driver_dcs810.csv: morsetti driver DCS810.
+- ../tables/morsetti_driver_md25hv.csv: morsetti driver MD25HV.
 - ../scripts/make_excel_from_csv.py: script per generare Excel con tre fogli (Morsetti, I/O Modbus, Lista componenti).
 - ../scripts/make_pdfs.py: script per generare PDF con tabelle multipage (morsetti, Modbus, driver, lista componenti).
 - ../scripts/requirements-mapping.txt: dipendenze per Excel/PDF.

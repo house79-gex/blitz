@@ -189,7 +189,7 @@ class OutOfQuotaHandler:
         try:
             # 1. Apply angles FIRST
             self.mio.command_set_head_angles(
-                sx=90.0,  # Fixed head always 90°
+                sx=0.0,  # Testa fissa a quadro (0°), non 90°
                 dx=self.sequence.heading_angle
             )
             
@@ -204,7 +204,7 @@ class OutOfQuotaHandler:
             # 3. Start movement
             success = self.mio.command_move(
                 self.sequence.heading_position,
-                ang_sx=90.0,
+                ang_sx=0.0,
                 ang_dx=self.sequence.heading_angle
             )
             

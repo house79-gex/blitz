@@ -58,14 +58,14 @@ class TestBlitzMainWindowInit:
         assert "home" in window._pages, "Home page not loaded"
         
         # Verify expected pages are loaded (excluding StatisticsPage which doesn't exist)
-        expected_pages = ["home", "semi_auto", "automatico", "manuale", "utility", "label_editor"]
+        expected_pages = ["home", "semi_auto", "automatico", "manuale", "utility", "label_editor", "tipologie", "quotevani"]
         for page_key in expected_pages:
-            # Page might fail to load if dependencies are missing, but we check the attempt was made
-            if page_key in window._pages:
-                wrapper, idx, page_widget = window._pages[page_key]
-                assert wrapper is not None
-                assert idx >= 0
-                assert page_widget is not None
+            assert page_key in window._pages, f"Pagina '{page_key}' non caricata"
+            wrapper, idx, page_widget = window._pages[page_key]
+            assert wrapper is not None
+            assert idx >= 0
+            assert page_widget is not None
+        assert "cutlist" not in window._pages
     
     def test_statistics_page_not_loaded(self, qtbot):
         """Test that the non-existent StatisticsPage is not in the pages list."""

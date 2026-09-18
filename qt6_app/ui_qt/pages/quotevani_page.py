@@ -121,7 +121,11 @@ class QuoteVaniPage(QFrame):
 
         act = QHBoxLayout()
         btn_calc = QPushButton("Calcola lista taglio"); btn_calc.clicked.connect(self._calc_and_store)
-        act.addWidget(btn_calc); act.addStretch(1)
+        btn_to_auto = QPushButton("Invia ad Automatico")
+        btn_to_auto.clicked.connect(self._send_to_automatico)
+        act.addWidget(btn_calc)
+        act.addWidget(btn_to_auto)
+        act.addStretch(1)
         root.addLayout(act)
 
     # Viewer: sola visualizzazione
@@ -129,6 +133,31 @@ class QuoteVaniPage(QFrame):
         if not self._last_cuts:
             QMessageBox.information(self, "Lista", "Calcola prima la lista di taglio oppure apri una lista salvata (Apri commessa…)."); return
         CutlistViewerDialog(self, self._last_cuts).exec()
+
+    def _send_to_automatico(self):
+        """Invia la lista di taglio calcolata alla pagina Automatico."""
+        if not self._last_cuts:
+            QMessageBox.information(
+                self, "Automatico",
+                "Calcola prima la lista di taglio, poi inviala al ciclo automatico."
+            )
+            return
+        auto = None
+        try:
+            pages = getattr(self.appwin, "_pages", {}) or {}
+            if "automatico" in pages:
+                auto = pages["automatico"][2]
+        except Exception:
+            auto = None
+        if auto is None or not hasattr(auto, "load_cutlist_from_cuts"):
+            QMessageBox.warning(self, "Automatico", "Pagina Automatico non disponibile.")
+            return
+        try:
+            auto.load_cutlist_from_cuts(self._last_cuts)
+            if hasattr(self.appwin, "show_page"):
+                self.appwin.show_page("automatico")
+        except Exception as e:
+            QMessageBox.critical(self, "Automatico", str(e))
 
     # ----- Orders DB -----
     def _new_order(self):

@@ -50,6 +50,12 @@ class MachineAdapter:
     def command_set_head_angles(self, sx: float, dx: float) -> bool:
         return self._raw.command_set_head_angles(sx, dx)
 
+    def command_zero_head_encoder(self, side: str = "both") -> bool:
+        """Azzera encoder inclinazione (testa a 0° meccanico)."""
+        if hasattr(self._raw, "command_zero_head_encoder"):
+            return bool(self._raw.command_zero_head_encoder(side))
+        return False
+
     def set_mode_context(self, mode: str, piece_length_mm: float = 0.0,
                          bar_length_mm: float = 6500.0):
         """Imposta contesto modalità per logica morse."""
@@ -99,3 +105,7 @@ class MachineAdapter:
             self._raw.close()
         except Exception:
             pass
+
+    def __getattr__(self, name: str):
+        """Espone gli attributi della macchina raw (angoli, freno, homing)."""
+        return getattr(self._raw, name)

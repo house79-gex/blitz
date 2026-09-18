@@ -31,7 +31,7 @@ Usage Example:
         
         # Execute handler
         handler = OutOfQuotaHandler(machine_io, config)
-        handler.start_sequence(180.0, angle_sx=90.0, angle_dx=90.0)
+        handler.start_sequence(180.0, angle_sx=0.0, angle_dx=0.0)
     ```
 
 Modules:

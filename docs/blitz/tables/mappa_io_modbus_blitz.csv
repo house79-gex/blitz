@@ -2,8 +2,8 @@ Dispositivo,ID Modbus,Tipo,Canale,Direzione,Segnale/Linea,Ramo Fusibile,Note/Int
 Modulo IO #1,1,IN,IN1,IN,FC_MIN (NPN NO),F1,Homing/Min
 Modulo IO #1,1,IN,IN2,IN,FC_MAX (Microswitch NA),F1,Limite max
 Modulo IO #1,1,IN,IN3,IN,EMERG Stato (NO),F1,1=OK 0=EMERG
-Modulo IO #1,1,IN,IN4,IN,Riserva,F1,
-Modulo IO #1,1,IN,IN5,IN,Riserva,F1,
+Modulo IO #1,1,IN,IN4,IN,FC_HEAD_SX_0 (NPN NO),F1,Testa SX sul blocco 0°
+Modulo IO #1,1,IN,IN5,IN,FC_HEAD_DX_0 (NPN NO),F1,Testa DX sul blocco 0°
 Modulo IO #1,1,IN,IN6,IN,Riserva,F1,
 Modulo IO #1,1,IN,IN7,IN,Riserva,F1,
 Modulo IO #1,1,IN,IN8,IN,Riserva,F1,

@@ -85,7 +85,7 @@
   <text x="485" y="355" text-anchor="middle" class="label">Raspberry Pi 5</text>
   <text x="485" y="370" text-anchor="middle" class="label">+ USB Waveshare</text>
   <rect x="80" y="600" width="230" height="85" class="comp-driver"/>
-  <text x="195" y="617" text-anchor="middle" class="label">Leadshine DCS810</text>
+  <text x="195" y="617" text-anchor="middle" class="label">Cytron MD25HV</text>
   <text x="195" y="632" text-anchor="middle" class="label">48V DC Servo - RS232</text>
   <text x="195" y="647" text-anchor="middle" class="label">151 x 97 x 48.5</text>
   <rect x="320" y="595" width="180" height="95" class="terminal"/>
