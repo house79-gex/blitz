@@ -20,7 +20,7 @@ Sessione odierna: FC 0° teste (LR12-04N1), zero **nell’homing unico** (non in
 | I/O FC | Mod#1 **IN4 SX / IN5 DX**, morsetti T95/T96, 24 V F1. Cavo 2 m PVC + prolunga schermata in quadro |
 | Zero teste | **Homing unico**: comando 0° → attesa FC assestato (`settle_ms` 400 + encoder fermo) → zero encoder → homing carro. `auto_zero: false` in ciclo |
 | Inclinazione oggi | Cilindri 2 pos 0°/45°, impulso EV Mod#1 OUT1–OUT4 (`head_tilt.mode = pneumatic_2pos`) |
-| Inclinazione futuro | Attuatori lineari stessa corsa/attacchi, angolo continuo 0–45°. Stub only |
+| Inclinazione futuro | Attuatori lineari 48 V, **corsa 100 mm** (effettivi 85 mm, ~4 s come i pneumatici). Stub software |
 | Opto | AL-ZARD DST-1R4P-N, **NPN** anodo comune, VCC uscita **3,3 V** |
 | Cavo teste encoder | FR2OHH2R 6×0,50 schermato, calza a PE solo in quadro |
 | ESP32 / RS485 teste | Non servono (resta `interface=modbus` come alternativa) |
@@ -48,7 +48,7 @@ Non azzerare l’encoder a ogni passaggio sul FC in lavorazione.
 - FC teste + helper `HeadHomeLimitHelper` (assestamento, non fronte immediato)
 - Homing carro+teste; `PneumaticTwoPosDrive` impulsi 0/45
 - Stub `LinearActuatorTiltDrive` + `docs/HEAD_TILT_ACTUATORS.md`
-- `avvia_blitz.bat` su Windows (`SIMULATION=1`)
+- Corretti Automatico: `tan(90°)` che azzerava le quote, teste a 45° invece di quadro, inhibit lame a 0°, packing BFD e stato ARMING bloccato
 
 ## Aperto / da fare sul campo
 
@@ -56,8 +56,9 @@ Non azzerare l’encoder a ogni passaggio sul FC in lavorazione.
 - Secondo AL-ZARD + due encoder 600 P/R NPN
 - Due **LR12-04N1** + bandiera acciaio sul fermo 0° (IN4/IN5)
 - Verifica impulsi freno 250 ms e EV inclinazione 0°/45°
-- Misurare corsa e forza dei cilindri **prima** di comprare gli attuatori lineari
-- `planner.plan_ilp` è stub; il taglio usa `refiner.py`
+- Misurati cilindri teste: **85 mm** in **~4 s** (dolce). Attuatore 100 mm / 20 mm/s è in pari; non 200 mm
+- `planner.plan_ilp` è stub; Automatico usa `refiner.pack_bars_knapsack_ilp`
+- Automatico: angoli **0–45°** (90° = quadro). Sequenza non resta più in ARMING se il move fallisce
 - Copertura test bassa su Automatico/Semi
 - Documenti storici Arduino MT6701: **non** è il percorso angolo teste
 

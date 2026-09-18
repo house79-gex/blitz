@@ -24,13 +24,14 @@ Percorso corretto:
 2. Target in **gradi** (0–45).
 3. PID (o tabella mm↔°) sull’encoder testa, l’attuatore è solo il muscolo.
 
-## Requisiti attuatore (da misurare sul cilindro attuale)
+## Requisiti attuatore (misurati sul cilindro attuale)
 
-- Corsa = corsa del cilindro (stessi perni)
-- Forza statica ≥ spinta del cilindro a 0° e a 45° (non “coppia” da catalogo: è forza × braccio)
-- Velocità: i cilindri sono rapidi; un elettrico è più lento — va bene in setup, da valutare in automatico
-- Tenuta a macchina ferma (vite irreversibile o freno): durante il taglio la testa non deve arretrare
-- 24 V se resti sul quadro attuale, o 48 V se serve più forza
+- Corsa effettiva **85 mm** (0°→45° tra i perni)
+- Tempo pneumatico **~4 s**, avanzamento dolce → **~21 mm/s**
+- Attuatore candidato: **100 mm**, 48 V, vite autobloccante, IP66 (es. HAKIWO). A 20 mm/s su 85 mm ≈ **4,3 s** (pari al cilindro)
+- Forza cilindro Ø 80 mm a 7 bar ≈ **3500 N**; 6500–12000 N di catalogo sono sufficienti
+- Tenuta a macchina ferma: vite irreversibile (scheda: autobloccante a motore spento)
+- Feedback angolo: encoder testa, non il potenziometro dell’asta
 
 `data/hardware_config.json` → `head_tilt.mode`:
 
@@ -41,4 +42,4 @@ Software: `qt6_app/ui_qt/hardware/head_tilt_drive.py` (`LinearActuatorTiltDrive`
 
 ## Cosa non fare ora
 
-Non comprare gli attuatori prima di aver misurato corsa e forza sui cilindri, e prima di aver deciso se il fermo 45° resta. L’homing a 0° con i due LR12-04N1 si fa già con i cilindri attuali.
+Non comprare 200 mm: la corsa vera è 85 mm. Montare i 100 mm con **~5–10 mm liberi** a ogni estremo, così 0° e 45° arrivano sui fermi testa **prima** dei finecorsa interni dell’asta. Lo zero resta FC 0° + encoder.

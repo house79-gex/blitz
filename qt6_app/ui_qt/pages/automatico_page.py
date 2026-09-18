@@ -28,8 +28,10 @@ from ui_qt.logic.refiner import (
     refine_tail_ilp,
     bar_used_length,
     residuals,
-    joint_consumption
+    joint_consumption,
+    _effective_piece_length,
 )
+from ui_qt.logic.angles import normalize_cut_tilt_deg
 
 from ui_qt.services.profiles_store import ProfilesStore
 from ui_qt.utils.cutlist_importer import CutlistImporter
@@ -970,8 +972,8 @@ class AutomaticoPage(QWidget):
                 prof = (self.tbl_cut.item(r, 1).text() if self.tbl_cut.item(r, 1) else "") or "IMPORT"
                 element = (self.tbl_cut.item(r, 2).text() if self.tbl_cut.item(r, 2) else "") or ""
                 L = float(self.tbl_cut.item(r, 3).text())
-                ax = float(self.tbl_cut.item(r, 4).text())
-                ad = float(self.tbl_cut.item(r, 5).text())
+                ax = normalize_cut_tilt_deg(self.tbl_cut.item(r, 4).text())
+                ad = normalize_cut_tilt_deg(self.tbl_cut.item(r, 5).text())
                 q = int(self.tbl_cut.item(r, 6).text())
                 note = (self.tbl_cut.item(r, 7).text() if self.tbl_cut.item(r, 7) else "") or ""
             except Exception:
@@ -1065,7 +1067,7 @@ class AutomaticoPage(QWidget):
             for col,it in enumerate(self._header_items(prof)): self.tbl_cut.setItem(r,col,it)
             for c in groups[prof]:
                 r=self.tbl_cut.rowCount(); self.tbl_cut.insertRow(r)
-                Lmm=float(c.get("length_mm",0.0)); ax=float(c.get("ang_sx",0.0)); ad=float(c.get("ang_dx",0.0)); qty=int(c.get("qty",0))
+                Lmm=float(c.get("length_mm",0.0)); ax=normalize_cut_tilt_deg(c.get("ang_sx",0.0)); ad=normalize_cut_tilt_deg(c.get("ang_dx",0.0)); qty=int(c.get("qty",0))
                 cells=[
                     QTableWidgetItem(str(seq_counter)),
                     QTableWidgetItem(prof),
@@ -1120,8 +1122,8 @@ class AutomaticoPage(QWidget):
             if self.tbl_cut.item(r,1) and self.tbl_cut.item(r,1).text().strip()==profile:
                 try:
                     L=float(self.tbl_cut.item(r,3).text())
-                    ax=float(self.tbl_cut.item(r,4).text())
-                    ad=float(self.tbl_cut.item(r,5).text())
+                    ax=normalize_cut_tilt_deg(self.tbl_cut.item(r,4).text())
+                    ad=normalize_cut_tilt_deg(self.tbl_cut.item(r,5).text())
                     q=int(self.tbl_cut.item(r,6).text())
                 except Exception: continue
                 if q>0: rows.append({"length_mm":round(L,2),"ang_sx":ax,"ang_dx":ad,"qty":q})
@@ -1145,8 +1147,8 @@ class AutomaticoPage(QWidget):
             if self.tbl_cut.item(r,1) and self.tbl_cut.item(r,1).text().strip()==prof:
                 try:
                     L=round(float(self.tbl_cut.item(r,3).text()),2)
-                    ax=float(self.tbl_cut.item(r,4).text())
-                    ad=float(self.tbl_cut.item(r,5).text())
+                    ax=normalize_cut_tilt_deg(self.tbl_cut.item(r,4).text())
+                    ad=normalize_cut_tilt_deg(self.tbl_cut.item(r,5).text())
                     q=int(self.tbl_cut.item(r,6).text())
                     element=str(self.tbl_cut.item(r,2).text() or "")
                     meta=self.tbl_cut.item(r,0).data(Qt.UserRole) or {}
@@ -1252,7 +1254,13 @@ class AutomaticoPage(QWidget):
             self._emit_active_piece()
         else:
             self._state=STATE_ARMING
-            self._start_move(piece)
+            if not self._start_move(piece):
+                # Riprova lo stesso pezzo al prossimo Start (non restare in ARMING)
+                self._seq_pos = nxt - 1
+                self._pending_active_piece = None
+                self._state = STATE_IDLE
+                self._update_cycle_state_label()
+                return
         self._apply_active_row(self._find_row_for_piece_tol(piece["profile"],piece["len"],piece["ax"],piece["ad"]))
         self._update_counters_ui()
         self._update_cycle_state_label()
@@ -1345,20 +1353,20 @@ class AutomaticoPage(QWidget):
         # Configure blades based on angles
         if self.mio:
             try:
-                self.mio.command_set_blade_inhibit(
-                    left=(piece.get("ax", 0) == 0),
-                    right=(piece.get("ad", 0) == 0)
-                )
+                # Taglio normale: entrambe le lame abilitate (0° = quadro, non «lama spenta»)
+                self.mio.command_set_blade_inhibit(left=False, right=False)
             except Exception as e:
                 logger.error(f"Error configuring blades: {e}")
         
+        ax = normalize_cut_tilt_deg(piece.get("ax", 0.0))
+        ad = normalize_cut_tilt_deg(piece.get("ad", 0.0))
         # Execute movement
         if self.mio:
             try:
                 success = self.mio.command_move(
                     eff,
-                    piece.get("ax", 0.0),
-                    piece.get("ad", 0.0),
+                    ax,
+                    ad,
                     profile=piece.get("profile", ""),
                     element=piece.get("element", "")
                 )
@@ -1378,7 +1386,7 @@ class AutomaticoPage(QWidget):
                 return False
         else:
             # Fallback to legacy positioning if no mio
-            self._position_machine_exact(eff, piece["ax"], piece["ad"], piece["profile"], piece["element"])
+            self._position_machine_exact(eff, ax, ad, piece["profile"], piece["element"])
             self._state = STATE_MOVING
             self._update_cycle_state_label()
             self._log_state(f"Start normal move (legacy) len_eff={eff:.2f}")
@@ -1411,8 +1419,8 @@ class AutomaticoPage(QWidget):
         try:
             success = self._out_of_quota_handler.start_sequence(
                 target_length_mm=piece["len"],
-                angle_sx=piece.get("ax", 90.0),
-                angle_dx=piece.get("ad", 90.0)
+                angle_sx=normalize_cut_tilt_deg(piece.get("ax", 0.0)),
+                angle_dx=normalize_cut_tilt_deg(piece.get("ad", 0.0))
             )
             
             if success:
@@ -1461,8 +1469,8 @@ class AutomaticoPage(QWidget):
         try:
             success = self._ultra_short_handler.start_sequence(
                 target_length_mm=piece["len"],
-                angle_sx=piece.get("ax", 90.0),
-                angle_dx=piece.get("ad", 90.0)
+                angle_sx=normalize_cut_tilt_deg(piece.get("ax", 0.0)),
+                angle_dx=normalize_cut_tilt_deg(piece.get("ad", 0.0))
             )
             
             if success:
@@ -1511,8 +1519,8 @@ class AutomaticoPage(QWidget):
         try:
             success = self._extra_long_handler.start_sequence(
                 target_length_mm=piece["len"],
-                angle_sx=piece.get("ax", 90.0),
-                angle_dx=piece.get("ad", 90.0)
+                angle_sx=normalize_cut_tilt_deg(piece.get("ax", 0.0)),
+                angle_dx=normalize_cut_tilt_deg(piece.get("ad", 0.0))
             )
             
             if success:
@@ -1875,8 +1883,8 @@ class AutomaticoPage(QWidget):
             try:
                 p=self.tbl_cut.item(r,1).text().strip()
                 L=float(self.tbl_cut.item(r,3).text())
-                A=float(self.tbl_cut.item(r,4).text())
-                D=float(self.tbl_cut.item(r,5).text())
+                A=normalize_cut_tilt_deg(self.tbl_cut.item(r,4).text())
+                D=normalize_cut_tilt_deg(self.tbl_cut.item(r,5).text())
             except Exception:
                 continue
             if p!=prof: continue
@@ -1919,9 +1927,11 @@ class AutomaticoPage(QWidget):
     def _effective_position_length(self, external_len_mm: float, ang_sx: float, ang_dx: float, thickness_mm: float) -> float:
         th=max(0.0, thickness_mm)
         if th<=0.0: return max(0.0, external_len_mm)
+        ax = normalize_cut_tilt_deg(ang_sx)
+        ad = normalize_cut_tilt_deg(ang_dx)
         sx=0.0; dx=0.0
-        with contextlib.suppress(Exception): sx=th*tan(radians(abs(ang_sx)))
-        with contextlib.suppress(Exception): dx=th*tan(radians(abs(ang_dx)))
+        with contextlib.suppress(Exception): sx=th*tan(radians(ax))
+        with contextlib.suppress(Exception): dx=th*tan(radians(ad))
         return max(0.0, external_len_mm - sx - dx)
 
     def _position_machine_exact(self,target_mm:float,ax:float,ad:float,profile:str,element:str):
@@ -1949,8 +1959,8 @@ class AutomaticoPage(QWidget):
             try:
                 p=self.tbl_cut.item(r,1).text().strip()
                 L=round(float(self.tbl_cut.item(r,3).text()),2)
-                ax=round(float(self.tbl_cut.item(r,4).text()),1)
-                ad=round(float(self.tbl_cut.item(r,5).text()),1)
+                ax=round(normalize_cut_tilt_deg(self.tbl_cut.item(r,4).text()),1)
+                ad=round(normalize_cut_tilt_deg(self.tbl_cut.item(r,5).text()),1)
                 q=int((self.tbl_cut.item(r,6).text() or "0").strip())
             except Exception: continue
             if p==prof and L==L2 and ax==ax1 and ad==ad1: rem+=q
@@ -2120,8 +2130,10 @@ class AutomaticoPage(QWidget):
                   reversible:bool,thickness_mm:float,angle_tol:float,
                   max_angle:float,max_factor:float)->Tuple[List[List[Dict[str,Any]]],List[float]]:
         bars=[]
-        for p in pieces:
-            need=p["len"]; placed=False
+        ordered = sorted(pieces, key=lambda p: float(p.get("len", 0.0)), reverse=True)
+        for p in ordered:
+            need = _effective_piece_length(p, thickness_mm)
+            placed=False
             for b in bars:
                 used=bar_used_length(b,kerf_base,self._ripasso_mm,reversible,thickness_mm,angle_tol,max_angle,max_factor)
                 extra=joint_consumption(b[-1],kerf_base,self._ripasso_mm,reversible,thickness_mm,angle_tol,max_angle,max_factor)[0] if b else 0.0

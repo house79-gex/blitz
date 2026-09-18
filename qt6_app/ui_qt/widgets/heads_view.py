@@ -4,6 +4,9 @@ from PySide6.QtCore import Qt, QPointF
 import math
 
 
+from ui_qt.logic.angles import normalize_cut_tilt_deg
+
+
 def normalize_head_tilt_deg(raw) -> float:
     """
     Converte un angolo testa in inclinazione 0–45° per il disegno.
@@ -11,13 +14,7 @@ def normalize_head_tilt_deg(raw) -> float:
     Convenzione UI Semi-auto: 0 = taglio quadro, 45 = 45°.
     Valori ~90 (convenzione lama perpendicolare) diventano 0°.
     """
-    try:
-        a = float(raw)
-    except (TypeError, ValueError):
-        return 0.0
-    if a > 45.0:
-        a = abs(90.0 - a)
-    return max(0.0, min(45.0, a))
+    return normalize_cut_tilt_deg(raw)
 
 
 class HeadsView(QFrame):
