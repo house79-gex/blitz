@@ -32,6 +32,14 @@ from ui_qt.logic.refiner import (
     _effective_piece_length,
 )
 from ui_qt.logic.angles import normalize_cut_tilt_deg
+from ui_qt.logic.plan_advance import (
+    decide_plan_advance,
+    filter_valid_pieces,
+    sanitize_bars,
+    reorder_bars_for_cut,
+    is_valid_cut_piece,
+    MIN_CUT_LEN_MM,
+)
 
 from ui_qt.services.profiles_store import ProfilesStore
 from ui_qt.utils.cutlist_importer import CutlistImporter
@@ -93,7 +101,10 @@ STATE_IDLE = "idle"
 STATE_ARMING = "arming"
 STATE_MOVING = "moving"
 STATE_READY = "ready_to_cut"
-STATE_WAIT_BRAKE = "await_brake_release"
+STATE_WAIT_CUT = "await_cut_done"
+STATE_WAIT_BAR = "await_next_bar"
+# Alias storico: alcuni log/test usano ancora questo nome
+STATE_WAIT_BRAKE = STATE_WAIT_CUT
 
 # ---- Dialog configurazione ottimizzazione ----
 class OptimizationConfigDialog(QDialog):
@@ -356,7 +367,9 @@ class AutomaticoPage(QWidget):
         self._allow_skip_cut=bool(cfg.get("opt_allow_skip_cut",False))
         self._extshort_safe_mm=float(cfg.get("auto_extshort_safe_pos_mm",400.0)) if "auto_extshort_safe_pos_mm" in cfg else 400.0
         self._kerf_base_mm=float(cfg.get("opt_kerf_mm",3.0)) if "opt_kerf_mm" in cfg else 3.0
-        self._after_cut_pause_ms=int(float(cfg.get("auto_after_cut_pause_ms",300))) if "auto_after_cut_pause_ms" in cfg else 300
+        self._after_cut_pause_ms=int(float(cfg.get("auto_after_cut_pause_ms",800))) if "auto_after_cut_pause_ms" in cfg else 800
+        self._cut_advance_armed=False
+        self._cut_done_at=0.0
 
         self._label_enabled=bool(cfg.get("label_enabled",False))
         self._label_printer=LabelPrinter(cfg, toast_cb=self._toast)
@@ -481,7 +494,10 @@ class AutomaticoPage(QWidget):
         self.lbl_cycle_state=QLabel("Stato ciclo: IDLE")
         self.lbl_cycle_state.setStyleSheet("QLabel { font-size:16px; font-weight:700; }")
         ccl.addWidget(self.lbl_cycle_state)
-        ccl.addWidget(QLabel("F9: posiziona / avanza. F7: taglio.\nAvanza successivo solo dopo taglio + rilascio freno (o opt_allow_skip_cut)."))
+        ccl.addWidget(QLabel(
+            "F9: avvia / nuova barra. F7: taglio.\n"
+            "Dopo taglio (lame rientrate + pausa): sblocco freno, posa, blocco, pezzo successivo."
+        ))
         rl.addWidget(cycle_box,0)
 
         lab_box=QFrame(); lab_box.setStyleSheet("QFrame { border:1px solid #3b4b5a; border-radius:6px; }")
@@ -939,6 +955,10 @@ class AutomaticoPage(QWidget):
             self._strict_bar_sequence=bool(cfg.get("opt_strict_bar_sequence",True))
             self._tail_refine_enabled=bool(cfg.get("opt_enable_tail_refine",True))
             self._allow_skip_cut=bool(cfg.get("opt_allow_skip_cut",False))
+            try:
+                self._after_cut_pause_ms=int(float(cfg.get("auto_after_cut_pause_ms",800)))
+            except Exception:
+                pass
             logger.info(f"Auto-continue updated: enabled={self._auto_continue_enabled}")
 
     # ---- Import cutlist ----
@@ -1066,8 +1086,11 @@ class AutomaticoPage(QWidget):
             r=self.tbl_cut.rowCount(); self.tbl_cut.insertRow(r)
             for col,it in enumerate(self._header_items(prof)): self.tbl_cut.setItem(r,col,it)
             for c in groups[prof]:
+                Lmm=float(c.get("length_mm",0.0))
+                if Lmm <= MIN_CUT_LEN_MM:
+                    continue
                 r=self.tbl_cut.rowCount(); self.tbl_cut.insertRow(r)
-                Lmm=float(c.get("length_mm",0.0)); ax=normalize_cut_tilt_deg(c.get("ang_sx",0.0)); ad=normalize_cut_tilt_deg(c.get("ang_dx",0.0)); qty=int(c.get("qty",0))
+                ax=normalize_cut_tilt_deg(c.get("ang_sx",0.0)); ad=normalize_cut_tilt_deg(c.get("ang_dx",0.0)); qty=int(c.get("qty",0))
                 cells=[
                     QTableWidgetItem(str(seq_counter)),
                     QTableWidgetItem(prof),
@@ -1126,10 +1149,15 @@ class AutomaticoPage(QWidget):
                     ad=normalize_cut_tilt_deg(self.tbl_cut.item(r,5).text())
                     q=int(self.tbl_cut.item(r,6).text())
                 except Exception: continue
-                if q>0: rows.append({"length_mm":round(L,2),"ang_sx":ax,"ang_dx":ad,"qty":q})
+                if q>0 and float(L) > MIN_CUT_LEN_MM:
+                    rows.append({"length_mm":round(L,2),"ang_sx":ax,"ang_dx":ad,"qty":q})
         if not rows:
-            QMessageBox.information(self,"Piano","Tutte le righe per il profilo selezionato sono a Q=0."); return
-        self._opt_dialog=OptimizationRunDialog(self, profile, rows, overlay_target=self.viewer_frame)
+            QMessageBox.information(self,"Piano","Nessun pezzo valido (quota > 0) per il profilo selezionato."); return
+        # Usa le barre già ottimizzate dalla pagina (stesso ordine di taglio)
+        self._opt_dialog=OptimizationRunDialog(
+            self, profile, rows, overlay_target=self.viewer_frame,
+            precomputed_bars=list(self._bars) if self._bars else None,
+        )
         with contextlib.suppress(Exception): self.activePieceChanged.connect(self._opt_dialog.onActivePieceChanged)
         with contextlib.suppress(Exception): self.pieceCut.connect(self._opt_dialog.onPieceCut)
         with contextlib.suppress(Exception): self._opt_dialog.startRequested.connect(self._handle_start_trigger)
@@ -1153,10 +1181,13 @@ class AutomaticoPage(QWidget):
                     element=str(self.tbl_cut.item(r,2).text() or "")
                     meta=self.tbl_cut.item(r,0).data(Qt.UserRole) or {}
                 except Exception: continue
+                if float(L) <= MIN_CUT_LEN_MM:
+                    continue
                 for _ in range(max(0,q)):
                     pieces.append({"len":float(L),"ax":float(ax),"ad":float(ad),
                                    "profile":prof,"element":element,"meta":dict(meta)})
                 sig_totals[(prof,L,round(ax,1),round(ad,1))]+=max(0,q)
+        pieces = filter_valid_pieces(pieces)
         if not pieces: return
         cfg=read_settings()
         stock_nom=float(cfg.get("opt_stock_mm",6500.0))
@@ -1191,11 +1222,9 @@ class AutomaticoPage(QWidget):
                 if bars_ref and len(bars_ref)==len(bars):
                     bars=bars_ref
 
-        if not self._strict_bar_sequence:
-            for b in bars:
-                with contextlib.suppress(Exception):
-                    b.sort(key=lambda p:(-float(p["len"]),float(p["ax"]),float(p["ad"])))
-            bars.sort(key=lambda b:max((float(p["len"]) for p in b),default=0.0),reverse=True)
+        # Niente pezzi a quota ~0; ordine solo per misure (lunghi → corti)
+        bars = sanitize_bars(bars)
+        bars = reorder_bars_for_cut(bars)
 
         self._bars=bars; self._plan_profile=prof
         self._sig_total_counts.clear()
@@ -1204,12 +1233,18 @@ class AutomaticoPage(QWidget):
         self._build_sequential_plan()
         self._mode="plan"; self._state=STATE_IDLE
         self._seq_pos=-1; self._cur_sig=None
+        self._ensure_clutch_engaged()
+        if self.mio and hasattr(self.mio, "set_mode_context"):
+            with contextlib.suppress(Exception):
+                self.mio.set_mode_context("plan")
         self._update_counters_ui(); self._update_cycle_state_label()
 
     def _build_sequential_plan(self):
         self._seq_plan.clear(); seq=1
         for bi,bar in enumerate(self._bars):
             for pi,p in enumerate(bar):
+                if not is_valid_cut_piece(p):
+                    continue
                 self._seq_plan.append({
                     "seq_id":seq,"bar":bi,"idx":pi,
                     "len":float(p["len"]),"ax":float(p["ax"]),"ad":float(p["ad"]),
@@ -1242,6 +1277,11 @@ class AutomaticoPage(QWidget):
             return
         self._seq_pos=nxt
         piece=self._seq_plan[self._seq_pos]
+        # Salta pezzi a quota invalida (non devono bloccare la sequenza)
+        if not is_valid_cut_piece(piece):
+            self._log_state(f"Skip pezzo invalido seq={self._seq_pos} len={piece.get('len')}")
+            self._advance_to_next_piece(skip_move=False)
+            return
         self._cur_sig=self._sig_key(piece["profile"],piece["len"],piece["ax"],piece["ad"])
         self._pending_active_piece={
             "profile":piece["profile"],"len":piece["len"],"ax":piece["ax"],"ad":piece["ad"],
@@ -1646,45 +1686,64 @@ class AutomaticoPage(QWidget):
         # Update UI state
         self._update_cycle_state_label()
 
-    def _try_auto_continue(self):
+    def _blades_retracted(self) -> bool:
+        """True se le lame sono rientrate (o se non c'è il feedback)."""
+        if not self.mio:
+            return True
+        try:
+            if self.mio.get_input("dx_blade_out"):
+                return False
+            if self.mio.get_input("sx_blade_out"):
+                return False
+        except Exception:
+            return True
+        return True
+
+    def _complete_cut_cycle(self):
         """
-        Tenta auto-continue se abilitato e condizioni soddisfatte.
-        
-        Fix: Rimosso limite 400mm, corretto skip_move per stessa barra. 
+        Dopo taglio + lame rientrate + pausa: sblocca, riposiziona, blocca,
+        oppure attende nuova barra / fine piano.
         """
-        if not self._auto_continue_enabled:
-            logger.debug("Auto-continue disabled")
+        if not self._cut_advance_armed:
             return
-        
+        self._cut_advance_armed = False
         cur = self._seq_plan[self._seq_pos] if 0 <= self._seq_pos < len(self._seq_plan) else None
         nxt = self._next_seq_piece()
-        
-        if not cur or not nxt:
-            logger.debug(f"Auto-continue: cur={bool(cur)}, nxt={bool(nxt)}")
+        action = decide_plan_advance(
+            cur, nxt, auto_across_bars=self._auto_continue_across_bars
+        )
+        self._log_state(f"After cut action={action}")
+        if action == "done":
+            self._unlock_brake(True)
+            self._toast("Piano completato.", "ok")
+            if self._opt_dialog:
+                with contextlib.suppress(Exception):
+                    self._opt_dialog.accept()
+                self._opt_dialog = None
+            self._state = STATE_IDLE
+            self._update_cycle_state_label()
             return
-        
-        if not self._same_sig(cur, nxt):
-            logger.debug("Auto-continue: pieces not identical")
+        if action == "wait_bar":
+            self._unlock_brake(True)
+            bar_n = int(nxt.get("bar", 0)) + 1 if nxt else "?"
+            self._state = STATE_WAIT_BAR
+            self._update_cycle_state_label()
+            self._toast(f"Carica barra {bar_n}, poi F9 per continuare.", "info")
             return
-        
-        same_bar = (cur.get("bar") == nxt.get("bar"))
-        
-        if self._strict_bar_sequence and not same_bar:
-            logger.debug("Auto-continue: strict sequence, different bar")
-            return
-        
-        if not same_bar and not self._auto_continue_across_bars:
-            logger.debug("Auto-continue: cross-bar disabled")
-            return
-        
-        # All conditions met
-        logger.info(f"✅ Auto-continue triggered: same_bar={same_bar}")
-        self._log_state("Auto-continue: advancing")
-        
-        if same_bar:
+        if action == "skip_move":
+            # Stessa quota/angoli: freno resta bloccato, solo taglio successivo
             self._advance_to_next_piece(skip_move=True)
-        else:
-            self._advance_to_next_piece(skip_move=False)
+            return
+        self._unlock_brake(True)
+        self._advance_to_next_piece(skip_move=False)
+
+    def _try_auto_continue(self):
+        """Compat: l'avanzamento dopo taglio è in _complete_cut_cycle."""
+        if self._state == STATE_WAIT_CUT and self._cut_advance_armed:
+            if self._blades_retracted():
+                elapsed_ms = (time.time() - self._cut_done_at) * 1000.0
+                if elapsed_ms >= self._after_cut_pause_ms:
+                    self._complete_cut_cycle()
 
     # ---- Taglio ----
     def _simulate_cut_once(self):
@@ -1700,9 +1759,19 @@ class AutomaticoPage(QWidget):
                 "mode":"plan","bar":piece.get("bar"),"idx":piece.get("idx")
             })
         self._piece_tagliato=True
-        self._state=STATE_WAIT_BRAKE
+        self._cut_advance_armed=True
+        self._cut_done_at=time.time()
+        self._state=STATE_WAIT_CUT
+        # Fine taglio: sblocca morse (il freno resta finché non si avanza)
+        if self.mio:
+            with contextlib.suppress(Exception):
+                self.mio.command_set_morse(False, False)
+        else:
+            with contextlib.suppress(Exception):
+                setattr(self.machine, "left_morse_locked", False)
+                setattr(self.machine, "right_morse_locked", False)
         self._update_cycle_state_label()
-        self._log_state("Cut executed → WAIT_BRAKE")
+        self._log_state("Cut executed → WAIT_CUT (lame + pausa)")
 
     def _simulate_manual_cut(self):
         """Execute manual cut in any mode."""
@@ -1717,9 +1786,10 @@ class AutomaticoPage(QWidget):
         self._emit_label(piece)
         self.pieceCut.emit({**piece,"mode":"manual"})
         self._piece_tagliato=True
-        self._state=STATE_WAIT_BRAKE
+        self._state=STATE_IDLE
+        self._unlock_brake(True)
         self._update_cycle_state_label()
-        self._log_state(f"Manual cut executed in mode={self._mode} → WAIT_BRAKE")
+        self._log_state(f"Manual cut executed in mode={self._mode} → IDLE")
 
     def simulate_cut_from_dialog(self):
         if self._mode=="plan":
@@ -1738,10 +1808,12 @@ class AutomaticoPage(QWidget):
     # ---- Start (F9 / Space) ----
     def _handle_start_trigger(self):
         self._log_state(f"Start trigger state={self._state} mode={self._mode}")
-        if self._state==STATE_WAIT_BRAKE:
-            # freno rilasciato? avanzamento
-            if not self._brake_locked:
-                self._advance_to_next_piece(skip_move=False)
+        if self._state==STATE_WAIT_CUT:
+            # Attesa lame rientrate: non anticipare con F9
+            return
+        if self._state==STATE_WAIT_BAR:
+            self._unlock_brake(False)
+            self._advance_to_next_piece(skip_move=False)
             return
         if self._state in (STATE_MOVING, STATE_ARMING):
             return
@@ -1768,20 +1840,37 @@ class AutomaticoPage(QWidget):
     def _lock_brake(self):
         if self.mio:
             self.mio.command_lock_brake()
+            with contextlib.suppress(Exception):
+                self.mio.command_set_morse(True, True)
         else:
             with contextlib.suppress(Exception): setattr(self.machine,"brake_active",True)
+            with contextlib.suppress(Exception):
+                setattr(self.machine, "left_morse_locked", True)
+                setattr(self.machine, "right_morse_locked", True)
         self._refresh_brake_flag()
-        self._log_state("Brake locked.")
+        self._log_state("Brake + morse locked.")
 
     def _unlock_brake(self,silent:bool=False):
         if self.mio:
+            with contextlib.suppress(Exception):
+                self.mio.command_set_morse(False, False)
             self.mio.command_release_brake()
         else:
+            with contextlib.suppress(Exception):
+                setattr(self.machine, "left_morse_locked", False)
+                setattr(self.machine, "right_morse_locked", False)
             with contextlib.suppress(Exception): setattr(self.machine,"brake_active",False)
         self._refresh_brake_flag()
-        if self._state==STATE_WAIT_BRAKE and not self._brake_locked:
-            self._try_auto_continue()
-        self._log_state("Brake unlocked.")
+        self._log_state("Brake + morse unlocked.")
+
+    def _ensure_clutch_engaged(self):
+        """In Automatico la frizione resta sempre inserita."""
+        if self.mio:
+            with contextlib.suppress(Exception):
+                self.mio.command_set_clutch(True)
+        else:
+            with contextlib.suppress(Exception):
+                setattr(self.machine, "clutch_active", True)
     
     def _unlock_brake_and_continue(self):
         """Unlock brake and continue multi-step sequence."""
@@ -2035,11 +2124,17 @@ class AutomaticoPage(QWidget):
     def on_show(self):
         if self._poll is None:
             self._poll=QTimer(self); self._poll.timeout.connect(self._tick); self._poll.start(80)
+        self._ensure_clutch_engaged()
+        if self.mio and hasattr(self.mio, "set_mode_context"):
+            with contextlib.suppress(Exception):
+                self.mio.set_mode_context("plan")
         self._update_counters_ui(); self._update_quota_label(); self._update_cycle_state_label()
 
     def _tick(self):
         if self.mio:
             self.mio.tick()
+        # Frizione sempre inserita in Automatico
+        self._ensure_clutch_engaged()
         # Aggiorna stato freno e movimento
         self._refresh_brake_flag()
         moving = self.mio.is_positioning_active() if self.mio else bool(getattr(self.machine,"positioning_active",False))
@@ -2056,9 +2151,12 @@ class AutomaticoPage(QWidget):
                 # Normal single-step completion
                 self._emit_active_piece()
 
-        # Auto-continue se in WAIT_BRAKE e freno rilasciato
-        if self._state==STATE_WAIT_BRAKE and not self._brake_locked:
-            self._try_auto_continue()
+        # Dopo taglio: attesa lame rientrate + pausa, poi pezzo successivo
+        if self._state == STATE_WAIT_CUT and self._cut_advance_armed:
+            if self._blades_retracted():
+                elapsed_ms = (time.time() - self._cut_done_at) * 1000.0
+                if elapsed_ms >= self._after_cut_pause_ms:
+                    self._complete_cut_cycle()
 
         # Simulazione impulsi taglio / start (adapter)
         blade = self.mio.get_input("blade_pulse") if self.mio else False

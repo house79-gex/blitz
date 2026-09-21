@@ -2,11 +2,11 @@
 
 File di stato per chi riprende il lavoro. Aggiornare questa pagina a ogni intervento sostanziale.
 
-**Ultimo aggiornamento: 2026-09-17 (locale, PC faleg)**  
+**Ultimo aggiornamento: 2026-09-21 (locale, PC faleg)**  
 Branch: `cursor/integrate-cutlist-heads-encoders-5073`  
 PR: https://github.com/house79-gex/blitz/pull/37
 
-Sessione odierna: FC 0° teste (LR12-04N1), zero **nell’homing unico** (non in ciclo), stub attuatori lineari per angolo continuo.
+Sessione: piano Automatico senza pezzi/trapezi 0 mm; ordine barre/pezzi solo decrescente per misura; packing priorità lunghi; frizione sempre ON (tranne Manuale); morse blocco a posa / sblocco a fine taglio; Semi corto/ultra/extra: `execute_step_1` + multi-step in `_tick`.
 
 ## Decisione hardware corrente
 
@@ -24,7 +24,7 @@ Sessione odierna: FC 0° teste (LR12-04N1), zero **nell’homing unico** (non in
 | Opto | AL-ZARD DST-1R4P-N, **NPN** anodo comune, VCC uscita **3,3 V** |
 | Cavo teste encoder | FR2OHH2R 6×0,50 schermato, calza a PE solo in quadro |
 | ESP32 / RS485 teste | Non servono (resta `interface=modbus` come alternativa) |
-| Freno | Bistabile: OUT5 Mod#2 BLOCCO, OUT6 SBLOCCO (impulso 250 ms). A fine posa si blocca |
+| Freno | Bistabile: OUT5 Mod#2 BLOCCO, OUT6 SBLOCCO (impulso 250 ms). Si blocca **solo** a fine posa in Automatico/Semi/Manuale; **non** a fine homing |
 
 NPN e PNP **non** sono indifferenti. FC teste: **NO**, non NC (un filo staccato non deve sembrare “a 0°”). Non capacitivi, non microswitch sul fermo.
 
@@ -33,7 +33,7 @@ NPN e PNP **non** sono indifferenti. FC teste: **NO**, non NC (un filo staccato 
 1. Impulso EV teste a **0°** (entrambe).
 2. Attesa IN4/IN5 ON e angolo fermo (`settle_ms` / `stable_deg`). Se i FC non sono montati, dopo ~1 s si prosegue comunque (`heads_required: false`).
 3. `command_zero_head_encoder("both")`.
-4. Homing carro (FC_MIN / index Z) + freno bloccato.
+4. Homing carro (FC_MIN / index Z). **Freno sbloccato** a fine azzeramento.
 5. UI Semi-auto: spin angoli a 0° a fine callback.
 
 Non azzerare l’encoder a ogni passaggio sul FC in lavorazione.
@@ -43,12 +43,17 @@ Non azzerare l’encoder a ogni passaggio sul FC in lavorazione.
 - Cutlist in Automatico (niente pagina standalone)
 - Tipologie e Quote Vani in Home / `main_qt`
 - Encoder teste GPIO, PPR 600, niente DCS810/Leadshine
-- Grafica teste Semi-auto: angolo **comandato** 0–45° (misura in etichetta; `FC0°` se il FC è attivo)
-- Freno: `command_lock_brake` a fine movimento
+- Grafica teste Semi-auto: rotazione animata (~12°/s); riquadro angolo **sempre orizzontale** in tempo reale
+- Freno: `command_lock_brake` a fine **posa di ciclo**, non a fine homing
 - FC teste + helper `HeadHomeLimitHelper` (assestamento, non fronte immediato)
 - Homing carro+teste; `PneumaticTwoPosDrive` impulsi 0/45
 - Stub `LinearActuatorTiltDrive` + `docs/HEAD_TILT_ACTUATORS.md`
 - Corretti Automatico: `tan(90°)` che azzerava le quote, teste a 45° invece di quadro, inhibit lame a 0°, packing BFD e stato ARMING bloccato
+- Automatico piano: dopo taglio attende lame rientrate + pausa, sblocca, riposiziona, blocca, pezzo successivo (stessa barra). Nuova barra: F9
+- Semi-auto: 0°/45° immediati; spin custom + pulsante **Vai a pos.**
+- Piano ottimizzazione: niente pezzi/trapezi a quota 0; ordine barre/pezzi solo misura decrescente; packing ILP/BFD priorità lunghi
+- Frizione sempre ON fuori Manuale (`set_mode_context`); morse SW in Auto/Semi/speciali (blocco a posa, sblocco a fine taglio)
+- Semi corto/ultra/extra: dopo conferma dialog ora parte davvero (`execute_step_1` + continuazione multi-step in `_tick`)
 
 ## Aperto / da fare sul campo
 
@@ -58,7 +63,7 @@ Non azzerare l’encoder a ogni passaggio sul FC in lavorazione.
 - Verifica impulsi freno 250 ms e EV inclinazione 0°/45°
 - Misurati cilindri teste: **85 mm** in **~4 s** (dolce). Attuatore 100 mm / 20 mm/s è in pari; non 200 mm
 - `planner.plan_ilp` è stub; Automatico usa `refiner.pack_bars_knapsack_ilp`
-- Automatico: angoli **0–45°** (90° = quadro). Sequenza non resta più in ARMING se il move fallisce
+- Automatico: angoli **0–45°** (90° = quadro). Sequenza taglio→posa su tutta la barra; F9 per barra successiva
 - Copertura test bassa su Automatico/Semi
 - Documenti storici Arduino MT6701: **non** è il percorso angolo teste
 

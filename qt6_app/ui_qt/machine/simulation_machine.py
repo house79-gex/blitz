@@ -14,7 +14,7 @@ class SimulationMachine(MachineIO):
         self,
         min_distance: float = 250.0,
         max_cut_length: float = 4000.0,
-        speed_mm_s: float = 2000.0
+        speed_mm_s: float = 600.0
     ):
         self.min_distance = min_distance
         self.max_cut_length = max_cut_length
@@ -61,6 +61,7 @@ class SimulationMachine(MachineIO):
         )
 
         self._last_tick = time.time()
+        self._lock_brake_on_stop = True
 
     def get_position(self) -> Optional[float]:
         return self.encoder_position
@@ -81,6 +82,7 @@ class SimulationMachine(MachineIO):
     ) -> bool:
         if self.emergency_active or not self.machine_homed or self.homing_in_progress:
             return False
+        self._lock_brake_on_stop = True
         self._target = max(self.min_distance, min(float(length_mm), self.max_cut_length))
         self._moving = True
         self. left_head_angle = float(ang_sx)
@@ -127,22 +129,27 @@ class SimulationMachine(MachineIO):
         self._current_mode = str(mode)
         self._current_piece_length = float(piece_length_mm)
         self._bar_stock_length = float(bar_length_mm)
+        # Frizione sempre inserita tranne in Manuale
+        if (self._current_mode or "").lower() == "manual":
+            self.command_set_clutch(False)
+        else:
+            self.command_set_clutch(True)
         self._update_morse_control_mode()
 
     def _update_morse_control_mode(self):
         """Decide se abilitare controllo software morse (simulata)."""
         was_enabled = self._software_morse_control_enabled
         
-        if self._current_mode.startswith("ultra_long"):
+        mode = (self._current_mode or "").lower()
+        if mode == "manual":
+            self._software_morse_control_enabled = False
+        elif mode.startswith("ultra_long") or mode in (
+            "plan", "semi", "semi_auto", "normal",
+            "out_of_quota", "ultra_short", "extra_long",
+        ):
             self._software_morse_control_enabled = True
-        elif self._current_mode == "manual": 
-            self._software_morse_control_enabled = False
-        elif self._current_mode in ("plan", "semi"):
-            is_out_of_quota = self._current_piece_length > self._bar_stock_length
-            is_ultra_short = 0 < self._current_piece_length < 500.0
-            self._software_morse_control_enabled = (is_out_of_quota or is_ultra_short)
         else:
-            self._software_morse_control_enabled = False
+            self._software_morse_control_enabled = mode not in ("idle", "")
         
         if was_enabled != self._software_morse_control_enabled: 
             mode_str = "SOFTWARE" if self._software_morse_control_enabled else "PULSANTIERA"
@@ -180,6 +187,7 @@ class SimulationMachine(MachineIO):
                 if callback: callback(success=False, msg="EMERGENZA")
                 return
             self.homing_in_progress = True
+            self._lock_brake_on_stop = False
             self._moving = False
             self.command_set_head_angles(0.0, 0.0)
             self.command_zero_head_encoder("both")
@@ -190,7 +198,7 @@ class SimulationMachine(MachineIO):
             self. clutch_active = True
             self.machine_homed = True
             self.homing_in_progress = False
-            self.command_lock_brake()
+            # Il freno si blocca solo nelle sequenze Auto/Semi/Manuale, non a fine homing
             if callback: callback(success=True, msg="HOMING OK")
         threading.Thread(target=seq, daemon=True).start()
 
@@ -204,7 +212,8 @@ class SimulationMachine(MachineIO):
             if abs(dist) < 1.0:
                 self.encoder_position = self._target
                 self._moving = False
-                self.command_lock_brake()
+                if self._lock_brake_on_stop:
+                    self.command_lock_brake()
             else:
                 step = self.speed_mm_s * dt
                 if dist > 0:

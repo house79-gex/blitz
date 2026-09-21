@@ -225,16 +225,24 @@ def pack_bars_knapsack_ilp(pieces: List[Dict[str, Any]],
     if not pieces:
         return [], []
 
+    # Escludi pezzi a quota ~0 (sfrido, non tagliabili)
+    pieces = [p for p in pieces if float(p.get("len", 0.0) or 0.0) > 0.5]
+    if not pieces:
+        return [], []
+
     try:
         import pulp
         use_ilp = True
     except Exception:
         use_ilp = False
 
-    # Precalcolo lunghezze efficaci
+    # Precalcolo lunghezze efficaci; priorità packing ai pezzi più lunghi
     eff_lengths = [ _effective_piece_length(p, thickness_mm) for p in pieces ]
-
-    remaining_indices = list(range(len(pieces)))
+    remaining_indices = sorted(
+        list(range(len(pieces))),
+        key=lambda i: eff_lengths[i],
+        reverse=True,
+    )
     bars: List[List[Dict[str, Any]]] = []
     start_time_global = time.time()
 

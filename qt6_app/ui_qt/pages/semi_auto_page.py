@@ -23,9 +23,11 @@ from ui_qt.logic.modes.out_of_quota_handler import OutOfQuotaConfig
 from ui_qt.logic.modes.ultra_short_handler import UltraShortConfig
 from ui_qt.logic.modes.extra_long_handler import ExtraLongConfig
 from ui_qt.utils.settings import read_settings
+from ui_qt.logic.angles import normalize_cut_tilt_deg
 import math
 import logging
 from datetime import datetime
+import contextlib
 
 # Metro Digitale integration
 from ui_qt.services.metro_digitale_manager import get_metro_manager
@@ -104,6 +106,8 @@ class SemiAutoPage(QWidget):
         self._last_target = None
         self._last_dx_blade_out = None
         self._dx_blade_out_sim = False
+        self._blade_pulse_prev = False
+        self._ready_to_cut = False
 
         self._poll = None
         self._section_popup = None
@@ -194,6 +198,13 @@ class SemiAutoPage(QWidget):
         self.btn_cnt_reset = QPushButton("Reset")
         self.btn_cnt_reset.clicked.connect(self._reset_counter)
         cnt.addWidget(self.btn_cnt_reset, 4, 0, 1, 2)
+        self.btn_cut_sim = QPushButton("Taglio (sim F7)")
+        self.btn_cut_sim.setToolTip("Simula taglio effettuato (test contapezzi / logica).")
+        self.btn_cut_sim.setStyleSheet(
+            "QPushButton { background:#e67e22; color:#fff; font-weight:700; }"
+        )
+        self.btn_cut_sim.clicked.connect(self._simulate_cut)
+        cnt.addWidget(self.btn_cut_sim, 5, 0, 1, 2)
         top_left.addWidget(cnt_container, 0, alignment=Qt.AlignTop | Qt.AlignLeft)
 
         self.graph_frame = QFrame()
@@ -281,8 +292,12 @@ class SemiAutoPage(QWidget):
         self.spin_sx.setLocale(QLocale(QLocale.C))
         self.spin_sx.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.spin_sx.setValue(float(getattr(self.machine, "left_head_angle", 0.0)))
-        self.spin_sx.valueChanged.connect(self._apply_angles)
+        self.spin_sx.valueChanged.connect(lambda *_: self._update_mode_label())
         self.spin_sx.lineEdit().textEdited.connect(lambda s: self._force_decimal_point(self.spin_sx, s))
+        self.btn_sx_go = QPushButton("Vai a pos.")
+        self.btn_sx_go.setToolTip("Porta la testa SX all'angolo impostato nello spin (es. 30°).")
+        self.btn_sx_go.setStyleSheet("background:#2980b9; color:white; font-weight:700;")
+        self.btn_sx_go.clicked.connect(self._apply_angles)
         sx_row.addWidget(self.btn_sx_45)
         sx_row.addWidget(self.btn_sx_0)
         self.btn_sx_zero_enc = QPushButton("Azzera enc.")
@@ -292,6 +307,7 @@ class SemiAutoPage(QWidget):
         self.btn_sx_zero_enc.clicked.connect(lambda: self._zero_head_encoder("sx"))
         sx_row.addWidget(self.btn_sx_zero_enc)
         sx_row.addWidget(self.spin_sx)
+        sx_row.addWidget(self.btn_sx_go)
         sx_lay.addLayout(sx_row)
 
         dx_block = QFrame()
@@ -307,7 +323,7 @@ class SemiAutoPage(QWidget):
         self.spin_dx.setLocale(QLocale(QLocale.C))
         self.spin_dx.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.spin_dx.setValue(float(getattr(self.machine, "right_head_angle", 0.0)))
-        self.spin_dx.valueChanged.connect(self._apply_angles)
+        self.spin_dx.valueChanged.connect(lambda *_: self._update_mode_label())
         self.spin_dx.lineEdit().textEdited.connect(lambda s: self._force_decimal_point(self.spin_dx, s))
         self.btn_dx_0 = QPushButton("0°")
         self.btn_dx_0.setStyleSheet("background:#2c3e50; color:#ecf0f1;")
@@ -315,7 +331,12 @@ class SemiAutoPage(QWidget):
         self.btn_dx_45 = QPushButton("45°")
         self.btn_dx_45.setStyleSheet("background:#8e44ad; color:white;")
         self.btn_dx_45.clicked.connect(lambda: self._set_angle_quick('dx', 45.0))
+        self.btn_dx_go = QPushButton("Vai a pos.")
+        self.btn_dx_go.setToolTip("Porta la testa DX all'angolo impostato nello spin (es. 30°).")
+        self.btn_dx_go.setStyleSheet("background:#9b59b6; color:white; font-weight:700;")
+        self.btn_dx_go.clicked.connect(self._apply_angles)
         dx_row.addWidget(self.spin_dx)
+        dx_row.addWidget(self.btn_dx_go)
         dx_row.addWidget(self.btn_dx_0)
         dx_row.addWidget(self.btn_dx_45)
         self.btn_dx_zero_enc = QPushButton("Azzera enc.")
@@ -355,6 +376,10 @@ class SemiAutoPage(QWidget):
         self.lbl_target_big = QLabel("Quota: — mm")
         self.lbl_target_big.setStyleSheet("font-size: 28px; font-weight: 800;")
         center_col.addWidget(self.lbl_target_big, 0, alignment=Qt.AlignHCenter | Qt.AlignVCenter)
+        self.lbl_mode = QLabel("Modalità: —")
+        self.lbl_mode.setStyleSheet("font-size: 14px; font-weight: 700; color:#3498db;")
+        self.lbl_mode.setAlignment(Qt.AlignHCenter)
+        center_col.addWidget(self.lbl_mode, 0, alignment=Qt.AlignHCenter | Qt.AlignVCenter)
         self.lbl_fq_details = QLabel("")
         self.lbl_fq_details.setVisible(False)
         self.lbl_fq_details.setStyleSheet("color:#9b59b6; font-weight:700;")
@@ -796,7 +821,7 @@ class SemiAutoPage(QWidget):
             return default
 
     def _recalc_displays(self):
-        pass  # eventuali calcoli preview quota
+        self._update_mode_label()
 
     # ---------- Fuori Quota / Target ----------
     def _compute_target_from_inputs(self):
@@ -894,6 +919,83 @@ class SemiAutoPage(QWidget):
     def _reset_counter(self):
         setattr(self.machine, "semi_auto_count_done", 0)
 
+    def _increment_counter_if_enabled(self):
+        """Incrementa il contapezzi (usato da taglio sim / fine sequenza speciale)."""
+        done = int(getattr(self.machine, "semi_auto_count_done", 0))
+        setattr(self.machine, "semi_auto_count_done", done + 1)
+        tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0))
+        rem = max(0, tgt - (done + 1))
+        try:
+            self.lbl_counted.setText(f"Contati: {done + 1}")
+            self.lbl_remaining.setText(f"Rimanenti: {rem}")
+        except Exception:
+            pass
+        logger.info("Contapezzi +1 → %s (target=%s)", done + 1, tgt)
+
+    def _simulate_cut(self):
+        """
+        Simula un taglio effettuato (test contapezzi / logica).
+        Premi F7 o il pulsante dopo il posizionamento.
+        """
+        if self._is_movement_active() or self._movement_in_progress:
+            self._show_warn("Attendi fine posizionamento prima del taglio", auto_hide_ms=2000)
+            return
+        if self.mio and hasattr(self.mio, "command_sim_cut_pulse"):
+            try:
+                self.mio.command_sim_cut_pulse()
+            except Exception as e:
+                logger.debug(f"command_sim_cut_pulse: {e}")
+        self._on_cut_done_feedback()
+
+    def _on_cut_done_feedback(self):
+        """Feedback taglio effettuato: incrementa contapezzi, sblocca morse."""
+        self._increment_counter_if_enabled()
+        self._ready_to_cut = False
+        self._unlock_morse()
+        mode = self._current_mode or "normal"
+        self._show_info(f"✂️ Taglio simulato ({mode})", auto_hide_ms=1800)
+
+    def _update_mode_label(self):
+        """Aggiorna etichetta modalità in base alla misura inserita."""
+        try:
+            ext = self._parse_float(self.ext_len.text(), 0.0)
+            th = self._parse_float(self.thickness.text(), 0.0)
+            ax = self._parse_float(self.spin_sx.text(), 0.0)
+            ad = self._parse_float(self.spin_dx.text(), 0.0)
+        except Exception:
+            self.lbl_mode.setText("Modalità: —")
+            return
+        if ext <= 0:
+            self.lbl_mode.setText("Modalità: —")
+            self.lbl_mode.setStyleSheet("font-size: 14px; font-weight: 700; color:#7f8c8d;")
+            return
+        det_sx = th * math.tan(math.radians(ax)) if ax > 0 and th > 0 else 0.0
+        det_dx = th * math.tan(math.radians(ad)) if ad > 0 and th > 0 else 0.0
+        length = ext - (det_sx + det_dx)
+        try:
+            info = self._mode_detector.detect(length)
+        except Exception:
+            self.lbl_mode.setText("Modalità: —")
+            return
+        name = self._mode_detector.get_mode_display_name(info.mode_name)
+        colors = {
+            "normal": "#3498db",
+            "out_of_quota": "#e67e22",
+            "ultra_short": "#e74c3c",
+            "extra_long": "#9b59b6",
+            "invalid": "#7f8c8d",
+        }
+        col = colors.get(info.mode_name, "#3498db")
+        self.lbl_mode.setText(f"Modalità: {name} ({length:.0f} mm)")
+        self.lbl_mode.setStyleSheet(f"font-size: 14px; font-weight: 700; color:{col};")
+        if info.mode_name in ("out_of_quota", "ultra_short", "extra_long") and info.warning_message:
+            # Mostra solo la prima riga come hint
+            first = (info.warning_message or "").split("\n")[0]
+            self.lbl_fq_details.setText(first)
+            self.lbl_fq_details.setVisible(True)
+        else:
+            self.lbl_fq_details.setVisible(False)
+
     # ---------- Azioni ----------
     def _on_cut(self):
         """
@@ -985,22 +1087,24 @@ class SemiAutoPage(QWidget):
                 logger.info("Special mode operation cancelled by user")
                 return
         
-        # === 5. Notify machine context ===
+        # === 5. Contesto macchina (frizione ON + morse SW) ===
+        ctx_mode = mode_info.mode_name if mode_info.mode_name != "normal" else "semi"
         if self.mio and hasattr(self.mio, "set_mode_context"):
             try:
                 self.mio.set_mode_context(
-                    "SEMI_AUTO",
+                    ctx_mode,
                     piece_length_mm=length,
                     bar_length_mm=self._mode_config.stock_length_mm
                 )
             except Exception as e:
                 logger.error(f"Error setting mode context: {e}")
+        self._ensure_clutch_engaged()
         
         # === 6. Execute for detected mode ===
         piece = {
             "len": length,
-            "ax": angle_sx,
-            "ad": angle_dx,
+            "ax": normalize_cut_tilt_deg(angle_sx),
+            "ad": normalize_cut_tilt_deg(angle_dx),
             "profile": self.cb_profilo.currentText().strip() if hasattr(self, 'cb_profilo') else "",
             "element": ""
         }
@@ -1059,13 +1163,12 @@ class SemiAutoPage(QWidget):
             self._show_warn(f"Errore movimento: {e}", auto_hide_ms=2500)
 
     def _execute_out_of_quota(self, piece: Dict[str, Any]):
-        """Execute out of quota mode (2-step sequence) - SHARED handler with automatico."""
+        """Esegue fuori quota (2 step): avvia e lancia subito Step 1."""
         
         if not self.mio:
             logger.error("Machine adapter not available")
             return
         
-        # Lazy initialize handler (shared with automatico!)
         if not self._out_of_quota_handler:
             try:
                 config = OutOfQuotaConfig(
@@ -1079,19 +1182,20 @@ class SemiAutoPage(QWidget):
                 self._show_warn(f"Errore inizializzazione: {e}", auto_hide_ms=2500)
                 return
         
-        # Start sequence
         try:
             success = self._out_of_quota_handler.start_sequence(
                 target_length_mm=piece["len"],
                 angle_sx=piece.get("ax", 0),
                 angle_dx=piece.get("ad", 0),
-                on_step_complete=self._on_special_mode_step_complete
             )
             
-            if success:
+            if success and self._out_of_quota_handler.execute_step_1():
                 self._current_mode_handler = self._out_of_quota_handler
-                self._show_info(f"🔴 Fuori Quota: Step 1/2 - Intestatura", auto_hide_ms=3000)
-                logger.info(f"Out of quota sequence started: {piece['len']:.0f}mm")
+                self._disable_inputs_during_movement()
+                self._movement_in_progress = True
+                self._ready_to_cut = False
+                self._show_info("🔴 Fuori Quota: Step 1/2 - Intestatura", auto_hide_ms=3000)
+                logger.info(f"Out of quota step 1 started: {piece['len']:.0f}mm")
             else:
                 self._show_warn("❌ Sequenza fuori quota non avviata", auto_hide_ms=2500)
                 logger.error("Out of quota sequence failed to start")
@@ -1101,13 +1205,12 @@ class SemiAutoPage(QWidget):
             self._show_warn(f"Errore fuori quota: {e}", auto_hide_ms=2500)
 
     def _execute_ultra_short(self, piece: Dict[str, Any]):
-        """Execute ultra short mode (3-step, inverted heads vs extra long) - NEW!"""
+        """Esegue ultra corta (3 step): avvia e lancia subito Step 1."""
         
         if not self.mio:
             logger.error("Machine adapter not available")
             return
         
-        # Lazy initialize handler
         if not self._ultra_short_handler:
             try:
                 config = UltraShortConfig(
@@ -1121,19 +1224,20 @@ class SemiAutoPage(QWidget):
                 self._show_warn(f"Errore inizializzazione: {e}", auto_hide_ms=2500)
                 return
         
-        # Start sequence
         try:
             success = self._ultra_short_handler.start_sequence(
                 target_length_mm=piece["len"],
                 angle_sx=piece.get("ax", 0),
                 angle_dx=piece.get("ad", 0),
-                on_step_complete=self._on_special_mode_step_complete
             )
             
-            if success:
+            if success and self._ultra_short_handler.execute_step_1():
                 self._current_mode_handler = self._ultra_short_handler
-                self._show_info(f"🟡 Ultra Corta: Step 1/3 - Intestatura SX", auto_hide_ms=3000)
-                logger.info(f"Ultra short sequence started: {piece['len']:.0f}mm")
+                self._disable_inputs_during_movement()
+                self._movement_in_progress = True
+                self._ready_to_cut = False
+                self._show_info("🟡 Ultra Corta: Step 1/3 - Intestatura SX", auto_hide_ms=3000)
+                logger.info(f"Ultra short step 1 started: {piece['len']:.0f}mm")
             else:
                 self._show_warn("❌ Sequenza ultra corta non avviata", auto_hide_ms=2500)
                 logger.error("Ultra short sequence failed to start")
@@ -1143,13 +1247,12 @@ class SemiAutoPage(QWidget):
             self._show_warn(f"Errore ultra corta: {e}", auto_hide_ms=2500)
 
     def _execute_extra_long(self, piece: Dict[str, Any]):
-        """Execute extra long mode (3-step sequence) - NEW!"""
+        """Esegue extra lunga (3 step): avvia e lancia subito Step 1."""
         
         if not self.mio:
             logger.error("Machine adapter not available")
             return
         
-        # Lazy initialize handler
         if not self._extra_long_handler:
             try:
                 config = ExtraLongConfig(
@@ -1163,19 +1266,20 @@ class SemiAutoPage(QWidget):
                 self._show_warn(f"Errore inizializzazione: {e}", auto_hide_ms=2500)
                 return
         
-        # Start sequence
         try:
             success = self._extra_long_handler.start_sequence(
                 target_length_mm=piece["len"],
                 angle_sx=piece.get("ax", 0),
                 angle_dx=piece.get("ad", 0),
-                on_step_complete=self._on_special_mode_step_complete
             )
             
-            if success:
+            if success and self._extra_long_handler.execute_step_1():
                 self._current_mode_handler = self._extra_long_handler
-                self._show_info(f"🔵 Extra Lunga: Step 1/3 - Intestatura DX", auto_hide_ms=3000)
-                logger.info(f"Extra long sequence started: {piece['len']:.0f}mm")
+                self._disable_inputs_during_movement()
+                self._movement_in_progress = True
+                self._ready_to_cut = False
+                self._show_info("🔵 Extra Lunga: Step 1/3 - Intestatura DX", auto_hide_ms=3000)
+                logger.info(f"Extra long step 1 started: {piece['len']:.0f}mm")
             else:
                 self._show_warn("❌ Sequenza extra lunga non avviata", auto_hide_ms=2500)
                 logger.error("Extra long sequence failed to start")
@@ -1184,39 +1288,104 @@ class SemiAutoPage(QWidget):
             logger.error(f"Error starting extra long: {e}")
             self._show_warn(f"Errore extra lunga: {e}", auto_hide_ms=2500)
 
-    def _on_special_mode_step_complete(self, step_num: int, success: bool, message: str):
-        """Callback for special mode step completion."""
-        
-        if success:
-            self._show_info(f"✅ Step {step_num} completato", auto_hide_ms=2000)
-            logger.info(f"Special mode step {step_num} completed: {message}")
-            
-            # Check if sequence complete
-            if self._current_mode_handler:
-                try:
-                    if hasattr(self._current_mode_handler, 'is_sequence_complete'):
-                        if self._current_mode_handler.is_sequence_complete():
-                            self._show_info("✅ Sequenza completata", auto_hide_ms=2500)
-                            logger.info("Special mode sequence completed")
-                            self._current_mode_handler = None
-                            
-                            # Increment counter if method exists (preserve existing functionality)
-                            if hasattr(self, '_increment_counter_if_enabled'):
-                                try:
-                                    self._increment_counter_if_enabled()
-                                except Exception as e:
-                                    logger.error(f"Error incrementing counter: {e}")
-                except Exception as e:
-                    logger.error(f"Error checking sequence completion: {e}")
-        else:
-            self._show_warn(f"❌ Step {step_num} fallito", auto_hide_ms=2500)
-            logger.error(f"Special mode step {step_num} failed: {message}")
-            self._current_mode_handler = None
+    def _should_continue_multi_step(self) -> bool:
+        """True se la sequenza speciale ha ancora step da eseguire."""
+        if self._current_mode == "out_of_quota" and self._out_of_quota_handler:
+            return self._out_of_quota_handler.get_current_step() == 1
+        if self._current_mode == "ultra_short" and self._ultra_short_handler:
+            return self._ultra_short_handler.get_current_step() in (1, 2)
+        if self._current_mode == "extra_long" and self._extra_long_handler:
+            return self._extra_long_handler.get_current_step() in (1, 2)
+        return False
+
+    def _continue_multi_step_sequence(self):
+        """Passa allo step successivo della sequenza speciale."""
+        try:
+            if self._current_mode == "out_of_quota" and self._out_of_quota_handler:
+                if self._out_of_quota_handler.get_current_step() == 1:
+                    if self._out_of_quota_handler.execute_step_2():
+                        self._movement_in_progress = True
+                        self._show_info("🔴 Fuori Quota: Step 2/2 - Taglio Finale", auto_hide_ms=3000)
+                    else:
+                        self._show_warn("❌ Step 2 fuori quota fallito", auto_hide_ms=2500)
+                        self._movement_in_progress = False
+
+            elif self._current_mode == "ultra_short" and self._ultra_short_handler:
+                step = self._ultra_short_handler.get_current_step()
+                if step == 1:
+                    if self._ultra_short_handler.execute_step_2():
+                        self._movement_in_progress = True
+                        self._show_info("🟡 Ultra Corta: Step 2/3 - Retrazione", auto_hide_ms=3000)
+                    else:
+                        self._show_warn("❌ Step 2 ultra corta fallito", auto_hide_ms=2500)
+                        self._movement_in_progress = False
+                elif step == 2:
+                    if self._ultra_short_handler.execute_step_3():
+                        self._movement_in_progress = True
+                        self._show_info("🟡 Ultra Corta: Step 3/3 - Taglio Finale", auto_hide_ms=3000)
+                    else:
+                        self._show_warn("❌ Step 3 ultra corta fallito", auto_hide_ms=2500)
+                        self._movement_in_progress = False
+
+            elif self._current_mode == "extra_long" and self._extra_long_handler:
+                step = self._extra_long_handler.get_current_step()
+                if step == 1:
+                    if self._extra_long_handler.execute_step_2():
+                        self._movement_in_progress = True
+                        self._show_info("🔵 Extra Lunga: Step 2/3 - Retrazione", auto_hide_ms=3000)
+                    else:
+                        self._show_warn("❌ Step 2 extra lunga fallito", auto_hide_ms=2500)
+                        self._movement_in_progress = False
+                elif step == 2:
+                    if self._extra_long_handler.execute_step_3():
+                        self._movement_in_progress = True
+                        self._show_info("🔵 Extra Lunga: Step 3/3 - Taglio Finale", auto_hide_ms=3000)
+                    else:
+                        self._show_warn("❌ Step 3 extra lunga fallito", auto_hide_ms=2500)
+                        self._movement_in_progress = False
+        except Exception as e:
+            logger.error(f"Errore continuazione multi-step: {e}")
+            self._movement_in_progress = False
+            self._show_warn(f"Errore sequenza: {e}", auto_hide_ms=2500)
+
+    def _on_special_mode_step_complete(self, step_num: int, message: str = ""):
+        """Callback opzionale degli handler (firma a 2 argomenti)."""
+        self._show_info(f"✅ Step {step_num} completato", auto_hide_ms=2000)
+        logger.info(f"Special mode step {step_num}: {message}")
 
     def _start_positioning(self):
         """DEPRECATED: Use _on_cut() instead. Kept for backward compatibility."""
         # Redirect to new method
         self._on_cut()
+
+    def _ensure_clutch_engaged(self):
+        """In Semi-auto la frizione resta sempre inserita."""
+        if self.mio:
+            with contextlib.suppress(Exception):
+                self.mio.command_set_clutch(True)
+        else:
+            with contextlib.suppress(Exception):
+                setattr(self.machine, "clutch_active", True)
+
+    def _lock_morse(self):
+        """Blocca morse a fine posa (testa in posizione)."""
+        if self.mio:
+            with contextlib.suppress(Exception):
+                self.mio.command_set_morse(True, True)
+        else:
+            with contextlib.suppress(Exception):
+                setattr(self.machine, "left_morse_locked", True)
+                setattr(self.machine, "right_morse_locked", True)
+
+    def _unlock_morse(self):
+        """Sblocca morse a fine taglio."""
+        if self.mio:
+            with contextlib.suppress(Exception):
+                self.mio.command_set_morse(False, False)
+        else:
+            with contextlib.suppress(Exception):
+                setattr(self.machine, "left_morse_locked", False)
+                setattr(self.machine, "right_morse_locked", False)
 
     def _toggle_brake(self):
         brk = bool(getattr(self.machine, "brake_active", False))
@@ -1297,21 +1466,35 @@ class SemiAutoPage(QWidget):
         if self._movement_in_progress:
             # Check movement status using helper method
             if not self._is_movement_active():
-                # Movement completed - re-enable inputs with error handling
-                try:
-                    self._enable_inputs_after_movement()
-                    self._show_info("✅ Posizionamento completato", auto_hide_ms=2000)
-                    logger.info("Movement completed, inputs re-enabled")
-                except Exception as e:
-                    logger.error(f"Error re-enabling inputs after movement: {e}")
-                    # Ensure UI is restored and flag is reset even if primary path fails
+                # Sequenza multi-step: sblocca e continua senza "ready to cut"
+                if self._should_continue_multi_step():
                     try:
-                        self._restore_input_controls()
-                    except Exception as fallback_err:
-                        logger.error(f"Fallback UI restoration also failed: {fallback_err}")
-                    finally:
-                        # Always reset flag to prevent permanent lock
-                        self._movement_in_progress = False
+                        if self.mio:
+                            self.mio.command_release_brake()
+                        else:
+                            setattr(self.machine, "brake_active", False)
+                    except Exception as e:
+                        logger.error(f"Errore sblocco freno multi-step: {e}")
+                    # Breve pausa poi step successivo
+                    self._movement_in_progress = False  # evita rientri finché non riparte
+                    QTimer.singleShot(200, self._continue_multi_step_sequence)
+                else:
+                    # Posizionamento finale completato
+                    try:
+                        self._enable_inputs_after_movement()
+                        self._ready_to_cut = True
+                        self._show_info("✅ Posizionamento completato — F7 per taglio sim", auto_hide_ms=2500)
+                        logger.info("Movement completed, inputs re-enabled")
+                    except Exception as e:
+                        logger.error(f"Error re-enabling inputs after movement: {e}")
+                        # Ensure UI is restored and flag is reset even if primary path fails
+                        try:
+                            self._restore_input_controls()
+                        except Exception as fallback_err:
+                            logger.error(f"Fallback UI restoration also failed: {fallback_err}")
+                        finally:
+                            # Always reset flag to prevent permanent lock
+                            self._movement_in_progress = False
 
         # NOTE: Legacy intestatura system removed - now handled by mode handlers
         # if self._intest_in_progress:
@@ -1323,6 +1506,17 @@ class SemiAutoPage(QWidget):
         #             QTimer.singleShot(0, self._finish_intestatura)
         #         self._last_dx_blade_out = cur_out
 
+        # Rising edge blade_pulse → taglio simulato (come Automatico)
+        blade = False
+        if self.mio:
+            try:
+                blade = bool(self.mio.get_input("blade_pulse"))
+            except Exception:
+                blade = False
+        if blade and not self._blade_pulse_prev:
+            self._on_cut_done_feedback()
+        self._blade_pulse_prev = blade
+
         tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0))
         done = int(getattr(self.machine, "semi_auto_count_done", 0))
         rem = max(0, tgt - done)
@@ -1330,6 +1524,7 @@ class SemiAutoPage(QWidget):
         self.lbl_counted.setText(f"Contati: {done}")
 
         self._update_buttons()
+        self._update_mode_label()
 
     def _is_movement_active(self) -> bool:
         """
@@ -1367,9 +1562,17 @@ class SemiAutoPage(QWidget):
         except Exception as e:
             logger.debug(f"Could not disable spin_sx: {e}")
         try:
+            self.btn_sx_go.setEnabled(False)
+        except Exception as e:
+            logger.debug(f"Could not disable btn_sx_go: {e}")
+        try:
             self.spin_dx.setEnabled(False)
         except Exception as e:
             logger.debug(f"Could not disable spin_dx: {e}")
+        try:
+            self.btn_dx_go.setEnabled(False)
+        except Exception as e:
+            logger.debug(f"Could not disable btn_dx_go: {e}")
         try:
             self.thickness.setEnabled(False)
         except Exception as e:
@@ -1391,9 +1594,17 @@ class SemiAutoPage(QWidget):
         except Exception as e:
             logger.debug(f"Could not enable spin_sx: {e}")
         try:
+            self.btn_sx_go.setEnabled(True)
+        except Exception as e:
+            logger.debug(f"Could not enable btn_sx_go: {e}")
+        try:
             self.spin_dx.setEnabled(True)
         except Exception as e:
             logger.debug(f"Could not enable spin_dx: {e}")
+        try:
+            self.btn_dx_go.setEnabled(True)
+        except Exception as e:
+            logger.debug(f"Could not enable btn_dx_go: {e}")
         try:
             self.thickness.setEnabled(True)
         except Exception as e:
@@ -1404,7 +1615,7 @@ class SemiAutoPage(QWidget):
             logger.debug(f"Could not enable cb_profilo: {e}")
     
     def _enable_inputs_after_movement(self):
-        """Riabilita i comandi e blocca il freno a fine posizionamento."""
+        """Riabilita i comandi e blocca freno + morse a fine posizionamento."""
         self._restore_input_controls()
         self._movement_in_progress = False
         try:
@@ -1416,6 +1627,7 @@ class SemiAutoPage(QWidget):
                 setattr(self.machine, "brake_active", True)
         except Exception as e:
             logger.error(f"Errore blocco freno a fine posa: {e}")
+        self._lock_morse()
         logger.debug("UI inputs re-enabled after movement")
 
     # ---------- Simulazioni tastiera ----------
@@ -1429,8 +1641,10 @@ class SemiAutoPage(QWidget):
             self._show_info("Uscita lama DX: ATTIVA (simulazione F5)")
             event.accept(); return
         if event.key() in (Qt.Key_F6, Qt.Key_K):
-            done = int(getattr(self.machine, "semi_auto_count_done", 0))
-            setattr(self.machine, "semi_auto_count_done", done + 1)
+            self._increment_counter_if_enabled()
+            event.accept(); return
+        if event.key() == Qt.Key_F7:
+            self._simulate_cut()
             event.accept(); return
         super().keyPressEvent(event)
 
@@ -1453,6 +1667,10 @@ class SemiAutoPage(QWidget):
         if hasattr(self.machine, "set_active_mode"):
             try: self.machine.set_active_mode("semi")
             except Exception: pass
+        self._ensure_clutch_engaged()
+        if self.mio and hasattr(self.mio, "set_mode_context"):
+            with contextlib.suppress(Exception):
+                self.mio.set_mode_context("semi")
         self.refresh_profiles_external(select=self.cb_profilo.currentText().strip())
 
     def hideEvent(self, ev):

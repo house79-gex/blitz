@@ -136,6 +136,7 @@ def test_simulation_homing_zeros_heads_and_carriage():
     assert m.right_head_angle == 0.0
     assert m.measured_left_head_angle == 0.0
     assert m.measured_right_head_angle == 0.0
+    assert m.brake_active is False
 
 
 def test_snap_two_pos_and_pneumatic_pulse():

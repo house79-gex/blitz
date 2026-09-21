@@ -5,6 +5,13 @@ from qt6_app.ui_qt.logic.refiner import (
     pack_bars_knapsack_ilp,
     bar_used_length,
 )
+from qt6_app.ui_qt.logic.plan_advance import (
+    decide_plan_advance,
+    filter_valid_pieces,
+    sanitize_bars,
+    reorder_bars_for_cut,
+    is_valid_cut_piece,
+)
 from qt6_app.ui_qt.widgets.heads_view import normalize_head_tilt_deg
 
 
@@ -55,3 +62,67 @@ def test_pack_90_degree_pieces_same_as_square():
     # Con tan(90) rotto i pezzi avrebbero lunghezza ~0 e starebbero tutti in 1 barra abusiva
     used0 = bar_used_length(bars[0], 3.0, 0.0, False, 40.0, 0.5, 60.0, 2.0)
     assert used0 > 1500.0
+
+
+def test_decide_plan_advance_same_bar_moves_to_next_measure():
+    cur = {"len": 1000.0, "ax": 0.0, "ad": 0.0, "profile": "P", "bar": 0}
+    nxt = {"len": 800.0, "ax": 45.0, "ad": 0.0, "profile": "P", "bar": 0}
+    assert decide_plan_advance(cur, nxt, auto_across_bars=False) == "move"
+
+
+def test_decide_plan_advance_same_pose_skips_move():
+    cur = {"len": 1000.0, "ax": 0.0, "ad": 45.0, "profile": "P", "bar": 0}
+    nxt = {"len": 1000.0, "ax": 0.0, "ad": 45.0, "profile": "P", "bar": 0}
+    assert decide_plan_advance(cur, nxt, auto_across_bars=False) == "skip_move"
+
+
+def test_decide_plan_advance_new_bar_waits_unless_across():
+    cur = {"len": 1000.0, "ax": 0.0, "ad": 0.0, "profile": "P", "bar": 0}
+    nxt = {"len": 900.0, "ax": 0.0, "ad": 0.0, "profile": "P", "bar": 1}
+    assert decide_plan_advance(cur, nxt, auto_across_bars=False) == "wait_bar"
+    assert decide_plan_advance(cur, nxt, auto_across_bars=True) == "move"
+
+
+def test_decide_plan_advance_done():
+    cur = {"len": 1000.0, "ax": 0.0, "ad": 0.0, "profile": "P", "bar": 0}
+    assert decide_plan_advance(cur, None) == "done"
+
+
+def test_filter_and_sanitize_zero_length_pieces():
+    pieces = [
+        {"len": 1000.0, "ax": 0.0, "ad": 0.0},
+        {"len": 0.0, "ax": 0.0, "ad": 0.0},
+        {"len": -5.0, "ax": 45.0, "ad": 0.0},
+        {"len": 0.1, "ax": 0.0, "ad": 0.0},  # sotto soglia
+        {"len": 500.0, "ax": 0.0, "ad": 45.0},
+    ]
+    ok = filter_valid_pieces(pieces)
+    assert len(ok) == 2
+    assert all(p["len"] >= 500.0 for p in ok)
+
+    bars = [
+        [{"len": 2000.0}, {"len": 0.0}, {"len": 800.0}],
+        [{"len": 0.0}],
+        [{"len": 1200.0}],
+    ]
+    clean = sanitize_bars(bars)
+    assert len(clean) == 2
+    assert all(is_valid_cut_piece(p) for b in clean for p in b)
+
+
+def test_reorder_bars_length_descending_ignores_scrap():
+    """Ordine solo per misure: barre e pezzi dal più lungo al più corto (no sfrido)."""
+    bars = [
+        [{"len": 500.0}, {"len": 400.0}],   # pezzo max 500
+        [{"len": 3000.0}, {"len": 2000.0}], # pezzo max 3000
+        [{"len": 1500.0}],                  # pezzo max 1500
+    ]
+    # residuals ignorati: priorità solo alle lunghezze pezzo
+    ordered = reorder_bars_for_cut(bars, residuals_mm=[3000.0, 100.0, 500.0])
+    assert ordered[0][0]["len"] == 3000.0
+    assert ordered[1][0]["len"] == 1500.0
+    assert ordered[2][0]["len"] == 500.0
+    # dentro la barra pezzi lunghi prima
+    assert ordered[0][0]["len"] >= ordered[0][1]["len"]
+    assert ordered[2][0]["len"] >= ordered[2][1]["len"]
+

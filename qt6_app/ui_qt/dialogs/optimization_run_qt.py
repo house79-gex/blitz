@@ -31,6 +31,12 @@ from ui_qt.logic.refiner import (
     joint_consumption,
     compute_bar_breakdown
 )
+from ui_qt.logic.plan_advance import (
+    filter_valid_pieces,
+    sanitize_bars,
+    reorder_bars_for_cut,
+    MIN_CUT_LEN_MM,
+)
 
 VIZ_ROW_HEIGHT_PX = 30  # Deve combaciare con ROW_HEIGHT_PX del visualizer
 
@@ -188,12 +194,24 @@ class OptimizationRunDialog(QDialog):
 
     TABLE_MIN_H = 180
 
-    def __init__(self, parent: QWidget, profile: str, rows: List[Dict[str, Any]], overlay_target: Optional[QWidget] = None):
+    def __init__(
+        self,
+        parent: QWidget,
+        profile: str,
+        rows: List[Dict[str, Any]],
+        overlay_target: Optional[QWidget] = None,
+        precomputed_bars: Optional[List[List[Dict[str, Any]]]] = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle(f"Ottimizzazione - {profile}")
         self.setModal(False)
         self.profile = profile
-        self._rows: List[Dict[str, Any]] = [dict(r) for r in rows]
+        # Esclude subito le righe a quota ~0 (non sono pezzi, è sfrido)
+        self._rows: List[Dict[str, Any]] = [
+            dict(r) for r in rows
+            if float(r.get("length_mm", 0.0) or 0.0) > MIN_CUT_LEN_MM
+            and int(r.get("qty", 0) or 0) > 0
+        ]
 
         cfg = read_settings()
         self._stock = float(cfg.get("opt_stock_mm", 6500.0))
@@ -216,6 +234,7 @@ class OptimizationRunDialog(QDialog):
         self._bars: List[List[Dict[str, float]]] = []
         self._bars_residuals: List[float] = []
         self._done_by_index: Dict[int, List[bool]] = {}
+        self._precomputed_bars = precomputed_bars
 
         self._scroll: Optional[QScrollArea] = None
         self._graph_container: Optional[QWidget] = None
@@ -308,16 +327,24 @@ class OptimizationRunDialog(QDialog):
     def _expand_rows_to_unit_pieces(self) -> List[Dict[str, float]]:
         pieces: List[Dict[str, float]] = []
         for r in self._rows:
-            q = int(r.get("qty", 0)); L = float(r.get("length_mm", 0.0))
-            ax = float(r.get("ang_sx", 0.0)); ad = float(r.get("ang_dx", 0.0))
+            q = int(r.get("qty", 0))
+            L = float(r.get("length_mm", 0.0))
+            if L <= MIN_CUT_LEN_MM:
+                continue
+            ax = float(r.get("ang_sx", 0.0))
+            ad = float(r.get("ang_dx", 0.0))
             for _ in range(max(0, q)):
                 pieces.append({"len": L, "ax": ax, "ad": ad})
-        pieces.sort(key=lambda x: x["len"], reverse=True)
+        pieces = filter_valid_pieces(pieces)
+        # Priorità packing: pezzi più lunghi prima
+        pieces.sort(key=lambda x: float(x["len"]), reverse=True)
         return pieces
 
     def _pack_bfd(self, pieces: List[Dict[str, float]]) -> Tuple[List[List[Dict[str, float]]], List[float]]:
         bars: List[List[Dict[str, float]]] = []
         for p in pieces:
+            if float(p.get("len", 0.0)) <= MIN_CUT_LEN_MM:
+                continue
             placed = False
             for b in bars:
                 used = bar_used_length(b, self._kerf_base, self._ripasso,
@@ -336,7 +363,27 @@ class OptimizationRunDialog(QDialog):
         return bars, rem
 
     def _compute_plan_once(self):
+        # Solo pezzi con quota valida (niente 0 mm = sfrido)
+        self._rows = [
+            dict(r) for r in self._rows
+            if float(r.get("length_mm", 0.0) or 0.0) > MIN_CUT_LEN_MM
+            and int(r.get("qty", 0) or 0) > 0
+        ]
+        # Preferisci il piano già calcolato dalla pagina Automatico (stesso ordine)
+        if self._precomputed_bars:
+            bars = sanitize_bars(self._precomputed_bars)
+            self._bars = reorder_bars_for_cut(bars)
+            self._bars_residuals = residuals(
+                self._bars, self._stock, self._kerf_base, self._ripasso,
+                self._reversible, self._thickness,
+                self._angle_tol, self._max_angle, self._max_factor,
+            )
+            return
         pieces = self._expand_rows_to_unit_pieces()
+        if not pieces:
+            self._bars = []
+            self._bars_residuals = []
+            return
         bars, rem = pack_bars_knapsack_ilp(
             pieces=pieces,
             stock=self._stock,
@@ -360,15 +407,23 @@ class OptimizationRunDialog(QDialog):
                 time_limit_s=int(read_settings().get("opt_refine_time_s", 25)),
                 max_angle=self._max_angle, max_factor=self._max_factor
             )
-            # Preservare ordine originale se lunghezza identica
-            if bars_ref and len(bars_ref)==len(bars):
+            if bars_ref and len(bars_ref) == len(bars):
                 bars = bars_ref
         except Exception:
             pass
-        self._bars = bars
-        self._bars_residuals = residuals(bars, self._stock, self._kerf_base, self._ripasso,
-                                         self._reversible, self._thickness,
-                                         self._angle_tol, self._max_angle, self._max_factor)
+        bars = sanitize_bars(bars)
+        rem = residuals(
+            bars, self._stock, self._kerf_base, self._ripasso,
+            self._reversible, self._thickness,
+            self._angle_tol, self._max_angle, self._max_factor,
+        )
+        # Ordine taglio: sempre pezzi/barre dal più lungo al più corto
+        self._bars = reorder_bars_for_cut(bars, rem)
+        self._bars_residuals = residuals(
+            self._bars, self._stock, self._kerf_base, self._ripasso,
+            self._reversible, self._thickness,
+            self._angle_tol, self._max_angle, self._max_factor,
+        )
 
     def _init_done_state(self):
         self._done_by_index = {i: [False]*len(b) for i, b in enumerate(self._bars)}

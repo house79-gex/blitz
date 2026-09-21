@@ -1,10 +1,14 @@
 from PySide6.QtWidgets import QFrame
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF
-from PySide6.QtCore import Qt, QPointF
+from PySide6.QtCore import Qt, QPointF, QRectF, QTimer, QElapsedTimer
 import math
 
-
 from ui_qt.logic.angles import normalize_cut_tilt_deg
+
+# ~6 s da 0° a 45° (più lenta per i test; in macchina conta l'encoder)
+HEAD_TILT_DEG_PER_S = 7.5
+# Corsa lineare simulata in vista (~8 s su 4000 mm)
+HEAD_TRAVEL_MM_PER_S = 500.0
 
 
 def normalize_head_tilt_deg(raw) -> float:
@@ -17,12 +21,56 @@ def normalize_head_tilt_deg(raw) -> float:
     return normalize_cut_tilt_deg(raw)
 
 
+def step_tilt_animation(
+    current: float,
+    target: float,
+    dt_s: float,
+    speed_deg_s: float = HEAD_TILT_DEG_PER_S,
+) -> float:
+    """Avvicina l'angolo disegnato al target con velocità costante (gradi/s)."""
+    try:
+        cur = float(current)
+        tgt = float(target)
+        dt = max(0.0, float(dt_s))
+        spd = max(0.1, float(speed_deg_s))
+    except (TypeError, ValueError):
+        return 0.0
+    delta = tgt - cur
+    max_step = spd * dt
+    if abs(delta) <= max_step:
+        return tgt
+    return cur + (max_step if delta > 0 else -max_step)
+
+
+def step_travel_animation(
+    current: float,
+    target: float,
+    dt_s: float,
+    speed_mm_s: float = HEAD_TRAVEL_MM_PER_S,
+) -> float:
+    """Avvicina la quota disegnata al target con velocità costante (mm/s)."""
+    try:
+        cur = float(current)
+        tgt = float(target)
+        dt = max(0.0, float(dt_s))
+        spd = max(1.0, float(speed_mm_s))
+    except (TypeError, ValueError):
+        return float(target) if target is not None else 0.0
+    delta = tgt - cur
+    max_step = spd * dt
+    if abs(delta) <= max_step:
+        return tgt
+    return cur + (max_step if delta > 0 else -max_step)
+
+
 class HeadsView(QFrame):
     """
     Vista grafica teste:
     - Compatibile con MachineAdapter (get_position / get_state).
     - Fallback su attributi legacy (position_current / encoder_position).
     - Preferisce l'angolo misurato dagli encoder di inclinazione se online.
+    - Rotazione e corsa lineare animate (solo UI/test; in campo contano gli encoder).
+    - Riquadro angolo sempre orizzontale (non ruota con la testa).
     """
 
     def __init__(self, machine, parent=None):
@@ -36,6 +84,14 @@ class HeadsView(QFrame):
         self._last_dx = 0.0
         self._sx_measured = False
         self._dx_measured = False
+        self._draw_sx = None
+        self._draw_dx = None
+        self._draw_pos = None
+        self._anim_clock = QElapsedTimer()
+        self._anim_clock.start()
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(16)
+        self._anim_timer.timeout.connect(self.update)
 
     def refresh(self):
         self.update()
@@ -67,12 +123,7 @@ class HeadsView(QFrame):
         return {}
 
     def _get_angle(self, left=True):
-        """
-        Restituisce (angolo_tilt_deg, da_encoder).
-        Il disegno segue sempre l'angolo comandato (0–45°), così i pulsanti
-        0°/45° orientano le teste anche se l'encoder non è in lettura.
-        La misura encoder, se online, resta visibile in etichetta.
-        """
+        """Restituisce (angolo_tilt_deg, da_encoder)."""
         st = self._state_dict()
         side = "sx" if left else "dx"
         measured_key = "measured_left_head_angle" if left else "measured_right_head_angle"
@@ -96,6 +147,42 @@ class HeadsView(QFrame):
         measured = st.get(measured_key) if online else None
         return normalize_head_tilt_deg(cmd), bool(online and measured is not None)
 
+    def _badge_angle(self, left: bool, display_deg: float) -> float:
+        """Angolo nel riquadro: misura encoder se online, altrimenti animato."""
+        st = self._state_dict()
+        online_key = "head_encoder_online_sx" if left else "head_encoder_online_dx"
+        mk = "measured_left_head_angle" if left else "measured_right_head_angle"
+        online = bool(st.get(online_key) or st.get("head_encoder_online"))
+        if online and st.get(mk) is not None:
+            return normalize_head_tilt_deg(st.get(mk))
+        return float(display_deg)
+
+    def _sync_draw(self, ang_sx: float, ang_dx: float, pos_mm: float):
+        dt_s = self._anim_clock.restart() / 1000.0
+        if dt_s > 0.12:
+            dt_s = 0.032
+        if self._draw_sx is None:
+            self._draw_sx = float(ang_sx)
+        else:
+            self._draw_sx = step_tilt_animation(self._draw_sx, ang_sx, dt_s)
+        if self._draw_dx is None:
+            self._draw_dx = float(ang_dx)
+        else:
+            self._draw_dx = step_tilt_animation(self._draw_dx, ang_dx, dt_s)
+        if self._draw_pos is None:
+            self._draw_pos = float(pos_mm)
+        else:
+            self._draw_pos = step_travel_animation(self._draw_pos, pos_mm, dt_s)
+        moving = (
+            abs(self._draw_sx - ang_sx) > 0.05
+            or abs(self._draw_dx - ang_dx) > 0.05
+            or abs(self._draw_pos - pos_mm) > 0.5
+        )
+        if moving and not self._anim_timer.isActive():
+            self._anim_timer.start()
+        elif not moving and self._anim_timer.isActive():
+            self._anim_timer.stop()
+
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
@@ -115,8 +202,13 @@ class HeadsView(QFrame):
         pos_mm = max(min_mm, min(max_mm, pos_mm))
         ang_sx, sx_meas = self._get_angle(left=True)
         ang_dx, dx_meas = self._get_angle(left=False)
-        self._last_sx, self._sx_measured = ang_sx, sx_meas
-        self._last_dx, self._dx_measured = ang_dx, dx_meas
+        self._sync_draw(ang_sx, ang_dx, pos_mm)
+        draw_sx = float(self._draw_sx if self._draw_sx is not None else ang_sx)
+        draw_dx = float(self._draw_dx if self._draw_dx is not None else ang_dx)
+        draw_pos = float(self._draw_pos if self._draw_pos is not None else pos_mm)
+        draw_pos = max(min_mm, min(max_mm, draw_pos))
+        self._last_sx, self._sx_measured = draw_sx, sx_meas
+        self._last_dx, self._dx_measured = draw_dx, dx_meas
 
         max_theta = math.radians(45.0)
         pad_x = int(body_w * math.cos(max_theta) + body_h * math.sin(max_theta)) + pivot_r + 8
@@ -157,9 +249,9 @@ class HeadsView(QFrame):
         p.drawLine(int(left_margin), int(heads_y), int(left_margin + usable_w), int(heads_y))
 
         x_sx = x_at(0.0)
-        x_dx = x_at(pos_mm)
+        x_dx = x_at(draw_pos)
 
-        def draw_head(x: float, angle_deg: float, outward_left: bool, color: str, measured: bool):
+        def draw_head(x: float, angle_deg: float, outward_left: bool, color: str):
             p.setBrush(QBrush(QColor(color)))
             p.setPen(Qt.NoPen)
             p.drawEllipse(QPointF(x, heads_y), pivot_r, pivot_r)
@@ -195,32 +287,43 @@ class HeadsView(QFrame):
             pen.setWidth(seg_thick)
             p.setPen(pen)
             p.drawLine(0, 0, 0, -seg_len)
-
-            p.setPen(QPen(QColor("#ecf0f1")))
-            text_x = -body_w / 2 + 6 if outward_left else 6
-            text_y = -body_h / 2 + 6
-            suffix = ""
-            meas = None
-            st = self._state_dict()
-            mk = "measured_left_head_angle" if outward_left else "measured_right_head_angle"
-            if measured and st.get(mk) is not None:
-                try:
-                    meas = normalize_head_tilt_deg(st.get(mk))
-                except Exception:
-                    meas = None
-            if meas is not None:
-                suffix = f"  mis.{meas:.1f}°"
-            fc_key = "head_fc_zero_sx" if outward_left else "head_fc_zero_dx"
-            if st.get(fc_key):
-                suffix += " FC0°"
-            p.drawText(int(text_x), int(text_y), f"{angle_deg:.1f}°{suffix}")
-
             p.restore()
 
-        draw_head(x_sx, ang_sx, outward_left=True, color="#2980b9", measured=sx_meas)
-        draw_head(x_dx, ang_dx, outward_left=False, color="#9b59b6", measured=dx_meas)
+        def draw_angle_badge(x: float, display_deg: float, left: bool, color: str):
+            badge_deg = self._badge_angle(left, display_deg)
+            text = f"{badge_deg:.1f}°"
+            font_b = QFont()
+            font_b.setPointSizeF(max(10.0, self.font().pointSizeF() + 1))
+            font_b.setBold(True)
+            p.setFont(font_b)
+            fm = p.fontMetrics()
+            tw = fm.horizontalAdvance(text)
+            th = fm.height()
+            pad_x, pad_y = 10, 5
+            box_w = tw + pad_x * 2
+            box_h = th + pad_y * 2
+            if left:
+                rx = x - box_w - 10
+            else:
+                rx = x + 10
+            ry = heads_y - body_h - 8
+            rect = QRectF(rx, ry, box_w, box_h)
+            p.setBrush(QBrush(QColor("#1b2838")))
+            p.setPen(QPen(QColor(color), 2))
+            p.drawRoundedRect(rect, 6, 6)
+            p.setPen(QPen(QColor("#ecf0f1")))
+            p.drawText(rect, Qt.AlignCenter, text)
 
-        hint = "Encoder inclinazione online" if (sx_meas or dx_meas) else "Angolo comandato (encoder non in lettura)"
+        draw_head(x_sx, draw_sx, outward_left=True, color="#2980b9")
+        draw_head(x_dx, draw_dx, outward_left=False, color="#9b59b6")
+        draw_angle_badge(x_sx, draw_sx, left=True, color="#2980b9")
+        draw_angle_badge(x_dx, draw_dx, left=False, color="#9b59b6")
+
+        hint = (
+            "Encoder inclinazione online"
+            if (sx_meas or dx_meas)
+            else "Angolo comandato (encoder non in lettura)"
+        )
         st_all = self._state_dict()
         if st_all.get("head_fc_zero_sx") or st_all.get("head_fc_zero_dx"):
             hint += " — FC 0° attivo"

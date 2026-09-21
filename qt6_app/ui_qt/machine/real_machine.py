@@ -99,6 +99,8 @@ class RealMachine(MachineIO):
         self._position_mm = self.min_distance
         self._target_mm: Optional[float] = None
         self._moving = False
+        # Fine corsa blocca il freno solo nei posizionamenti di ciclo, non in homing
+        self._lock_brake_on_stop = True
         
         # Load hardware configuration
         config = self._load_hardware_config()
@@ -297,6 +299,8 @@ class RealMachine(MachineIO):
         if self.emergency_active or not self.machine_homed or self.homing_in_progress: 
             return False
         
+        self._lock_brake_on_stop = True
+        
         with self._lock:
             target_mm = max(self.min_distance, min(float(length_mm), self.max_cut_length))
             self.left_head_angle = float(ang_sx)
@@ -372,6 +376,11 @@ class RealMachine(MachineIO):
         self._current_mode = str(mode)
         self._current_piece_length = float(piece_length_mm)
         self._bar_stock_length = float(bar_length_mm)
+        # Frizione sempre inserita tranne in Manuale (testa libera)
+        if (self._current_mode or "").lower() == "manual":
+            self.command_set_clutch(False)
+        else:
+            self.command_set_clutch(True)
         self._update_morse_control_mode()
 
     def _update_morse_control_mode(self):
@@ -379,22 +388,23 @@ class RealMachine(MachineIO):
         Decide se abilitare controllo software morse.
         
         Logica:
-        - Ultra-lunga: sempre controllo software
-        - Manuale: mai controllo software (pulsantiera)
-        - Automatico/Semi: solo se fuori quota O ultra corto (<500mm)
+        - Manuale: mai (pulsantiera)
+        - Automatico / Semi / modalità speciali: sempre software
+          (blocco a fine posa, sblocco a fine taglio)
         """
         was_enabled = self._software_morse_control_enabled
         
-        if self._current_mode. startswith("ultra_long"):
+        mode = (self._current_mode or "").lower()
+        if mode == "manual":
+            self._software_morse_control_enabled = False
+        elif mode.startswith("ultra_long") or mode in (
+            "plan", "semi", "semi_auto", "normal",
+            "out_of_quota", "ultra_short", "extra_long",
+        ):
             self._software_morse_control_enabled = True
-        elif self._current_mode == "manual":
-            self._software_morse_control_enabled = False
-        elif self._current_mode in ("plan", "semi"):
-            is_out_of_quota = self._current_piece_length > self._bar_stock_length
-            is_ultra_short = 0 < self._current_piece_length < 500.0
-            self._software_morse_control_enabled = (is_out_of_quota or is_ultra_short)
         else:
-            self._software_morse_control_enabled = False
+            # Default sicuro: in ciclo macchina abilita SW salvo idle
+            self._software_morse_control_enabled = mode not in ("idle", "")
         
         if was_enabled != self._software_morse_control_enabled: 
             mode_str = "SOFTWARE" if self._software_morse_control_enabled else "PULSANTIERA"
@@ -445,6 +455,7 @@ class RealMachine(MachineIO):
 
         def seq():
             self.homing_in_progress = True
+            self._lock_brake_on_stop = False
             ok_h, msg_h = self._home_heads()
             if self.emergency_active:
                 self.homing_in_progress = False
@@ -460,7 +471,7 @@ class RealMachine(MachineIO):
                             self._position_mm = self.min_distance
                             self._target_mm = self.min_distance
                             self._moving = False
-                            self.command_lock_brake()
+                            # Freno non bloccato a fine azzeramento
                     if callback:
                         extra = "" if ok_h else f" | teste: {msg_h}"
                         callback(success=success, msg=f"{message}{extra}")
@@ -475,7 +486,7 @@ class RealMachine(MachineIO):
                 self._moving = False
                 self.machine_homed = True
                 self.homing_in_progress = False
-                self.command_lock_brake()
+                # Freno non bloccato a fine azzeramento
             if callback:
                 extra = "" if ok_h else f" | teste: {msg_h}"
                 callback(success=True, msg=f"HOMING OK{extra}")
@@ -575,7 +586,8 @@ class RealMachine(MachineIO):
                 self._moving = self._motion_controller.is_moving()
 
         if was_moving and not self._moving:
-            self.command_lock_brake()
+            if self._lock_brake_on_stop:
+                self.command_lock_brake()
 
         # Encoder inclinazione teste (GPIO/AL-ZARD o RS485)
         if self._head_encoders is not None:

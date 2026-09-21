@@ -128,7 +128,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     'opt_enable_tail_refine':  True,
     'opt_show_graph':          True,
     'opt_collapse_done_bars':  True,
-    'auto_after_cut_pause_ms': 300,
+    'auto_after_cut_pause_ms': 800,
     'semi_offset_mm':          120.0,
     'inpos_tol_mm':            0.20,
     # Etichette (top-level) per compat

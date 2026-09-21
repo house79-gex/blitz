@@ -190,6 +190,13 @@ class PlanVisualizerWidget(QWidget):
                 return
             debug_lines=[]
             for bi, bar in enumerate(self._bars):
+                # Solo pezzi con quota reale (sfrido = spazio vuoto, non trapezio "0")
+                bar = [
+                    p for p in bar
+                    if float(p.get("len", p.get("length", p.get("length_mm", 0.0))) or 0.0) > 0.5
+                ]
+                if not bar:
+                    continue
                 total_mm = sum(_ext_len(p) for p in bar)
                 if len(bar)>1:
                     total_mm += self._kerf_mm*(len(bar)-1)
