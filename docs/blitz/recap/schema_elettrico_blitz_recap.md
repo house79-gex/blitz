@@ -22,7 +22,7 @@ Canalette 40x40: laterali SX/DX e orizzontali per ogni zona. Guide DIN allineate
     - F3: 24V Elettrovalvole Testa DX (inclinazioni, morsa DX)
     - F4: 24V Frizione + Freno
   - 12V: Mean Well SDR-120-12 → Ausiliari
-  - 5V: Mean Well MDR-10-5 → Arduino MT6701, futuri 5V
+  - 5V: Mean Well MDR-10-5 → servizi 5V (niente Arduino angolo teste)
 - Raspberry Pi 5: alimentatore originale USB‑C su presa 230V interna quadro.
 - Fusibili: dimensionare su assorbimenti reali (bobine EV ~0.2–0.5 A); tipicamente 1–2 A per rami EV/I/O; margine 25–50%. Preferire portafusibili con indicatore di guasto.
 
@@ -46,6 +46,8 @@ Canalette 40x40: laterali SX/DX e orizzontali per ogni zona. Guide DIN allineate
 - Stato emergenza (contatto ausiliario NO consigliato) → IN digitale (solo supervisione).
 - Angolo teste: encoder incrementali AB NPN 600 P/R → cavo schermato → AL-ZARD 12→3,3 V → GPIO 5/6 e 19/26.
 - Finecorsa 0° teste (induttivo NPN NO sul blocco meccanico) → IN4 SX / IN5 DX modulo I/O #1.
+- Impulso taglio (`blade_pulse`), START (`start_pressed`), uscita lama DX (`dx_blade_out`) → IN3/IN4/IN5 modulo I/O #2 (default; mappa modificabile in Utility → Encoder & Ingressi).
+- Schema di principio sensori/RPi: `docs/WIRING_SENSORS_RPI.md` e `docs/blitz/layouts/wiring_sensors_rpi.svg`.
 
 3) Logiche operative
 
@@ -83,7 +85,8 @@ Modulo I/O + Relè #1 (ID 1) — Inclinazioni / Lame / Sicurezze
   - OUT4: Testa DX 0°  (bobina B)
   - OUT5: INIBIZIONE LAMA SX (contatto NC in serie alla bobina EV)
   - OUT6: INIBIZIONE LAMA DX (contatto NC in serie alla bobina EV)
-  - OUT7–OUT8: riserva
+  - OUT7: INIBIZIONE MOTORI LAMA (relè bobine teleruttori — service, senza EMG)
+  - OUT8: riserva
 
 Modulo I/O + Relè #2 (ID 2) — Morse / Frizione / Freno / Conteggi
 - IN:
@@ -128,6 +131,19 @@ EMC:
 
 6) Tabella morsetti (riassunto)
 Vedi file CSV ../tables/tabella_morsetti_blitz.csv nel repository (mapping completo).
+
+---
+
+## Utility software — Encoder & Ingressi
+
+In **Utility → Encoder & Ingressi** si configurano:
+- pin GPIO encoder carro e teste, PPR, impulsi/mm, invert/offset;
+- finecorsa 0° (modulo, indici IN, settle_ms);
+- mappa logica `digital_inputs` (quale IN Waveshare corrisponde a `blade_pulse`, `start_pressed`, ecc.);
+- monitor live degli ingressi in modalità reale.
+
+File persistito: `data/hardware_config.json`. Dopo cambio pin GPIO riavviare l’app.  
+Guida montaggio: `docs/WIRING_SENSORS_RPI.md`.
 
 ---
 
@@ -191,13 +207,17 @@ Comando software:
   - Indirizzo 3: OUT4 (Testa DX 0°)
   - Indirizzo 4: OUT5 (INIBIZIONE LAMA SX)
   - Indirizzo 5: OUT6 (INIBIZIONE LAMA DX)
-  - Indirizzi 6–7: OUT7–OUT8 (riserva)
+  - Indirizzo 6: OUT7 (INIBIZIONE MOTORI LAMA — service, senza EMG)
+  - Indirizzo 7: OUT8 (riserva)
 
-**Modulo #2 (ID 2) — Morse / Frizione / Freno / Conteggi**
+**Modulo #2 (ID 2) — Morse / Frizione / Freno / Conteggi / Ciclo**
 - DI (Discrete Input):
   - Indirizzo 0: IN1 (Conteggio pezzi SX)
   - Indirizzo 1: IN2 (Conteggio pezzi DX)
-  - Indirizzi 2–7: IN3–IN8 (riserva)
+  - Indirizzo 2: IN3 (blade_pulse)
+  - Indirizzo 3: IN4 (start_pressed)
+  - Indirizzo 4: IN5 (dx_blade_out)
+  - Indirizzi 5–7: IN6–IN8 (riserva)
 - Coils (Uscite relè):
   - Indirizzo 0: OUT1 (Morsa SX CHIUDI)
   - Indirizzo 1: OUT2 (Morsa SX APRI)
@@ -208,26 +228,12 @@ Comando software:
   - Indirizzo 6: OUT7 (Frizione ON/OFF)
   - Indirizzo 7: OUT8 (riserva)
 
-### Arduino Nano + MT6701 (Modbus RTU, ID 10 e ID 11)
-
-**Holding Registers (HR)** — Angolo encoder magnetico:
-
-**Arduino SX (ID 10)**
-- HR 0: Angolo_raw (0–16383, 14 bit da MT6701)
-- HR 1: Angolo_deg (0–359, gradi interi)
-- HR 2: Status (bit flag: 0=OK, 1=errore SPI, 2=timeout)
-
-**Arduino DX (ID 11)**
-- HR 0: Angolo_raw (0–16383, 14 bit da MT6701)
-- HR 1: Angolo_deg (0–359, gradi interi)
-- HR 2: Status (bit flag: 0=OK, 1=errore SPI, 2=timeout)
-
-**Lettura da RPi**:
-- Funzione 0x01 (Read Coils): leggere stato uscite
-- Funzione 0x02 (Read Discrete Inputs): leggere ingressi digitali
-- Funzione 0x03 (Read Holding Registers): leggere angolo Arduino MT6701
-- Funzione 0x05 (Write Single Coil): attivare/disattivare relè singoli
+**Lettura/scrittura da RPi** (solo Waveshare ID 1–2):
+- Funzione 0x01 (Read Coils): stato uscite
+- Funzione 0x02 (Read Discrete Inputs): ingressi digitali
+- Funzione 0x05 (Write Single Coil): relè singoli
 - Timeout: 500 ms; retry: 2 volte
+- Angolo teste: encoder rotativi + AL-ZARD + GPIO (niente Arduino/MT6701 su Modbus)
 
 ---
 

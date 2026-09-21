@@ -6,7 +6,7 @@ File di stato per chi riprende il lavoro. Aggiornare questa pagina a ogni interv
 Branch: `cursor/integrate-cutlist-heads-encoders-5073`  
 PR: https://github.com/house79-gex/blitz/pull/37
 
-Sessione: piano Automatico senza pezzi/trapezi 0 mm; ordine barre/pezzi solo decrescente per misura; packing priorità lunghi; frizione sempre ON (tranne Manuale); morse blocco a posa / sblocco a fine taglio; Semi corto/ultra/extra: `execute_step_1` + multi-step in `_tick`.
+Sessione: Configurazione Utility unificata Modulo A/B; encoder teste solo GPIO/rotativi (no Arduino MT6701); OUT7 service inibizione motori lama senza EMG; calibrazione 2 punti carro.
 
 ## Decisione hardware corrente
 
@@ -23,7 +23,8 @@ Sessione: piano Automatico senza pezzi/trapezi 0 mm; ordine barre/pezzi solo dec
 | Inclinazione futuro | Attuatori lineari 48 V, **corsa 100 mm** (effettivi 85 mm, ~4 s come i pneumatici). Stub software |
 | Opto | AL-ZARD DST-1R4P-N, **NPN** anodo comune, VCC uscita **3,3 V** |
 | Cavo teste encoder | FR2OHH2R 6×0,50 schermato, calza a PE solo in quadro |
-| ESP32 / RS485 teste | Non servono (resta `interface=modbus` come alternativa) |
+| ESP32 / RS485 / Arduino MT6701 | **Non usati** — angolo teste solo encoder rotativi + AL-ZARD + GPIO |
+| OUT7 Modulo A | Inibizione MOTORI lama (service calibrazione, senza EMG) |
 | Freno | Bistabile: OUT5 Mod#2 BLOCCO, OUT6 SBLOCCO (impulso 250 ms). Si blocca **solo** a fine posa in Automatico/Semi/Manuale; **non** a fine homing |
 
 NPN e PNP **non** sono indifferenti. FC teste: **NO**, non NC (un filo staccato non deve sembrare “a 0°”). Non capacitivi, non microswitch sul fermo.
@@ -65,7 +66,8 @@ Non azzerare l’encoder a ogni passaggio sul FC in lavorazione.
 - `planner.plan_ilp` è stub; Automatico usa `refiner.pack_bars_knapsack_ilp`
 - Automatico: angoli **0–45°** (90° = quadro). Sequenza taglio→posa su tutta la barra; F9 per barra successiva
 - Copertura test bassa su Automatico/Semi
-- Documenti storici Arduino MT6701: **non** è il percorso angolo teste
+- Documenti storici Arduino MT6701 / ESP32 RS485: **obsoleti** — percorso ufficiale GPIO
+- Utility → **Configurazione** unificata (Modulo A/B, encoder, calibrazione, service OUT7)
 
 ## File chiave
 
@@ -75,6 +77,7 @@ Non azzerare l’encoder a ogni passaggio sul FC in lavorazione.
 - `qt6_app/ui_qt/hardware/head_tilt_drive.py`
 - `qt6_app/ui_qt/machine/real_machine.py` / `simulation_machine.py`
 - `qt6_app/ui_qt/pages/semi_auto_page.py`
+- `docs/MANUALE_CONFIGURAZIONE.md` — manuale Utility Configurazione (A/B, service OUT7)
 - `docs/HEAD_ENCODERS.md`
 - `docs/HEAD_TILT_ACTUATORS.md`
 - `docs/blitz/recap/schema_elettrico_blitz_recap.md`

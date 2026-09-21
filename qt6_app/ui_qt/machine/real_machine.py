@@ -23,6 +23,7 @@ COIL_A_DX_45 = 2
 COIL_A_DX_0 = 3
 COIL_A_INIB_LAMA_SX = 4
 COIL_A_INIB_LAMA_DX = 5
+COIL_A_INIB_MOTORI_LAMA = 6  # OUT7: service — bobine teleruttori motori lama (NO emergenza)
 BRAKE_PULSE_S = 0.25
 HEAD_TILT_PULSE_S = 0.25
 
@@ -78,6 +79,8 @@ class RealMachine(MachineIO):
         self.emergency_active = False
         self.brake_active = False
         self.clutch_active = True
+        self._service_blade_motors_inhibit = False
+        self._service_measure_mode = False
 
         # Angoli teste (comandati + misurati da encoder GPIO/AL-ZARD o RS485)
         self.left_head_angle = 0.0
@@ -124,6 +127,64 @@ class RealMachine(MachineIO):
         self._init_head_encoders(config)
         self._init_head_home_fc(config)
         self._init_head_tilt_drive(config)
+        self._digital_inputs = dict((config or {}).get("digital_inputs") or {})
+        if not self._digital_inputs:
+            try:
+                from ui_qt.utils.hardware_config_store import default_digital_inputs
+                self._digital_inputs = default_digital_inputs()
+            except Exception:
+                self._digital_inputs = {}
+        self._cut_cycle = dict((config or {}).get("cut_cycle") or {})
+        self._carriage_homing = dict((config or {}).get("carriage_homing") or {})
+        self._carriage_calibration = dict((config or {}).get("carriage_calibration") or {})
+        # Applica ppm effettivo da calibrazione se presente
+        try:
+            ppm_eff = float(
+                (self._carriage_calibration or {}).get("pulses_per_mm_effective")
+                or ((config.get("motion_control") or {}).get("encoder_calibration") or {}).get(
+                    "pulses_per_mm", 0
+                )
+                or 0
+            )
+            if ppm_eff > 0 and self._encoder_reader is not None:
+                self._encoder_reader.set_pulses_per_mm(ppm_eff)
+        except Exception as e:
+            print(f"Warning: calibrazione carro non applicata: {e}")
+
+    def reload_digital_inputs(self, mapping: Optional[dict] = None) -> None:
+        """Ricarica la mappa ingressi (Utility → Encoder & Ingressi)."""
+        if mapping:
+            self._digital_inputs = dict(mapping)
+            return
+        cfg = self._load_hardware_config()
+        dig = (cfg or {}).get("digital_inputs") or {}
+        if dig:
+            self._digital_inputs = dict(dig)
+        else:
+            try:
+                from ui_qt.utils.hardware_config_store import default_digital_inputs
+                self._digital_inputs = default_digital_inputs()
+            except Exception:
+                pass
+
+    def _read_mapped_input(self, signal: str) -> bool:
+        """
+        Legge un ingresso logico dalla mappa digital_inputs.
+        module 1 → _inputs_a, module 2 → _inputs_b; index 0-based.
+        """
+        try:
+            from ui_qt.utils.hardware_config_store import resolve_digital_input
+            meta = resolve_digital_input({"digital_inputs": self._digital_inputs}, signal)
+        except Exception:
+            meta = (self._digital_inputs or {}).get(signal) or {}
+        if not isinstance(meta, dict):
+            return False
+        module = int(meta.get("module", 1))
+        index = int(meta.get("index", 0))
+        active_high = bool(meta.get("active_high", True))
+        bank = self._inputs_a if module == 1 else self._inputs_b
+        raw = bool(len(bank) > index and bank[index])
+        return raw if active_high else (not raw)
 
     def _init_head_tilt_drive(self, config: dict) -> None:
         """Cilindri 0°/45° oggi; stub attuatori lineari per il futuro."""
@@ -154,13 +215,15 @@ class RealMachine(MachineIO):
             self._head_home = None
 
     def _init_head_encoders(self, config: dict) -> None:
-        """Inizializza lettura encoder inclinazione teste (GPIO/AL-ZARD o Modbus)."""
+        """Inizializza lettura encoder inclinazione teste (GPIO + AL-ZARD)."""
         try:
             from ui_qt.hardware.head_angle_encoder import create_head_angle_service
-            enc_cfg = (config or {}).get("head_encoders") or {}
+            enc_cfg = dict((config or {}).get("head_encoders") or {})
             if not enc_cfg.get("enabled", False):
                 self._head_encoders = None
                 return
+            # Percorso ufficiale: encoder rotativi → AL-ZARD → GPIO (niente Arduino/MT6701)
+            enc_cfg["interface"] = "gpio"
             self._head_encoders = create_head_angle_service(
                 enc_cfg, modbus_client=self._client
             )
@@ -192,6 +255,12 @@ class RealMachine(MachineIO):
             encoder_cal = motion_config.get("encoder_calibration", {})
             pid_params = motion_config.get("pid_parameters", {})
             motion_limits = motion_config.get("motion_limits", {})
+            cal_cfg = (config or {}).get("carriage_calibration") or {}
+            ppm = float(
+                cal_cfg.get("pulses_per_mm_effective")
+                or encoder_cal.get("pulses_per_mm")
+                or 84.880
+            )
             
             # Initialize motor driver
             self._motor_driver = MD25HVDriver(
@@ -208,7 +277,7 @@ class RealMachine(MachineIO):
                 gpio_a=gpio_encoder.get("channel_a_pin", 17),
                 gpio_b=gpio_encoder.get("channel_b_pin", 27),
                 gpio_z=gpio_encoder.get("index_z_pin", 22),
-                pulses_per_mm=encoder_cal.get("pulses_per_mm", 84.880),
+                pulses_per_mm=ppm,
                 enable_index=gpio_encoder.get("enable_index", True)
             )
             
@@ -272,20 +341,68 @@ class RealMachine(MachineIO):
         return self._moving
 
     def get_input(self, name: str) -> bool:
-        if name == "head_sx_zero":
-            return bool(len(self._inputs_a) > 3 and self._inputs_a[3])
-        if name == "head_dx_zero":
-            return bool(len(self._inputs_a) > 4 and self._inputs_a[4])
-        if name == "blade_pulse":
-            # IN4 è il FC 0° testa SX: non usarlo come impulso taglio
-            return False
-        if name == "start_pressed":
-            return self._inputs_a[0]
-        if name == "dx_blade_out":
-            return self._inputs_a[2]
+        """
+        Legge ingressi logici (mappa configurabile in Utility → Encoder & Ingressi).
+        In modalità reale i bit arrivano dai moduli Waveshare via Modbus.
+        """
+        # Alias storici / semantica software
         if name == "emergency_active":
-            return self._inputs_a[1] or self. emergency_active
+            # emergency_ok attivo alto = macchina OK → emergenza = NOT ok
+            ok = self._read_mapped_input("emergency_ok")
+            return (not ok) or bool(self.emergency_active)
+
+        # Fine ciclo / conteggio: i micro SX/DX sono lo stesso contatto fisico
+        if name in ("cut_done_sx", "head_retracted_sx"):
+            return self._read_mapped_input("piece_count_sx")
+        if name in ("cut_done_dx", "head_retracted_dx"):
+            return self._read_mapped_input("piece_count_dx")
+        if name == "cut_done":
+            return self._read_mapped_input("piece_count_sx") or self._read_mapped_input(
+                "piece_count_dx"
+            )
+
+        if name == "blade_pulse":
+            src = str((self._cut_cycle or {}).get("blade_pulse_source", "piece_count")).lower()
+            if src in ("piece_count", "micros", "cut_done"):
+                # Stesso micro che conta pezzi = fine taglio / rientro testa
+                return self._read_mapped_input("piece_count_sx") or self._read_mapped_input(
+                    "piece_count_dx"
+                )
+            return self._read_mapped_input("blade_pulse")
+
+        if name in (
+            "fc_min",
+            "fc_max",
+            "emergency_ok",
+            "head_sx_zero",
+            "head_dx_zero",
+            "piece_count_sx",
+            "piece_count_dx",
+            "start_pressed",
+            "dx_blade_out",
+        ):
+            return self._read_mapped_input(name)
         return False
+
+    def apply_carriage_calibration(self, pulses_per_mm_effective: float, correction_factor: float = 1.0) -> bool:
+        """Applica ppm effettivo a runtime (dopo procedura Utility)."""
+        try:
+            ppm = float(pulses_per_mm_effective)
+            if ppm <= 0:
+                return False
+            if self._encoder_reader is not None:
+                self._encoder_reader.set_pulses_per_mm(ppm)
+            self._carriage_calibration = dict(self._carriage_calibration or {})
+            self._carriage_calibration["pulses_per_mm_effective"] = ppm
+            self._carriage_calibration["correction_factor"] = float(correction_factor)
+            return True
+        except Exception as e:
+            print(f"apply_carriage_calibration: {e}")
+            return False
+
+    def get_carriage_homing_params(self) -> dict:
+        """Parametri FC_MIN / zero carro (Utility)."""
+        return dict(self._carriage_homing or {})
 
     def command_move(
         self,
@@ -436,6 +553,23 @@ class RealMachine(MachineIO):
             self._write_coil_a(COIL_A_INIB_LAMA_SX, bool(left))
         if right is not None:
             self._write_coil_a(COIL_A_INIB_LAMA_DX, bool(right))
+        return True
+
+    def command_set_blade_motors_inhibit(self, active: bool) -> bool:
+        """
+        Inibisce bobine teleruttori motori lama (OUT7 Modulo A).
+        NON attiva emergenza: carro/teste restano movimentabili.
+        """
+        self._service_blade_motors_inhibit = bool(active)
+        self._write_coil_a(COIL_A_INIB_MOTORI_LAMA, bool(active))
+        return True
+
+    def command_prepare_blade_measure(self, active: bool) -> bool:
+        """Prepara misura laser lama↔lama con motori inibiti (no EMG)."""
+        self.command_set_blade_motors_inhibit(bool(active))
+        if active:
+            self.command_set_blade_inhibit(left=False, right=False)
+        self._service_measure_mode = bool(active)
         return True
 
     def command_sim_cut_pulse(self) -> None:

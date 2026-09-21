@@ -20,11 +20,11 @@ def main():
         ["Alimentatore 48V", "Mean Well TDR-960-48", "48V DC per Driver", "Montaggio DIN; ventilazione necessaria"],
         ["Alimentatore 24V", "Mean Well SDR-240-24", "24V DC EV/I/O", "Ramo con fusibili F1..F4"],
         ["Alimentatore 12V", "Mean Well SDR-120-12", "12V ausiliari", "Servizi vari"],
-        ["Alimentatore 5V", "Mean Well MDR-10-5", "Arduino/ESP32", "RPi su PSU originale 230V"],
+        ["Alimentatore 5V", "Mean Well MDR-10-5", "Servizi 5V", "RPi su PSU originale 230V"],
         ["Driver motore", "Cytron MD25HV", "DC 48V PWM", "GPIO 12/13/16; encoder ELTRA via AL-ZARD"],
         ["Moduli I/O+Relè", "Waveshare 8IN/8OUT (x2)", "I/O campo e relè", "Modbus RTU RS485 (ID 1 e 2)"],
         ["Raspberry Pi 5", "RPi 5 + Waveshare USB 4CH", "Supervisione e logica", "HDMI e USB lato DX"],
-        ["Arduino Nano", "Nano + MAX485 + MT6701 (x2)", "Angolo teste SX/DX", "SPI locale, RS485 quadro"],
+        ["Encoder teste", "Rotativo AB NPN 600 P/R + AL-ZARD", "Angolo teste SX/DX", "GPIO 5/6 e 19/26"],
     ]
     
     # Fusibili da appendere dopo 3 righe vuote
@@ -37,7 +37,7 @@ def main():
         ["F2", "24V EV Testa SX", "1–2 A", "Inclinazioni + morsa SX; doppie bobine"],
         ["F3", "24V EV Testa DX", "1–2 A", "Inclinazioni + morsa DX; doppie bobine"],
         ["F4", "24V Frizione + Freno", "2–3 A", "Bobine con assorbimento maggiore"],
-        ["F5", "5V Servizi", "1 A", "Arduino/ESP32; RPi su PSU dedicata 230V"],
+        ["F5", "5V Servizi", "1 A", "Servizi 5V; RPi su PSU dedicata 230V"],
         ["F6", "12V Aux", "1–2 A", "Servizi ausiliari"],
     ]
     

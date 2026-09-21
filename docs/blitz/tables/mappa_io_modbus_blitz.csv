@@ -13,13 +13,13 @@ Modulo IO #1,1,OUT,OUT3,OUT,Inclinazione DX 45° (A),F3,Impulso
 Modulo IO #1,1,OUT,OUT4,OUT,Inclinazione DX 0° (B),F3,Impulso
 Modulo IO #1,1,OUT,OUT5,OUT,Inibizione Lama SX (NC in serie),F2,Serie sul + bobina
 Modulo IO #1,1,OUT,OUT6,OUT,Inibizione Lama DX (NC in serie),F3,Serie sul + bobina
-Modulo IO #1,1,OUT,OUT7,OUT,Riserva,F1,
+Modulo IO #1,1,OUT,OUT7,OUT,Inibizione MOTORI lama (service),F2,Relè bobine teleruttori — NO emergenza
 Modulo IO #1,1,OUT,OUT8,OUT,Riserva,F1,
 Modulo IO #2,2,IN,IN1,IN,Conteggio pezzi SX (Micro NC),F1,Conteggio su apertura (debounce)
 Modulo IO #2,2,IN,IN2,IN,Conteggio pezzi DX (Micro NC),F1,Conteggio su apertura (debounce)
-Modulo IO #2,2,IN,IN3,IN,Riserva,F1,
-Modulo IO #2,2,IN,IN4,IN,Riserva,F1,
-Modulo IO #2,2,IN,IN5,IN,Riserva,F1,
+Modulo IO #2,2,IN,IN3,IN,blade_pulse (impulso taglio),F1,Fine discesa lama / pedale — configurabile in Utility
+Modulo IO #2,2,IN,IN4,IN,start_pressed (START / conferma),F1,Avvio ciclo e conferma sequenze speciali
+Modulo IO #2,2,IN,IN5,IN,dx_blade_out (uscita lama DX),F1,Stato uscita lama DX
 Modulo IO #2,2,IN,IN6,IN,Riserva,F1,
 Modulo IO #2,2,IN,IN7,IN,Riserva,F1,
 Modulo IO #2,2,IN,IN8,IN,Riserva,F1,
@@ -31,5 +31,3 @@ Modulo IO #2,2,OUT,OUT5,OUT,Freno BLOCCO (A),F4,Impulso
 Modulo IO #2,2,OUT,OUT6,OUT,Freno SBLOCCO (B),F4,Impulso
 Modulo IO #2,2,OUT,OUT7,OUT,Frizione ON/OFF,F4,Inserita=trazione
 Modulo IO #2,2,OUT,OUT8,OUT,Riserva,F1,
-Arduino SX,10,REG,HR40001,REG,Angolo Testa SX (centesimi di grado),F5,Modbus RTU
-Arduino DX,11,REG,HR40001,REG,Angolo Testa DX (centesimi di grado),F5,Modbus RTU

@@ -1,0 +1,150 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900">
+  <title>BLITZ - Cablaggio sensori encoder Raspberry Pi</title>
+  <defs>
+    <style type="text/css"><![CDATA[
+      .box { fill:#1e2a36; stroke:#5dade2; stroke-width:2; }
+      .box2 { fill:#243447; stroke:#58d68d; stroke-width:2; }
+      .box3 { fill:#2c3e50; stroke:#f5b041; stroke-width:2; }
+      .t { font-family:Arial,Helvetica,sans-serif; fill:#ecf0f1; }
+      .h { font-size:18px; font-weight:700; }
+      .s { font-size:12px; }
+      .m { font-size:13px; font-weight:600; }
+      .wire { stroke:#85929e; stroke-width:2; fill:none; }
+      .wire12 { stroke:#e74c3c; stroke-width:2.5; fill:none; }
+      .wire24 { stroke:#f39c12; stroke-width:2.5; fill:none; }
+      .wire33 { stroke:#2ecc71; stroke-width:2.5; fill:none; }
+      .lbl { font-size:11px; fill:#aeb6bf; font-family:Arial,Helvetica,sans-serif; }
+      .ch { font-size:11px; fill:#d5dbdb; font-family:Consolas,monospace; }
+    ]]></style>
+  </defs>
+
+  <rect width="1200" height="900" fill="#121a22"/>
+  <text x="40" y="36" class="t h">BLITZ CNC - Schema sensori / encoder / Raspberry Pi 5</text>
+  <text x="40" y="58" class="lbl">Mai 12V/24V sui GPIO. Encoder NPN - AL-ZARD - 3.3V. Sensori campo - Waveshare 24V (F1).</text>
+
+  <!-- Encoder carro -->
+  <rect x="40" y="80" width="210" height="110" class="box3" rx="8" ry="8"/>
+  <text x="55" y="105" class="t m">ELTRA carro 12V NPN</text>
+  <text x="55" y="128" class="t s">A / B / Z</text>
+  <text x="55" y="150" class="t s">+12V  GND  schermo-PE</text>
+  <text x="55" y="172" class="t s">1000 P/R</text>
+
+  <path d="M250 135 H310" class="wire12"/>
+  <text x="255" y="125" class="lbl">12V NPN</text>
+
+  <rect x="310" y="80" width="200" height="110" class="box2" rx="8" ry="8"/>
+  <text x="325" y="105" class="t m">AL-ZARD #1</text>
+  <text x="325" y="128" class="t s">isolamento 12 - 3.3V</text>
+  <text x="325" y="150" class="t s">ch: A B Z (+riserva)</text>
+  <text x="325" y="172" class="t s">VCC uscita = 3.3V Pi</text>
+
+  <path d="M510 135 H570" class="wire33"/>
+  <text x="515" y="125" class="lbl">3.3V</text>
+
+  <!-- Encoder teste -->
+  <rect x="40" y="220" width="210" height="120" class="box3" rx="8" ry="8"/>
+  <text x="55" y="245" class="t m">Encoder teste 12V</text>
+  <text x="55" y="268" class="t s">SX A/B  DX A/B</text>
+  <text x="55" y="290" class="t s">600 P/R NPN</text>
+  <text x="55" y="312" class="t s">cavo schermato</text>
+
+  <path d="M250 280 H310" class="wire12"/>
+
+  <rect x="310" y="220" width="200" height="120" class="box2" rx="8" ry="8"/>
+  <text x="325" y="245" class="t m">AL-ZARD #2</text>
+  <text x="325" y="268" class="t s">4 ch teste</text>
+  <text x="325" y="290" class="t s">SX A/B + DX A/B</text>
+  <text x="325" y="312" class="t s">GND comune col Pi</text>
+
+  <path d="M510 280 H570" class="wire33"/>
+
+  <!-- Raspberry -->
+  <rect x="570" y="80" width="260" height="260" class="box" rx="8" ry="8"/>
+  <text x="585" y="110" class="t h">Raspberry Pi 5</text>
+  <text x="585" y="140" class="t s">GPIO 17/27/22 = carro A/B/Z</text>
+  <text x="585" y="162" class="t s">GPIO 5/6 = testa SX A/B</text>
+  <text x="585" y="184" class="t s">GPIO 19/26 = testa DX A/B</text>
+  <text x="585" y="206" class="t s">GPIO 12/13/16 = MD25HV</text>
+  <text x="585" y="238" class="t s">USB = RS485 Waveshare</text>
+  <text x="585" y="260" class="t s">pigpiod obbligatorio</text>
+  <text x="585" y="292" class="t s">Utility - Encoder e Ingressi</text>
+  <text x="585" y="314" class="t s">config: hardware_config.json</text>
+
+  <!-- MD25HV -->
+  <rect x="880" y="100" width="280" height="100" class="box" rx="8" ry="8"/>
+  <text x="895" y="130" class="t m">Cytron MD25HV 48V</text>
+  <text x="895" y="155" class="t s">PWM/DIR/EN da GPIO Pi</text>
+  <text x="895" y="178" class="t s">uscita - motore carro DC</text>
+  <path d="M830 150 H880" class="wire33"/>
+
+  <!-- Induttivi -->
+  <rect x="40" y="380" width="280" height="150" class="box3" rx="8" ry="8"/>
+  <text x="55" y="405" class="t m">Sensori induttivi 24V NPN NO</text>
+  <text x="55" y="430" class="t s">FC_MIN homing carro - IN1 #1</text>
+  <text x="55" y="452" class="t s">FC testa SX 0 deg - IN4 #1</text>
+  <text x="55" y="474" class="t s">FC testa DX 0 deg - IN5 #1</text>
+  <text x="55" y="496" class="t s">M12 + bandiera acciaio</text>
+  <text x="55" y="518" class="t s">gap 1-2 mm  alimentaz. F1</text>
+
+  <path d="M320 455 H370" class="wire24"/>
+  <text x="325" y="443" class="lbl">24V F1</text>
+
+  <!-- Waveshare #1 full 8ch -->
+  <rect x="370" y="370" width="360" height="220" class="box2" rx="8" ry="8"/>
+  <text x="385" y="395" class="t m">Waveshare I/O #1 (ID=1) - 8 IN / 8 OUT</text>
+  <text x="385" y="420" class="ch">IN1  FC_MIN (homing)</text>
+  <text x="385" y="438" class="ch">IN2  FC_MAX</text>
+  <text x="385" y="456" class="ch">IN3  EMERG OK</text>
+  <text x="385" y="474" class="ch">IN4  FC_HEAD_SX_0</text>
+  <text x="385" y="492" class="ch">IN5  FC_HEAD_DX_0</text>
+  <text x="385" y="510" class="ch">IN6  riserva</text>
+  <text x="385" y="528" class="ch">IN7  riserva</text>
+  <text x="385" y="546" class="ch">IN8  riserva</text>
+  <text x="580" y="420" class="ch">OUT1 SX 45</text>
+  <text x="580" y="438" class="ch">OUT2 SX 0</text>
+  <text x="580" y="456" class="ch">OUT3 DX 45</text>
+  <text x="580" y="474" class="ch">OUT4 DX 0</text>
+  <text x="580" y="492" class="ch">OUT5 inib lama SX</text>
+  <text x="580" y="510" class="ch">OUT6 inib lama DX</text>
+  <text x="580" y="528" class="ch">OUT7 riserva</text>
+  <text x="580" y="546" class="ch">OUT8 riserva</text>
+  <text x="385" y="575" class="lbl">Modbus RTU - alimentazione I/O da F1</text>
+
+  <path d="M730 480 H780" class="wire"/>
+  <path d="M780 210 V480" class="wire"/>
+
+  <!-- Waveshare #2 full 8ch -->
+  <rect x="370" y="610" width="360" height="240" class="box2" rx="8" ry="8"/>
+  <text x="385" y="635" class="t m">Waveshare I/O #2 (ID=2) - 8 IN / 8 OUT</text>
+  <text x="385" y="660" class="ch">IN1  conteggio pezzi SX</text>
+  <text x="385" y="678" class="ch">IN2  conteggio pezzi DX</text>
+  <text x="385" y="696" class="ch">IN3  blade_pulse</text>
+  <text x="385" y="714" class="ch">IN4  start_pressed</text>
+  <text x="385" y="732" class="ch">IN5  dx_blade_out</text>
+  <text x="385" y="750" class="ch">IN6  riserva</text>
+  <text x="385" y="768" class="ch">IN7  riserva</text>
+  <text x="385" y="786" class="ch">IN8  riserva</text>
+  <text x="580" y="660" class="ch">OUT1 morsa SX chiudi</text>
+  <text x="580" y="678" class="ch">OUT2 morsa SX apri</text>
+  <text x="580" y="696" class="ch">OUT3 morsa DX chiudi</text>
+  <text x="580" y="714" class="ch">OUT4 morsa DX apri</text>
+  <text x="580" y="732" class="ch">OUT5 freno blocco</text>
+  <text x="580" y="750" class="ch">OUT6 freno sblocco</text>
+  <text x="580" y="768" class="ch">OUT7 frizione</text>
+  <text x="580" y="786" class="ch">OUT8 riserva</text>
+  <text x="385" y="830" class="lbl">Terminazione 120 ohm sull ultimo nodo RS485</text>
+
+  <path d="M730 730 H780" class="wire"/>
+  <path d="M780 320 V730" class="wire"/>
+
+  <!-- Micro / altri -->
+  <rect x="780" y="370" width="380" height="150" class="box3" rx="8" ry="8"/>
+  <text x="795" y="395" class="t m">Altri ingressi campo (24V F1)</text>
+  <text x="795" y="420" class="t s">FC_MAX microswitch NA - IN2 #1</text>
+  <text x="795" y="442" class="t s">Conteggi pezzi micro NC - IN1/2 #2</text>
+  <text x="795" y="464" class="t s">blade_pulse / START / uscita lama</text>
+  <text x="795" y="486" class="t s">- IN3/IN4/IN5 #2 (default)</text>
+  <text x="795" y="508" class="t s">Mappa modificabile da Utility</text>
+
+  <text x="40" y="880" class="lbl">Doc: docs/WIRING_SENSORS_RPI.md  |  Config: data/hardware_config.json  |  Schema: docs/blitz/recap/schema_elettrico_blitz_recap.md</text>
+</svg>

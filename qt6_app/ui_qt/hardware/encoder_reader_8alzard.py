@@ -202,6 +202,18 @@ class EncoderReader8ALZARD:
         with self._lock:
             return self._pulse_count / self.pulses_per_mm
     
+    def set_pulses_per_mm(self, pulses_per_mm: float) -> None:
+        """Aggiorna il fattore impulsi/mm (calibrazione) mantenendo la quota corrente."""
+        ppm = float(pulses_per_mm)
+        if ppm <= 0:
+            raise ValueError("pulses_per_mm deve essere > 0")
+        with self._lock:
+            # Conserva la posizione fisica attuale in mm
+            pos = self._pulse_count / self.pulses_per_mm if self.pulses_per_mm else 0.0
+            self.pulses_per_mm = ppm
+            self._pulse_count = round(pos * ppm)
+            self.logger.info("pulses_per_mm aggiornato a %.6f (pos=%.3f mm)", ppm, pos)
+    
     def get_pulse_count(self) -> int:
         """
         Get raw pulse count.

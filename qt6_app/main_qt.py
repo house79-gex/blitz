@@ -270,6 +270,17 @@ class BlitzMainWindow(QMainWindow):
                     self._r.right_blade_inhibit = right
                 return True
 
+            def command_set_blade_motors_inhibit(self, active):
+                self._r._service_blade_motors_inhibit = bool(active)
+                return True
+
+            def command_prepare_blade_measure(self, active):
+                self.command_set_blade_motors_inhibit(active)
+                if active:
+                    self.command_set_blade_inhibit(left=False, right=False)
+                self._r._service_measure_mode = bool(active)
+                return True
+
             def command_sim_cut_pulse(self):
                 return True
 

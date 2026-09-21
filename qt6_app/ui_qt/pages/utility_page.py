@@ -471,7 +471,15 @@ class UtilityPage(QWidget):
         menu_layout.setSpacing(6)
         self.lst_menu = QListWidget()
         self.lst_menu.setSelectionMode(QAbstractItemView.SingleSelection)
-        for label in ("Hardware", "Profili", "QCAD", "Backup", "Configurazione", "Temi", "Etichette"):
+        for label in (
+            "Hardware",
+            "Configurazione",
+            "Profili",
+            "QCAD",
+            "Backup",
+            "Temi",
+            "Etichette",
+        ):
             self.lst_menu.addItem(QListWidgetItem(label))
         self.lst_menu.setCurrentRow(0)
         menu_layout.addWidget(QLabel("Sottomenu"))
@@ -480,18 +488,28 @@ class UtilityPage(QWidget):
         self.stack = QStackedWidget()
         self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.page_hardware = HardwareConfigTab(self.appwin)
+        try:
+            from ui_qt.pages.utility_encoders_tab import EncodersInputsTab
+            # Configurazione unica: bus Modbus + encoder + Waveshare A/B + calibrazione
+            self.page_config = EncodersInputsTab(self.appwin)
+        except Exception as e:
+            import logging
+            logging.getLogger("utility_page").error("EncodersInputsTab: %s", e)
+            self.page_config = ConfigSubPage(self.appwin)
+            logging.getLogger("utility_page").warning(
+                "Fallback ConfigSubPage (solo RS485): %s", e
+            )
         self.page_profiles = ProfilesSubPage(self.appwin, self.profiles_store)
         self.page_qcad = QcadSubPage(self.appwin, self.profiles_store)
         self.page_backup = BackupSubPage(self.appwin)
-        self.page_config = ConfigSubPage(self.appwin)
         self.page_themes = ThemesSubPage(self.appwin)
         self.page_labels = LabelsSubPage(self.appwin, self.profiles_store)
 
         self.stack.addWidget(self.page_hardware)  # 0
-        self.stack.addWidget(self.page_profiles)  # 1
-        self.stack.addWidget(self.page_qcad)      # 2
-        self.stack.addWidget(self.page_backup)    # 3
-        self.stack.addWidget(self.page_config)    # 4
+        self.stack.addWidget(self.page_config)    # 1 Configurazione (tutto-in-uno)
+        self.stack.addWidget(self.page_profiles)  # 2
+        self.stack.addWidget(self.page_qcad)      # 3
+        self.stack.addWidget(self.page_backup)    # 4
         self.stack.addWidget(self.page_themes)    # 5
         self.stack.addWidget(self.page_labels)    # 6
 
@@ -526,7 +544,6 @@ class UtilityPage(QWidget):
             pass
 
     def _open_in_qcad_on_profile(self, dxf_path: str):
-        self.stack.setCurrentIndex(1)
         items = self.lst_menu.findItems("QCAD", Qt.MatchExactly)
         if items:
             self.lst_menu.setCurrentItem(items[0])
@@ -1149,6 +1166,7 @@ class ConfigSubPage(QFrame):
         row += 1
 
         self.lbl_state: List[QLabel] = []
+        self._input_name_hints: List[str] = [""] * 16
         test = QGridLayout()
         test.setHorizontalSpacing(8); test.setVerticalSpacing(6)
         test.addWidget(QLabel("Test ingressi digitali (A: IN1..IN8, B: IN1..IN8)"), 0, 0, 1, 4)
@@ -1169,6 +1187,28 @@ class ConfigSubPage(QFrame):
         read_row.addWidget(self.btn_read)
         read_row.addStretch(1)
         root.addLayout(read_row, row, 0, 1, 4)
+        self._refresh_input_hints()
+
+    def _refresh_input_hints(self):
+        """Etichette segnale da digital_inputs (Utility Encoder & Ingressi)."""
+        self._input_name_hints = [""] * 16
+        try:
+            from ui_qt.utils.hardware_config_store import load_hardware_config, default_digital_inputs
+            dig = (load_hardware_config().get("digital_inputs") or {})
+            defaults = default_digital_inputs()
+            keys = [k for k in defaults.keys() if k != "description"]
+            for key in keys:
+                meta = dict(defaults.get(key) or {})
+                if isinstance(dig.get(key), dict):
+                    meta.update(dig[key])
+                mod = int(meta.get("module", 1))
+                idx = int(meta.get("index", 0))
+                if mod == 1 and 0 <= idx < 8:
+                    self._input_name_hints[idx] = key
+                elif mod == 2 and 0 <= idx < 8:
+                    self._input_name_hints[8 + idx] = key
+        except Exception:
+            pass
 
     def _refresh_ports(self):
         self.cmb_port.clear()
@@ -1264,7 +1304,13 @@ class ConfigSubPage(QFrame):
     def _set_state_label(self, idx: int, mod: str, ch: int, val: bool):
         if 0 <= idx < len(self.lbl_state):
             lab = self.lbl_state[idx]
-            lab.setText(f"{mod} IN{ch}: {'ON' if val else 'OFF'}")
+            hint = ""
+            try:
+                hint = self._input_name_hints[idx]
+            except Exception:
+                hint = ""
+            suffix = f" ({hint})" if hint else ""
+            lab.setText(f"{mod} IN{ch}{suffix}: {'ON' if val else 'OFF'}")
             lab.setStyleSheet(f"color:{('#2ecc71' if val else '#7f8c8d')};")
 
     def _toast(self, msg: str, level: str = "info"):

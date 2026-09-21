@@ -15,7 +15,7 @@ Non collegare gli encoder **direttamente** ai GPIO: le uscite NPN sono a 12 V. T
 
 10 metri di 0,50 mm² su encoder incrementali sono ampiamente sufficienti: le teste ruotano piano (pochi kHz al massimo, ben sotto i 20 kHz del datasheet). Lo schermo riduce i disturbi dei VFD e del motore carro.
 
-L’ESP32+MAX485 resta solo come alternativa (`interface: "modbus"`). Documentazione: `docs/HEAD_ENCODERS_RS485.md`.
+L’angolo teste è **solo** su encoder rotativi + AL-ZARD + GPIO. Arduino Nano + MT6701 e il percorso ESP32/RS485 non sono più usati né configurabili in Utility.
 
 ## Due moduli AL-ZARD
 
@@ -60,7 +60,7 @@ Non collegare A/B a VCC. Non portare i 12 V sui GPIO. Alimentare gli encoder da 
 
 ## Cosa fa il software
 
-- `head_encoders.interface` = `gpio` (default in `data/hardware_config.json`)
+- `head_encoders.interface` = `gpio` (unico percorso in `data/hardware_config.json`)
 - `HeadAngleGpioService` decodifica A/B su GPIO 5/6 (SX) e 19/26 (DX)
 - `HeadsView` in Semi-automatico ruota le teste sull’angolo **comandato**; la misura encoder è in etichetta
 - Finecorsa 0° su IN4/IN5: in **homing** si va a 0°, si attende l’assestamento, si azzerano gli encoder (carro + teste in un colpo)
@@ -114,3 +114,5 @@ I pulsanti **Azzera enc.** restano solo per taratura a banco. Futuro angolo cont
 Cablaggio: +24 V F1, 0 V, uscita NPN su **IN4 SX / IN5 DX**. Sensori: LR12-04N1 (M12 NPN NO 4 mm) + bandiera acciaio.
 
 Configurazione: `head_home_fc` (`settle_ms`, `homing_timeout_s`). `auto_zero` resta false.
+
+In UI: **Utility → Encoder & Ingressi** (GPIO, FC 0°, mappa ingressi). Cablaggio completo Pi: `docs/WIRING_SENSORS_RPI.md`.

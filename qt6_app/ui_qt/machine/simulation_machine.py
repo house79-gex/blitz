@@ -35,6 +35,8 @@ class SimulationMachine(MachineIO):
         self.right_morse_locked = False
         self.left_blade_inhibit = False
         self.right_blade_inhibit = False
+        self._service_blade_motors_inhibit = False
+        self._service_measure_mode = False
 
         self.machine_homed = False
         self.emergency_active = False
@@ -169,6 +171,18 @@ class SimulationMachine(MachineIO):
             self.left_blade_inhibit = bool(left)
         if right is not None:
             self.right_blade_inhibit = bool(right)
+        return True
+
+    def command_set_blade_motors_inhibit(self, active: bool) -> bool:
+        """Simula OUT7: motori lama OFF senza emergenza."""
+        self._service_blade_motors_inhibit = bool(active)
+        return True
+
+    def command_prepare_blade_measure(self, active: bool) -> bool:
+        self.command_set_blade_motors_inhibit(bool(active))
+        if active:
+            self.command_set_blade_inhibit(left=False, right=False)
+        self._service_measure_mode = bool(active)
         return True
 
     def command_sim_cut_pulse(self) -> None:

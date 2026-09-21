@@ -68,6 +68,18 @@ class MachineAdapter:
     def command_set_blade_inhibit(self, left: Optional[bool] = None, right: Optional[bool] = None) -> bool:
         return self._raw.command_set_blade_inhibit(left, right)
 
+    def command_set_blade_motors_inhibit(self, active: bool) -> bool:
+        fn = getattr(self._raw, "command_set_blade_motors_inhibit", None)
+        if callable(fn):
+            return bool(fn(active))
+        return False
+
+    def command_prepare_blade_measure(self, active: bool) -> bool:
+        fn = getattr(self._raw, "command_prepare_blade_measure", None)
+        if callable(fn):
+            return bool(fn(active))
+        return False
+
     def command_sim_cut_pulse(self) -> None:
         self._raw.command_sim_cut_pulse()
 

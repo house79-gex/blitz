@@ -188,7 +188,18 @@ class MockMachineAdapter:
         if right is not None:
             self._machine.right_blade_inhibit = right
         return True
-    
+
+    def command_set_blade_motors_inhibit(self, active: bool) -> bool:
+        self._machine._service_blade_motors_inhibit = bool(active)
+        return True
+
+    def command_prepare_blade_measure(self, active: bool) -> bool:
+        self.command_set_blade_motors_inhibit(bool(active))
+        if active:
+            self.command_set_blade_inhibit(left=False, right=False)
+        self._machine._service_measure_mode = bool(active)
+        return True
+
     def get_input(self, name: str) -> bool:
         """Get input state."""
         if name == "dx_blade_out":

@@ -249,6 +249,8 @@ Interactive tool to calibrate the `pulses_per_mm` parameter by measuring actual 
 **Head tilt encoders (AL-ZARD #2 + GPIO):**
 - Shielded cable into the cabinet, NPN 12 V → AL-ZARD → GPIO 5/6 (SX) and 19/26 (DX)
 - Do not wire 12 V encoder outputs to the Pi
+- Configure in UI: **Utility → Encoder & Ingressi**
+- Full wiring: `docs/WIRING_SENSORS_RPI.md`, SVG `docs/blitz/layouts/wiring_sensors_rpi.svg`
 - ESP32/RS485 not required (`interface: gpio`)
 
 ## Troubleshooting

@@ -1,8 +1,7 @@
 {
   "version": "1.0",
   "description": "Configurazione hardware troncatrice CNC BLITZ - Parametri trasmissione, limiti, comunicazioni",
-  "last_updated": "2025-01-15",
-  
+  "last_updated": "2026-09-21",
   "transmission": {
     "description": "Parametri trasmissione meccanica motore-carro",
     "pulley_diameter_mm": 60.0,
@@ -20,7 +19,6 @@
       "mm_per_pulse_effective = mm_per_pulse_calculated × correction_factor"
     ]
   },
-  
   "limits": {
     "description": "Limiti operativi macchina",
     "min_position_mm": 250.0,
@@ -34,7 +32,6 @@
       "Velocità e accelerazione da tarare sul campo"
     ]
   },
-  
   "modbus": {
     "description": "Configurazione bus RS485 Modbus RTU - I/O campo",
     "enabled": true,
@@ -43,11 +40,9 @@
     "timeout_s": 0.5,
     "module1_addr": 1,
     "module2_addr": 2,
-    "arduino_sx_addr": 10,
-    "arduino_dx_addr": 11,
     "termination_120ohm": true,
     "module1_map": {
-      "description": "Modulo I/O #1 (ID=1) - Finecorsa, emergenza, inclinazioni, inibizioni",
+      "description": "Modulo I/O #1 / A (ID=1) - Finecorsa, emergenza, inclinazioni, inibizioni",
       "inputs": {
         "IN1": "FC_MIN (finecorsa minimo, NPN NO, homing)",
         "IN2": "FC_MAX (finecorsa massimo, microswitch NA)",
@@ -60,15 +55,19 @@
         "OUT2": "Inclinazione SX 0° (impulso EV)",
         "OUT3": "Inclinazione DX 45° (impulso EV)",
         "OUT4": "Inclinazione DX 0° (impulso EV)",
-        "OUT5": "Inibizione Lama SX (NC in serie su bobina)",
-        "OUT6": "Inibizione Lama DX (NC in serie su bobina)"
+        "OUT5": "Inibizione Lama SX (NC in serie su bobina EV)",
+        "OUT6": "Inibizione Lama DX (NC in serie su bobina EV)",
+        "OUT7": "Inibizione MOTORI lama (relè bobine teleruttori — service, NO emergenza)"
       }
     },
     "module2_map": {
-      "description": "Modulo I/O #2 (ID=2) - Contatori, morse, freno, frizione",
+      "description": "Modulo I/O #2 / B (ID=2) - Contatori, morse, freno, frizione, impulsi ciclo",
       "inputs": {
         "IN1": "Conteggio pezzi SX (micro NC, debounce)",
-        "IN2": "Conteggio pezzi DX (micro NC, debounce)"
+        "IN2": "Conteggio pezzi DX (micro NC, debounce)",
+        "IN3": "blade_pulse (impulso taglio / fine discesa lama)",
+        "IN4": "start_pressed (START / conferma sequenza)",
+        "IN5": "dx_blade_out (uscita lama DX)"
       },
       "outputs": {
         "OUT1": "Morsa SX CHIUDI (solo modalità SW autorizzata)",
@@ -81,21 +80,142 @@
       }
     },
     "notes": [
-      "Terminazione 120Ω sull'ultimo nodo (Arduino DX)",
+      "Terminazione 120Ω sull'ultimo nodo Waveshare",
       "Cavo schermato per RS485, lunghezza max 100m",
       "Moduli Waveshare 8IN/8OUT con relè integrati",
-      "Encoder inclinazione teste: AL-ZARD + GPIO (default). RS485/ESP32 resta opzionale (interface=modbus)"
+      "Encoder inclinazione teste: solo encoder rotativi + AL-ZARD + GPIO (niente Arduino/MT6701)",
+      "Mappa logica software: Utility → Configurazione (digital_inputs)"
     ]
   },
-
+  "service_mode": {
+    "description": "Comandi servizio calibrazione (senza emergenza)",
+    "blade_motors_inhibit_coil": {
+      "module": 1,
+      "index": 6,
+      "label": "OUT7 Modulo A — inibizione bobine teleruttori motori lama"
+    },
+    "notes": [
+      "command_set_blade_motors_inhibit: spegne motori lama senza attivare EMG (carro/teste restano movimentabili)",
+      "command_prepare_blade_measure: motori OFF + EV lama liberate; discesa pneumatica da pulsantiera"
+    ]
+  },
+  "digital_inputs": {
+    "description": "Mappa segnali logici → Waveshare (vista per canale in Utility)",
+    "fc_min": {
+      "module": 1,
+      "index": 0,
+      "active_high": true,
+      "label": "FC_MIN (homing carro, induttivo)"
+    },
+    "fc_max": {
+      "module": 1,
+      "index": 1,
+      "active_high": true,
+      "label": "FC_MAX (limite max)"
+    },
+    "emergency_ok": {
+      "module": 1,
+      "index": 2,
+      "active_high": true,
+      "label": "EMERG OK (1=OK)"
+    },
+    "head_sx_zero": {
+      "module": 1,
+      "index": 3,
+      "active_high": true,
+      "label": "FC testa SX 0° (induttivo)"
+    },
+    "head_dx_zero": {
+      "module": 1,
+      "index": 4,
+      "active_high": true,
+      "label": "FC testa DX 0° (induttivo)"
+    },
+    "piece_count_sx": {
+      "module": 2,
+      "index": 0,
+      "active_high": false,
+      "label": "Micro SX (conteggio + rientro + fine taglio)"
+    },
+    "piece_count_dx": {
+      "module": 2,
+      "index": 1,
+      "active_high": false,
+      "label": "Micro DX (conteggio + rientro + fine taglio)"
+    },
+    "blade_pulse": {
+      "module": 2,
+      "index": 2,
+      "active_high": true,
+      "label": "Impulso dedicato (opz., se non usi i micro)"
+    },
+    "start_pressed": {
+      "module": 2,
+      "index": 3,
+      "active_high": true,
+      "label": "start_pressed (START)"
+    },
+    "dx_blade_out": {
+      "module": 2,
+      "index": 4,
+      "active_high": true,
+      "label": "dx_blade_out (uscita lama DX)"
+    }
+  },
+  "carriage_homing": {
+    "description": "Parametri homing carro su FC_MIN induttivo (calibrazione zero)",
+    "enabled": true,
+    "approach_speed_mm_s": 200.0,
+    "creep_speed_mm_s": 80.0,
+    "backoff_mm": 5.0,
+    "offset_after_fc_mm": 30.0,
+    "settle_ms": 200,
+    "debounce_ms": 30,
+    "zero_offset_mm": 0.0,
+    "use_index_z": true,
+    "notes": [
+      "Dopo trigger FC_MIN: backoff + creep + offset_after_fc_mm = quota software di zero (min_position)",
+      "zero_offset_mm: ritocco fine taratura (si somma all'offset dopo FC)",
+      "debounce_ms: anti-rimbalzo lettura induttivo",
+      "Canale fisico: digital_inputs.fc_min"
+    ]
+  },
+  "carriage_calibration": {
+    "description": "Calibrazione lineare a due punti (encoder vs misura reale) + moltiplicatore",
+    "point_near_nominal_mm": 400.0,
+    "point_far_nominal_mm": 3600.0,
+    "last_encoder_near_mm": 0.0,
+    "last_encoder_far_mm": 0.0,
+    "last_measured_near_mm": 0.0,
+    "last_measured_far_mm": 0.0,
+    "correction_factor": 1.0,
+    "pulses_per_mm_nominal": 84.88,
+    "pulses_per_mm_effective": 15.915,
+    "last_calibrated_at": "2026-09-21T14:45:15",
+    "notes": [
+      "Su guide tonde la scala encoder può discostarsi sulla lunga distanza",
+      "Procedura: vai a ~400 e ~3600, misura con metro/laser, applica correction_factor = dMisura/dEncoder",
+      "ppm_eff = ppm_nom / correction_factor (usato da motion stack)"
+    ]
+  },
+  "cut_cycle": {
+    "description": "Fine ciclo taglio / conteggio pezzi dai micro sulle teste",
+    "piece_count_is_cut_done": true,
+    "blade_pulse_source": "piece_count",
+    "debounce_ms": 40,
+    "count_uses_active_heads": true,
+    "blade_out_requires_blade_on_hw": true,
+    "notes": [
+      "I micro SX/DX contano i pezzi E segnalano rientro testa / fine ciclo",
+      "blade_pulse software = OR (o testa attiva) dei micro se blade_pulse_source=piece_count",
+      "Uscita lama abilitata solo con lama ON: interlock elettrico in quadro (contatti ausiliari/relè)",
+      "In modalità speciali: aspetta cut_done dai micro; inibizione lama resta SW (OUT5/OUT6)"
+    ]
+  },
   "head_encoders": {
-    "description": "Encoder incrementali inclinazione teste SX/DX via cavo schermato + AL-ZARD + GPIO Raspberry Pi",
+    "description": "Encoder rotativi incrementali inclinazione teste SX/DX via cavo schermato + AL-ZARD + GPIO Raspberry Pi",
     "enabled": true,
     "interface": "gpio",
-    "mode": "combined",
-    "combined_addr": 20,
-    "sx_addr": 20,
-    "dx_addr": 21,
     "ppr": 600,
     "quadrature": 4,
     "angle_scale": 100,
@@ -116,10 +236,10 @@
       ]
     },
     "notes": [
-      "Encoder: incrementale AB NPN 600 P/R, albero 6 mm, alimentazione 12 V (5-24 V)",
+      "Encoder: rotativo incrementale AB NPN 600 P/R, albero 6 mm, alimentazione 12 V (5-24 V)",
       "Quadratura x4: 2400 conteggi/giro → 0,15°/impulso se 1:1 con l'asse testa",
-      "interface=gpio: cavo schermato FR2OHH2R nel quadro, AL-ZARD, GPIO Pi — niente ESP32/RS485",
-      "interface=modbus: alternativa ESP32+MAX485 (mode combined/split, slave 20/21)",
+      "Unico percorso: cavo schermato FR2OHH2R → AL-ZARD → GPIO Pi",
+      "Arduino Nano + MT6701 e ESP32/RS485 non sono più usati per l'angolo teste",
       "NPN open collector: NON collegare A/B a VCC né ai GPIO 3,3 V del Pi",
       "AL-ZARD: anodo comune, 12 V su tutti i +, A/B encoder sui −, VCC uscita = 3,3 V",
       "Azzera gli encoder con la testa meccanicamente a 0° (Semi-automatico)",
@@ -128,7 +248,6 @@
       "Documentazione: docs/HEAD_ENCODERS.md"
     ]
   },
-
   "head_home_fc": {
     "description": "Finecorsa 0° teste sul blocco meccanico (homing encoder incrementale)",
     "enabled": true,
@@ -148,7 +267,6 @@
       "Modulo I/O #1 IN4 = SX, IN5 = DX (F1 24 V)"
     ]
   },
-
   "head_tilt": {
     "description": "Azionamento inclinazione teste",
     "mode": "pneumatic_2pos",
@@ -159,7 +277,6 @@
       "linear_actuator: futuro, vedi head_tilt_actuators e docs/HEAD_TILT_ACTUATORS.md"
     ]
   },
-
   "head_tilt_actuators": {
     "enabled": false,
     "status": "scaffold",
@@ -175,7 +292,6 @@
       "Homing invariato: vai a 0°, FC + zero encoder, poi qualsiasi angolo"
     ]
   },
-  
   "rs232": {
     "description": "RS232 non usato: il carro è su Cytron MD25HV (PWM GPIO), non su seriale driver",
     "enabled": false,
@@ -183,7 +299,6 @@
       "Il movimento asse è PWM GPIO 12/13/16 + encoder ELTRA via AL-ZARD"
     ]
   },
-  
   "safety": {
     "description": "Parametri sicurezza",
     "emergency_stop_enabled": true,
@@ -197,7 +312,6 @@
       "Morse: inibizione hardware selettiva (modalità ultra corto)"
     ]
   },
-  
   "calibration": {
     "description": "Parametri di calibrazione (da aggiornare dopo taratura)",
     "encoder_offset_mm": 0.0,
@@ -206,19 +320,18 @@
     "right_head_zero_calibration": 0.0,
     "notes": [
       "Questi valori vengono aggiornati dalla procedura di calibrazione",
-      "Eseguire calibrazione encoder dalla pagina Utility",
-      "Calibrazione angoli teste tramite Arduino MT6701"
+      "Eseguire calibrazione encoder dalla pagina Utility → Configurazione",
+      "Calibrazione angoli teste: encoder rotativi GPIO + FC 0° (niente Arduino/MT6701)"
     ]
   },
-  
   "hardware_info": {
     "description": "Informazioni componenti hardware installati",
     "raspberry_pi": "Raspberry Pi 5 (4GB RAM)",
     "driver_motor": "Cytron MD25HV (48V, PWM GPIO)",
     "motor": "Servo/DC brushless (specifiche da verificare)",
     "encoder": "ELTRA EH63D.1B000S12N8X3PA (1000 PPR, NPN, 12V)",
+    "head_angle_encoders": "Encoder rotativi incrementali AB NPN 600 P/R + AL-ZARD → GPIO",
     "io_modules": "Waveshare RS485 8IN/8OUT (x2)",
-    "arduino_angle": "Arduino Nano + MT6701 (x2 - teste SX/DX)",
     "power_supply": {
       "48V": "Mean Well TDR-960-48",
       "24V": "Mean Well SDR-240-24",
@@ -230,13 +343,11 @@
       "Vedere docs/blitz/recap/ per schema elettrico"
     ]
   },
-  
   "motion_control": {
     "description": "Configurazione stack controllo movimento con MD25HV + 8AL-ZARD + PID",
     "enabled": true,
     "driver": "MD25HV",
     "encoder_interface": "8AL-ZARD",
-    
     "gpio_motor": {
       "pwm_pin": 12,
       "dir_pin": 13,
@@ -248,7 +359,6 @@
         "GPIO 16: Enable/brake (1=enabled, 0=brake)"
       ]
     },
-    
     "gpio_encoder": {
       "channel_a_pin": 17,
       "channel_b_pin": 27,
@@ -260,18 +370,17 @@
         "GPIO 17: Quadrature channel A",
         "GPIO 27: Quadrature channel B",
         "GPIO 22: Index pulse Z (for homing)"
-      ]
+      ],
+      "invert": false
     },
-    
     "encoder_calibration": {
       "encoder_ppr": 1000,
       "quadrature_mode": "x4",
-      "pulley_diameter_mm": 60.0,
+      "pulley_diameter_mm": 80.0,
       "pulses_per_revolution": 4000,
-      "pulses_per_mm": 84.880,
+      "pulses_per_mm": 15.915,
       "calculation": "PPR × 4 / (π × pulley_diameter) = 1000 × 4 / (3.14159 × 60) = 84.880"
     },
-    
     "pid_parameters": {
       "description": "Parametri PID da tarare sul campo",
       "kp": 2.0,
@@ -286,7 +395,6 @@
         "Valori iniziali conservativi - tarare incrementalmente"
       ]
     },
-    
     "motion_limits": {
       "max_speed_percent": 80.0,
       "ramp_time_s": 0.5,
@@ -298,7 +406,6 @@
         "position_tolerance_mm: tolleranza posizionamento target"
       ]
     },
-    
     "safety": {
       "enable_soft_limits": true,
       "emergency_stop_deceleration": "immediate",
@@ -310,7 +417,6 @@
         "Controllo posizione: verifica encoder durante movimento"
       ]
     },
-    
     "replacement_info": {
       "stack": "Cytron MD25HV + AL-ZARD + PID software",
       "reason": "Controllo software sul Raspberry Pi, isolamento galvanico encoder",
