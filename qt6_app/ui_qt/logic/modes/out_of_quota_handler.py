@@ -16,6 +16,7 @@ Handler for "Out of Quota" mode extracted from semi_auto_page.py.
 """
 from dataclasses import dataclass
 from typing import Optional, Any, Callable
+import contextlib
 import logging
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,10 @@ class OutOfQuotaHandler:
                 sx=0.0,  # Testa fissa a quadro (0°), non 90°
                 dx=self.sequence.heading_angle
             )
+
+            # 1b. Lame: SX inibita, DX attiva (intestatura)
+            with contextlib.suppress(Exception):
+                self.mio.command_set_blade_inhibit(left=True, right=False)
             
             # 2. Configure morse for heading
             from ui_qt.logic.modes.morse_strategy import MorseStrategy
@@ -245,6 +250,10 @@ class OutOfQuotaHandler:
                 sx=self.sequence.final_angle_sx,
                 dx=0.0  # Mobile head not used
             )
+
+            # 1b. Lame: SX attiva, DX inibita (taglio finale)
+            with contextlib.suppress(Exception):
+                self.mio.command_set_blade_inhibit(left=False, right=True)
             
             # 2. Release brake to allow movement
             self.mio.command_release_brake()

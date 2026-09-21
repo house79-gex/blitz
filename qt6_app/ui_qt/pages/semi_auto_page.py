@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QSpinBox, QGridLayout, QDoubleSpinBox, QLineEdit, QComboBox,
     QSizePolicy, QCheckBox, QAbstractSpinBox, QToolButton, QStyle, QApplication,
-    QMessageBox, QListWidget
+    QMessageBox, QListWidget, QInputDialog
 )
 from PySide6.QtCore import Qt, QTimer, QSize, QLocale, QRect
 from PySide6.QtGui import QKeyEvent, QGuiApplication
@@ -22,7 +22,7 @@ from ui_qt.logic.modes import (
 from ui_qt.logic.modes.out_of_quota_handler import OutOfQuotaConfig
 from ui_qt.logic.modes.ultra_short_handler import UltraShortConfig
 from ui_qt.logic.modes.extra_long_handler import ExtraLongConfig
-from ui_qt.utils.settings import read_settings
+from ui_qt.utils.settings import read_settings, write_settings
 from ui_qt.logic.angles import normalize_cut_tilt_deg
 import math
 import logging
@@ -98,6 +98,21 @@ class SemiAutoPage(QWidget):
         
         # Movement tracking for UI state management
         self._movement_in_progress = False
+        self._cut_sim_busy = False
+
+        # Contapezzi (stato locale = source of truth)
+        self._count_done = int(getattr(self.machine, "semi_auto_count_done", 0) or 0)
+        try:
+            last_qty = int(read_settings().get("semi_auto_last_qty", 0) or 0)
+        except Exception:
+            last_qty = 0
+        saved_target = int(getattr(self.machine, "semi_auto_target_pieces", 0) or 0)
+        self._count_target = saved_target if saved_target > 0 else max(0, last_qty)
+
+        # Sequenza multi-step: attesa taglio / conferma operatore
+        # None | "await_cut" | "await_proceed"
+        self._seq_phase: Optional[str] = None
+        self._start_prev = False
 
         # Stato intestatura / FQ (keep for backward compatibility)
         self._intest_in_progress = False
@@ -188,7 +203,7 @@ class SemiAutoPage(QWidget):
         self.spin_target = QSpinBox()
         self.spin_target.setRange(0, 999999)
         self.spin_target.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        self.spin_target.setValue(int(getattr(self.machine, "semi_auto_target_pieces", 0)))
+        self.spin_target.setValue(int(self._count_target))
         self.spin_target.valueChanged.connect(self._update_target_pieces)
         cnt.addWidget(self.spin_target, 1, 1)
         self.lbl_counted = QLabel("Contati: 0")
@@ -913,47 +928,276 @@ class SemiAutoPage(QWidget):
         return False
 
     # ---------- Contapezzi ----------
-    def _update_target_pieces(self, v: int):
-        setattr(self.machine, "semi_auto_target_pieces", int(v))
-
-    def _reset_counter(self):
-        setattr(self.machine, "semi_auto_count_done", 0)
-
-    def _increment_counter_if_enabled(self):
-        """Incrementa il contapezzi (usato da taglio sim / fine sequenza speciale)."""
-        done = int(getattr(self.machine, "semi_auto_count_done", 0))
-        setattr(self.machine, "semi_auto_count_done", done + 1)
-        tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0))
-        rem = max(0, tgt - (done + 1))
+    def _refresh_counter_labels(self):
+        rem = max(0, int(self._count_target) - int(self._count_done))
         try:
-            self.lbl_counted.setText(f"Contati: {done + 1}")
+            self.lbl_counted.setText(f"Contati: {int(self._count_done)}")
             self.lbl_remaining.setText(f"Rimanenti: {rem}")
         except Exception:
             pass
-        logger.info("Contapezzi +1 → %s (target=%s)", done + 1, tgt)
+
+    def _update_target_pieces(self, v: int):
+        self._count_target = int(v)
+        with contextlib.suppress(Exception):
+            setattr(self.machine, "semi_auto_target_pieces", int(v))
+        if int(v) > 0:
+            with contextlib.suppress(Exception):
+                write_settings({"semi_auto_last_qty": int(v)})
+        self._refresh_counter_labels()
+
+    def _ask_piece_quantity(self) -> Optional[int]:
+        """
+        Popup «Quanti pezzi?» prima del posizionamento.
+        Riepiloga il numero corrente e permette di modificarlo.
+        Restituisce None se annullato; rifiuta 0.
+        """
+        current = max(0, int(self._count_target or 0))
+        if current <= 0:
+            try:
+                current = int(read_settings().get("semi_auto_last_qty", 1) or 1)
+            except Exception:
+                current = 1
+        if current <= 0:
+            current = 1
+
+        label = (
+            f"Numero pezzi attualmente impostato: {int(self._count_target)}\n\n"
+            f"Quanti pezzi vuoi produrre con questa misura?\n"
+            f"(0 non consentito — conferma o modifica e procedi)"
+        )
+        qty, ok = QInputDialog.getInt(
+            self,
+            "Quanti pezzi?",
+            label,
+            int(current),
+            1,
+            999999,
+            1,
+        )
+        if not ok:
+            return None
+        if int(qty) <= 0:
+            self._show_warn("Numero pezzi deve essere ≥ 1", auto_hide_ms=2500)
+            return None
+        return int(qty)
+
+    def _apply_piece_quantity(self, qty: int):
+        """Applica target pezzi, azzera contati e memorizza l'ultimo valore."""
+        qty = int(qty)
+        self._count_target = qty
+        self._count_done = 0
+        with contextlib.suppress(Exception):
+            setattr(self.machine, "semi_auto_target_pieces", qty)
+            setattr(self.machine, "semi_auto_count_done", 0)
+        with contextlib.suppress(Exception):
+            self.spin_target.blockSignals(True)
+            self.spin_target.setValue(qty)
+            self.spin_target.blockSignals(False)
+        with contextlib.suppress(Exception):
+            write_settings({"semi_auto_last_qty": qty})
+        self._refresh_counter_labels()
+
+    def _reset_counter(self):
+        self._count_done = 0
+        with contextlib.suppress(Exception):
+            setattr(self.machine, "semi_auto_count_done", 0)
+        self._refresh_counter_labels()
+
+    def _increment_counter_if_enabled(self):
+        """Incrementa il contapezzi (solo taglio pezzo finale)."""
+        self._count_done = int(self._count_done) + 1
+        with contextlib.suppress(Exception):
+            setattr(self.machine, "semi_auto_count_done", self._count_done)
+        self._refresh_counter_labels()
+        logger.info(
+            "Contapezzi +1 → %s (target=%s, rimanenti=%s)",
+            self._count_done,
+            self._count_target,
+            max(0, self._count_target - self._count_done),
+        )
+
+    def _is_intermediate_seq_cut(self) -> bool:
+        """True se il taglio corrente è uno step intermedio (non conta pezzo)."""
+        return self._seq_phase == "await_cut" and self._should_continue_multi_step()
 
     def _simulate_cut(self):
         """
-        Simula un taglio effettuato (test contapezzi / logica).
-        Premi F7 o il pulsante dopo il posizionamento.
+        Simula taglio: blocco morse → taglio → sblocco morse + contapezzi (se finale).
         """
+        if self._cut_sim_busy:
+            return
         if self._is_movement_active() or self._movement_in_progress:
             self._show_warn("Attendi fine posizionamento prima del taglio", auto_hide_ms=2000)
             return
-        if self.mio and hasattr(self.mio, "command_sim_cut_pulse"):
-            try:
-                self.mio.command_sim_cut_pulse()
-            except Exception as e:
-                logger.debug(f"command_sim_cut_pulse: {e}")
-        self._on_cut_done_feedback()
+        if self._seq_phase == "await_proceed":
+            self._show_warn("Taglio già eseguito — premi START per proseguire", auto_hide_ms=2500)
+            return
+        self._cut_sim_busy = True
+        self._lock_morse()
+        self._show_info("🔒 Morse bloccate — taglio…", auto_hide_ms=800)
+        QTimer.singleShot(220, self._complete_simulated_cut)
+
+    def _complete_simulated_cut(self):
+        """Completa il taglio simulato dopo il blocco morse."""
+        try:
+            # Evita doppio conteggio se command_sim_cut_pulse alza blade_pulse
+            self._blade_pulse_prev = True
+            if self.mio and hasattr(self.mio, "command_sim_cut_pulse"):
+                try:
+                    self.mio.command_sim_cut_pulse()
+                except Exception as e:
+                    logger.debug(f"command_sim_cut_pulse: {e}")
+
+            intermediate = self._is_intermediate_seq_cut()
+            if intermediate:
+                # Taglio intestatura / step intermedio: non conta pezzo
+                self._ready_to_cut = False
+                self._seq_phase = "await_proceed"
+                step_hint = self._seq_proceed_message()
+                self._show_info(
+                    f"✂️ Taglio step eseguito — {step_hint}",
+                    auto_hide_ms=4000,
+                )
+                logger.info("Taglio intermedio sequenza: in attesa START per proseguire")
+            else:
+                self._increment_counter_if_enabled()
+                self._ready_to_cut = False
+                self._seq_phase = None
+                mode = self._current_mode or "normal"
+                self._show_info(f"✂️ Taglio simulato ({mode})", auto_hide_ms=1200)
+                # Sequenza speciale conclusa
+                if self._current_mode_handler:
+                    with contextlib.suppress(Exception):
+                        self._current_mode_handler.reset()
+                    self._current_mode_handler = None
+
+            QTimer.singleShot(250, self._finish_cut_unlock)
+        except Exception as e:
+            logger.error(f"Errore taglio sim: {e}")
+            self._unlock_morse()
+            self._cut_sim_busy = False
+
+    def _finish_cut_unlock(self):
+        """Sblocca morse a fine taglio sim e libera il flag busy."""
+        self._unlock_morse()
+        if self._seq_phase == "await_proceed":
+            self._show_info(self._seq_proceed_message(), auto_hide_ms=3500)
+        else:
+            self._show_info("🔓 Morse sbloccate", auto_hide_ms=1200)
+        self._cut_sim_busy = False
 
     def _on_cut_done_feedback(self):
-        """Feedback taglio effettuato: incrementa contapezzi, sblocca morse."""
+        """Compatibilità: percorso diretto (es. F6) senza sequenza morse."""
+        if self._is_intermediate_seq_cut():
+            self._ready_to_cut = False
+            self._seq_phase = "await_proceed"
+            self._unlock_morse()
+            self._show_info(self._seq_proceed_message(), auto_hide_ms=3500)
+            return
         self._increment_counter_if_enabled()
         self._ready_to_cut = False
+        self._seq_phase = None
         self._unlock_morse()
         mode = self._current_mode or "normal"
         self._show_info(f"✂️ Taglio simulato ({mode})", auto_hide_ms=1800)
+
+    def _seq_proceed_message(self) -> str:
+        """Messaggio guida per proseguire la sequenza multi-step."""
+        mode = self._current_mode or ""
+        step = 0
+        if mode == "out_of_quota" and self._out_of_quota_handler:
+            step = self._out_of_quota_handler.get_current_step()
+            return "Premi START per Step 2/2 (taglio finale)"
+        if mode == "ultra_short" and self._ultra_short_handler:
+            step = self._ultra_short_handler.get_current_step()
+            if step == 1:
+                return "Premi START per Step 2/3 (retrazione DX)"
+            if step == 2:
+                return "Premi START per Step 3/3 (taglio finale)"
+        if mode == "extra_long" and self._extra_long_handler:
+            step = self._extra_long_handler.get_current_step()
+            if step == 1:
+                return "Premi START per Step 2/3 (retrazione DX)"
+            if step == 2:
+                return "Premi START per Step 3/3 (taglio finale)"
+        return "Premi START per proseguire la sequenza"
+
+    def _seq_step_requires_cut(self) -> bool:
+        """
+        True se lo step appena completato richiede un taglio prima di continuare.
+        Retrazione (ultra/extra step 2 dopo posa) = solo conferma START.
+        """
+        mode = self._current_mode or ""
+        if mode == "out_of_quota" and self._out_of_quota_handler:
+            return self._out_of_quota_handler.get_current_step() == 1
+        if mode == "ultra_short" and self._ultra_short_handler:
+            return self._ultra_short_handler.get_current_step() == 1
+        if mode == "extra_long" and self._extra_long_handler:
+            return self._extra_long_handler.get_current_step() == 1
+        return False
+
+    def _on_multi_step_arrival(self):
+        """Gestisce l'arrivo in posizione durante una sequenza multi-step."""
+        self._movement_in_progress = False
+        try:
+            if self.mio:
+                self.mio.command_lock_brake()
+            else:
+                setattr(self.machine, "brake_active", True)
+        except Exception as e:
+            logger.error(f"Errore blocco freno multi-step: {e}")
+
+        if self._seq_step_requires_cut():
+            self._ready_to_cut = True
+            self._seq_phase = "await_cut"
+            self._enable_inputs_after_movement()
+            mode_name = self._mode_detector.get_mode_display_name(self._current_mode or "")
+            self._show_info(
+                f"✅ {mode_name}: in posizione — esegui TAGLIO (F7 / pedale), "
+                f"poi premi START per proseguire",
+                auto_hide_ms=5000,
+            )
+            logger.info("Sequenza: await_cut prima dello step successivo")
+        else:
+            # Retrazione completata: solo conferma operatore
+            self._ready_to_cut = False
+            self._seq_phase = "await_proceed"
+            self._enable_inputs_after_movement()
+            msg = self._seq_proceed_message()
+            self._show_info(f"✅ Posizionamento step ok — {msg}", auto_hide_ms=4500)
+            logger.info("Sequenza: await_proceed (retrazione)")
+
+    def _try_continue_sequence_from_start(self) -> bool:
+        """
+        Se siamo in await_proceed, avvia lo step successivo.
+        Restituisce True se ha gestito l'evento (non avviare un nuovo ciclo).
+        """
+        if self._seq_phase == "await_cut":
+            self._show_warn(
+                "Esegui prima il TAGLIO (F7 / pedale), poi premi START",
+                auto_hide_ms=3000,
+            )
+            return True
+        if self._seq_phase != "await_proceed":
+            return False
+        if not self._should_continue_multi_step():
+            self._seq_phase = None
+            return False
+
+        self._seq_phase = None
+        self._ready_to_cut = False
+        self._disable_inputs_during_movement()
+        # Sblocca freno prima dello step successivo
+        try:
+            if self.mio:
+                self.mio.command_release_brake()
+            else:
+                setattr(self.machine, "brake_active", False)
+        except Exception as e:
+            logger.error(f"Errore sblocco freno pre-step: {e}")
+        self._show_info("▶️ Proseguo sequenza…", auto_hide_ms=1500)
+        QTimer.singleShot(150, self._continue_multi_step_sequence)
+        return True
 
     def _update_mode_label(self):
         """Aggiorna etichetta modalità in base alla misura inserita."""
@@ -1007,7 +1251,10 @@ class SemiAutoPage(QWidget):
         - Ultra short: 3-step cycle (inverted heads)
         - Extra long: 3-step cycle
         """
-        
+        # Continuazione sequenza multi-step (dopo taglio / retrazione)
+        if self._try_continue_sequence_from_start():
+            return
+
         # Close any open profile preview popup
         try:
             if self._section_popup:
@@ -1055,6 +1302,13 @@ class SemiAutoPage(QWidget):
         if length <= 0:
             self._show_warn("Lunghezza interna deve essere > 0", auto_hide_ms=2500)
             return
+
+        # === 2b. Quanti pezzi? (obbligatorio, ≥ 1) ===
+        qty = self._ask_piece_quantity()
+        if qty is None:
+            self._show_info("Operazione annullata", auto_hide_ms=1500)
+            return
+        self._apply_piece_quantity(qty)
         
         # === 3. Detect mode automatically ===
         try:
@@ -1069,6 +1323,7 @@ class SemiAutoPage(QWidget):
             return
         
         self._current_mode = mode_info.mode_name
+        self._seq_phase = None
         logger.info(f"Mode detected: {self._current_mode} for {length:.1f}mm")
         
         # === 4. Confirm special modes ===
@@ -1466,24 +1721,20 @@ class SemiAutoPage(QWidget):
         if self._movement_in_progress:
             # Check movement status using helper method
             if not self._is_movement_active():
-                # Sequenza multi-step: sblocca e continua senza "ready to cut"
+                # Sequenza multi-step: attendi taglio / conferma operatore (non auto-catena)
                 if self._should_continue_multi_step():
-                    try:
-                        if self.mio:
-                            self.mio.command_release_brake()
-                        else:
-                            setattr(self.machine, "brake_active", False)
-                    except Exception as e:
-                        logger.error(f"Errore sblocco freno multi-step: {e}")
-                    # Breve pausa poi step successivo
-                    self._movement_in_progress = False  # evita rientri finché non riparte
-                    QTimer.singleShot(200, self._continue_multi_step_sequence)
+                    self._on_multi_step_arrival()
                 else:
                     # Posizionamento finale completato
                     try:
                         self._enable_inputs_after_movement()
                         self._ready_to_cut = True
-                        self._show_info("✅ Posizionamento completato — F7 per taglio sim", auto_hide_ms=2500)
+                        self._seq_phase = None
+                        self._movement_in_progress = False
+                        hint = "F7 / pedale per taglio"
+                        if self._current_mode in ("out_of_quota", "ultra_short", "extra_long"):
+                            hint = "TAGLIO FINALE (F7 / pedale)"
+                        self._show_info(f"✅ Posizionamento completato — {hint}", auto_hide_ms=3000)
                         logger.info("Movement completed, inputs re-enabled")
                     except Exception as e:
                         logger.error(f"Error re-enabling inputs after movement: {e}")
@@ -1506,22 +1757,41 @@ class SemiAutoPage(QWidget):
         #             QTimer.singleShot(0, self._finish_intestatura)
         #         self._last_dx_blade_out = cur_out
 
-        # Rising edge blade_pulse → taglio simulato (come Automatico)
+        # Rising edge blade_pulse → taglio (sim / reale via get_input)
         blade = False
         if self.mio:
             try:
                 blade = bool(self.mio.get_input("blade_pulse"))
             except Exception:
                 blade = False
-        if blade and not self._blade_pulse_prev:
-            self._on_cut_done_feedback()
+        if blade and not self._blade_pulse_prev and not self._cut_sim_busy:
+            if self._seq_phase == "await_proceed":
+                pass  # Ignora impulsi dopo taglio intermedio
+            elif self._is_movement_active() or self._movement_in_progress:
+                pass
+            else:
+                self._cut_sim_busy = True
+                self._lock_morse()
+                QTimer.singleShot(220, self._complete_simulated_cut)
         self._blade_pulse_prev = blade
 
-        tgt = int(getattr(self.machine, "semi_auto_target_pieces", 0))
-        done = int(getattr(self.machine, "semi_auto_count_done", 0))
-        rem = max(0, tgt - done)
+        # Rising edge start_pressed (ingresso reale / sim) → come pulsante START
+        start_pressed = False
+        if self.mio:
+            try:
+                start_pressed = bool(self.mio.get_input("start_pressed"))
+            except Exception:
+                start_pressed = False
+        if start_pressed and not self._start_prev:
+            if self._seq_phase in ("await_proceed", "await_cut") or not (
+                self._is_movement_active() or self._movement_in_progress
+            ):
+                self._on_cut()
+        self._start_prev = start_pressed
+
+        rem = max(0, int(self._count_target) - int(self._count_done))
         self.lbl_remaining.setText(f"Rimanenti: {rem}")
-        self.lbl_counted.setText(f"Contati: {done}")
+        self.lbl_counted.setText(f"Contati: {int(self._count_done)}")
 
         self._update_buttons()
         self._update_mode_label()
@@ -1538,9 +1808,17 @@ class SemiAutoPage(QWidget):
     def _update_buttons(self):
         homed = bool(getattr(self.machine, "machine_homed", False))
         emg = bool(getattr(self.machine, "emergency_active", False))
-        mov = self._is_movement_active()
+        mov = self._is_movement_active() or self._movement_in_progress
         try:
-            self.btn_start.setEnabled(homed and not emg and not mov)
+            # In await_proceed START resta abilitato per proseguire
+            can_start = homed and not emg and (not mov or self._seq_phase == "await_proceed")
+            if self._seq_phase == "await_cut":
+                can_start = homed and not emg and not mov  # avvisa se premuto senza taglio
+            self.btn_start.setEnabled(can_start)
+            if self._seq_phase == "await_proceed":
+                self.btn_start.setText("PROSEGUI")
+            else:
+                self.btn_start.setText("START")
         except Exception:
             pass
         
@@ -1671,7 +1949,66 @@ class SemiAutoPage(QWidget):
         if self.mio and hasattr(self.mio, "set_mode_context"):
             with contextlib.suppress(Exception):
                 self.mio.set_mode_context("semi")
+        # Eredita inclinazioni teste dalla macchina (es. da Automatico)
+        self._inherit_head_angles_from_machine()
+        # Allinea contapezzi UI ↔ stato locale
+        try:
+            self._count_target = int(self.spin_target.value())
+        except Exception:
+            pass
+        self._refresh_counter_labels()
         self.refresh_profiles_external(select=self.cb_profilo.currentText().strip())
+
+    def _inherit_head_angles_from_machine(self):
+        """
+        Allinea spin SX/DX allo stato reale/comandato delle teste.
+        Utile passando da Automatico a Semi (es. entrambe a 45°).
+        """
+        sx = None
+        dx = None
+        # Preferisci angoli misurati se disponibili
+        for src_sx, src_dx in (
+            ("measured_left_head_angle", "measured_right_head_angle"),
+            ("left_head_angle", "right_head_angle"),
+        ):
+            try:
+                v_sx = getattr(self.machine, src_sx, None)
+                v_dx = getattr(self.machine, src_dx, None)
+                if v_sx is not None and v_dx is not None:
+                    sx = float(v_sx)
+                    dx = float(v_dx)
+                    break
+            except Exception:
+                continue
+        if sx is None and self.mio:
+            try:
+                st = self.mio.get_state() if hasattr(self.mio, "get_state") else {}
+                if isinstance(st, dict):
+                    if st.get("measured_left_head_angle") is not None:
+                        sx = float(st["measured_left_head_angle"])
+                        dx = float(st.get("measured_right_head_angle", 0.0))
+                    elif st.get("left_head_angle") is not None:
+                        sx = float(st["left_head_angle"])
+                        dx = float(st.get("right_head_angle", 0.0))
+            except Exception:
+                pass
+        if sx is None:
+            return
+        # Normalizza 90°→0° come nel resto dell'app
+        sx = float(normalize_cut_tilt_deg(sx))
+        dx = float(normalize_cut_tilt_deg(dx if dx is not None else 0.0))
+        sx = max(0.0, min(45.0, sx))
+        dx = max(0.0, min(45.0, dx))
+        try:
+            self.spin_sx.blockSignals(True)
+            self.spin_dx.blockSignals(True)
+            self.spin_sx.setValue(sx)
+            self.spin_dx.setValue(dx)
+        finally:
+            self.spin_sx.blockSignals(False)
+            self.spin_dx.blockSignals(False)
+        self._update_mode_label()
+        logger.info("Semi: angoli ereditati SX=%.1f° DX=%.1f°", sx, dx)
 
     def hideEvent(self, ev):
         try:

@@ -12,6 +12,7 @@ calculate_ultra_long_sequence function.
 """
 from dataclasses import dataclass
 from typing import Optional, Any, Callable
+import contextlib
 import logging
 from ..ultra_long_mode import (
     UltraLongConfig as BaseUltraLongConfig,
@@ -180,6 +181,10 @@ class ExtraLongHandler:
                 sx=0.0,  # Testa fissa a quadro
                 dx=self.sequence.angle_head_cut_dx
             )
+
+            # 1b. Lame: SX inibita, DX attiva (intestatura)
+            with contextlib.suppress(Exception):
+                self.mio.command_set_blade_inhibit(left=True, right=False)
             
             # 2. Configure morse for heading
             self.mio.command_set_morse(
@@ -227,6 +232,10 @@ class ExtraLongHandler:
         try:
             # 1. Release brake to allow movement
             self.mio.command_release_brake()
+
+            # Durante retrazione entrambe le lame inibite
+            with contextlib.suppress(Exception):
+                self.mio.command_set_blade_inhibit(left=True, right=True)
             
             # 2. Configure morse for retract
             self.mio.command_set_morse(
@@ -278,6 +287,10 @@ class ExtraLongHandler:
                 sx=self.sequence.angle_final_cut_sx,
                 dx=0.0  # Testa mobile a quadro
             )
+
+            # 1b. Lame: SX attiva, DX inibita (taglio finale)
+            with contextlib.suppress(Exception):
+                self.mio.command_set_blade_inhibit(left=False, right=True)
             
             # 2. Release brake to allow movement
             self.mio.command_release_brake()

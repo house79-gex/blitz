@@ -22,6 +22,7 @@ Key Difference from Extra Long:
 """
 from dataclasses import dataclass
 from typing import Optional, Any, Dict, Callable
+import contextlib
 import logging
 
 logger = logging.getLogger(__name__)
@@ -234,6 +235,10 @@ class UltraShortHandler:
                 sx=self.sequence.heading_angle_sx,
                 dx=0.0  # Testa mobile a quadro
             )
+
+            # 1b. Lame: SX attiva, DX inibita (intestatura)
+            with contextlib.suppress(Exception):
+                self.mio.command_set_blade_inhibit(left=False, right=True)
             
             # 2. Configure morse for heading
             from ui_qt.logic.modes.morse_strategy import MorseStrategy
@@ -283,6 +288,10 @@ class UltraShortHandler:
         try:
             # 1. Release brake to allow movement
             self.mio.command_release_brake()
+
+            # Durante retrazione entrambe le lame inibite
+            with contextlib.suppress(Exception):
+                self.mio.command_set_blade_inhibit(left=True, right=True)
             
             # 2. Configure morse for retract
             from ui_qt.logic.modes.morse_strategy import MorseStrategy
@@ -338,6 +347,10 @@ class UltraShortHandler:
                 sx=0.0,  # Testa fissa a quadro
                 dx=self.sequence.final_angle_dx
             )
+
+            # 1b. Lame: SX inibita, DX attiva (taglio finale)
+            with contextlib.suppress(Exception):
+                self.mio.command_set_blade_inhibit(left=True, right=False)
             
             # 2. Release brake to allow movement
             self.mio.command_release_brake()
